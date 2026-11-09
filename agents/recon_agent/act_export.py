@@ -102,15 +102,22 @@ class ActTraceBuffer:
             headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
             body = self.payload()
             r = None
-            for attempt in (1, 2):  # one retry on POST failure
+            for attempt in (1, 2):  # one retry, only on 5xx or network errors
+                retry = False
                 try:
                     r = requests.post(url, json=body, timeout=30, headers=headers)
                     if r.status_code < 300:
                         break
                     log.warning("ACT export got HTTP %s (attempt %d)", r.status_code, attempt)
+                    retry = r.status_code >= 500
                 except requests.RequestException as e:
                     log.warning("ACT export POST failed: %s (attempt %d)", type(e).__name__, attempt)
                     r = None
+                    retry = True
+                if not retry:
+                    break
+                if attempt == 1:
+                    time.sleep(1)
             ok = r is not None and r.status_code < 300
             if ok:
                 self.spans = []

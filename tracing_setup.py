@@ -39,7 +39,9 @@ def add_tracing(name, **kw):
         def inner(*a, **k):
             started["v"] = True
             try:
-                return fn(*a, **k)
+                started["result"] = fn(*a, **k)
+                started["done"] = True
+                return started["result"]
             except Exception as e:  # noqa: BLE001
                 started["err"] = e
                 raise
@@ -52,6 +54,9 @@ def add_tracing(name, **kw):
             try:
                 return traced(*a, **k)
             except Exception as e:  # noqa: BLE001
+                if started.get("done"):  # fn finished; the tracer failed afterwards
+                    log.warning("tracing failed after completion (%s); returning result", type(e).__name__)
+                    return started["result"]
                 if started.get("v"):
                     raise
                 log.warning("tracing failed (%s); running untraced", type(e).__name__)

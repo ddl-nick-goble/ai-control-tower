@@ -4,8 +4,13 @@ Proposals only; ACT receives the OTel spans as evidence."""
 import json
 import logging
 import os
+import sys
 
 import requests
+
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from agents.recon_agent import llm, tools
 from agents.recon_agent.act_export import ActTraceBuffer
