@@ -1,0 +1,424 @@
+diff --git a/agents/recon_agent/README.md b/agents/recon_agent/README.md
+new file mode 100644
+index 0000000..938cbfe
+--- /dev/null
++++ b/agents/recon_agent/README.md
+@@ -0,0 +1,16 @@
++# recon agent
++
++Reconciliation assistant hosted in Domino. Tools: fetch_ledger, compare_entries, propose_adjustment;
++breaks are classified by the registered `break_classifier` model.
++
++## Environment
++
++| Variable | Meaning |
++|---|---|
++| `RECON_AGENT_ID` | Required. Must equal the Domino agent's native id as listed by the Domino API (the id ACT's Domino adapter reads). `run()` raises before any LLM call when unset. It is set as `gen_ai.agent.id` on the OTLP resource and on every span. |
++| `LLM_GATEWAY_URL` | LLM Gateway App URL. |
++| `ACT_TRACES_URL`, `ACT_TOKEN_URL` | ACT OTLP endpoint and token source (export is a no-op without the URL). |
++| `BREAK_CLASSIFIER_ENDPOINT_URL` | Domino sync endpoint. Unset: local `predict()` (span `act.classifier.source=local`); a warning is logged when running in Domino (`DOMINO_RUN_ID`). |
++| `BREAK_CLASSIFIER_ACCESS_KEY` | Endpoint access key, sent as HTTP Basic user and password (`endpoint` source). The platform bearer token is never sent to the endpoint. |
++
++Experiment: `act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME>` (root `experiment_setup.py`, `tracing_setup.py`).
+diff --git a/agents/recon_agent/act_export.py b/agents/recon_agent/act_export.py
+index 05d6f77..1f2410e 100644
+--- a/agents/recon_agent/act_export.py
++++ b/agents/recon_agent/act_export.py
+@@ -36,7 +36,8 @@ def _attrs(d):
+ 
+ 
+ class ActTraceBuffer:
+-    def __init__(self, service_name="act-recon-agent"):
++    def __init__(self, agent_id, service_name="act-recon-agent"):
++        self.agent_id = agent_id
+         self.service_name = service_name
+         self.trace_id = secrets.token_hex(16)
+         self.spans = []
+@@ -45,7 +46,7 @@ class ActTraceBuffer:
+     @contextmanager
+     def span(self, name, attributes=None, kind="internal"):
+         """Record a span; nested use sets parentSpanId. Yields the attribute dict (mutable)."""
+-        attrs = dict(attributes or {})
++        attrs = {"gen_ai.agent.id": self.agent_id, **(attributes or {})}
+         sp = {"traceId": self.trace_id, "spanId": secrets.token_hex(8), "name": name,
+               "kind": KIND[kind], "startTimeUnixNano": str(time.time_ns())}
+         if self._stack:
+@@ -65,9 +66,9 @@ class ActTraceBuffer:
+             sp["status"] = status
+             self.spans.append(sp)
+ 
+-    def invoke_agent(self, agent_id, agent_name, **attrs):
++    def invoke_agent(self, agent_name, **attrs):
+         return self.span(f"invoke_agent {agent_name}", {
+-            "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.id": agent_id,
++            "gen_ai.operation.name": "invoke_agent",
+             "gen_ai.agent.name": agent_name, **attrs})
+ 
+     def execute_tool(self, tool_name, arguments=None, **attrs):
+@@ -81,7 +82,8 @@ class ActTraceBuffer:
+ 
+     def payload(self):
+         return {"resourceSpans": [{
+-            "resource": {"attributes": _attrs({"service.name": self.service_name})},
++            "resource": {"attributes": _attrs({"service.name": self.service_name,
++                                                "gen_ai.agent.id": self.agent_id})},
+             "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
+         }]}
+ 
+@@ -92,13 +94,26 @@ class ActTraceBuffer:
+         if not url or not self.spans:
+             return False
+         try:
+-            tok = requests.get(os.environ.get("ACT_TOKEN_URL", DEFAULT_TOKEN_URL), timeout=5).text.strip()
+-            r = requests.post(url, json=self.payload(), timeout=30,
+-                              headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
+-            ok = r.status_code < 300
+-            if not ok:
+-                log.warning("ACT export got HTTP %s", r.status_code)
+-            self.spans = []
++            tr = requests.get(os.environ.get("ACT_TOKEN_URL", DEFAULT_TOKEN_URL), timeout=5)
++            tok = tr.text.strip() if tr.status_code == 200 else ""
++            if not tok:
++                log.warning("ACT export skipped: no access token (token fetch HTTP %s)", tr.status_code)
++                return False
++            headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
++            body = self.payload()
++            r = None
++            for attempt in (1, 2):  # one retry on POST failure
++                try:
++                    r = requests.post(url, json=body, timeout=30, headers=headers)
++                    if r.status_code < 300:
++                        break
++                    log.warning("ACT export got HTTP %s (attempt %d)", r.status_code, attempt)
++                except requests.RequestException as e:
++                    log.warning("ACT export POST failed: %s (attempt %d)", type(e).__name__, attempt)
++                    r = None
++            ok = r is not None and r.status_code < 300
++            if ok:
++                self.spans = []
+             return ok
+         except Exception as e:  # noqa: BLE001
+             log.warning("ACT export failed: %s", type(e).__name__)
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+index 938edd2..d6171ed 100644
+--- a/agents/recon_agent/agent.py
++++ b/agents/recon_agent/agent.py
+@@ -9,7 +9,7 @@ import requests
+ 
+ from agents.recon_agent import llm, tools
+ from agents.recon_agent.act_export import ActTraceBuffer
+-from agents.recon_agent.tracing_setup import add_tracing
++from tracing_setup import add_tracing, agent_run
+ 
+ log = logging.getLogger(__name__)
+ AGENT_NAME = "recon-agent"
+@@ -33,19 +33,23 @@ TOOL_SPECS = [
+ ]
+ 
+ 
+-def classify_break(br: dict) -> str:
++def classify_break(br: dict):
++    """Return (class, source) where source is "local" (predict()) or "endpoint" (Domino sync endpoint)."""
+     payload = {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
+     url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
+     if not url:
++        if os.environ.get("DOMINO_RUN_ID"):
++            log.warning("BREAK_CLASSIFIER_ENDPOINT_URL is unset in a Domino run; using the local classifier")
+         from models.break_classifier.predict import predict
+-        return predict(payload)["class"]
+-    proxy = (os.environ.get("DOMINO_API_PROXY") or "http://localhost:8899").rstrip("/")
+-    tok = os.environ.get("BREAK_CLASSIFIER_TOKEN") or requests.get(f"{proxy}/access-token", timeout=5).text.strip()
+-    r = requests.post(url, json={"data": payload}, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
++        return predict(payload)["class"], "local"
++    key = os.environ.get("BREAK_CLASSIFIER_ACCESS_KEY")
++    if not key:
++        raise RuntimeError("BREAK_CLASSIFIER_ACCESS_KEY is required when BREAK_CLASSIFIER_ENDPOINT_URL is set")
++    # Domino sync endpoints use HTTP Basic with the endpoint access key as user and password.
++    r = requests.post(url, json={"data": payload}, auth=(key, key), timeout=30)
+     r.raise_for_status()
+-    res = r.json()
+-    res = res.get("result", res)
+-    return str(res["class"]) if isinstance(res, dict) and "class" in res else str(res)
++    res = r.json().get("result")
++    return str(res["class"] if isinstance(res, dict) else res), "endpoint"
+ 
+ 
+ def _dispatch(name, inp, buf, store):
+@@ -58,7 +62,7 @@ def _dispatch(name, inp, buf, store):
+         for br in breaks:
+             with buf.execute_tool("break_classifier", {k: br[k] for k in
+                                   ("amount_diff", "days_diff", "missing_side")}) as a:
+-                br["classification"] = classify_break(br)
++                br["classification"], a["act.classifier.source"] = classify_break(br)
+                 a["gen_ai.tool.call.result"] = br["classification"]
+         store["breaks"] = breaks
+         return breaks
+@@ -101,13 +105,20 @@ def _run(prompt: str, buf: ActTraceBuffer) -> dict:
+ 
+ 
+ @add_tracing(name="recon_agent", span_type="AGENT")
+-def run(prompt: str) -> dict:
+-    buf = ActTraceBuffer()
+-    agent_id = os.environ.get("RECON_AGENT_ID", "recon-agent")
++def _traced_run(prompt: str, agent_id: str) -> dict:
++    buf = ActTraceBuffer(agent_id)
+     try:
+-        with buf.invoke_agent(agent_id, AGENT_NAME) as a:
++        with buf.invoke_agent(AGENT_NAME) as a:
+             a["gen_ai.agent.description"] = "Ledger reconciliation assistant"
+-            result = _run(prompt, buf)
++            return _run(prompt, buf)
+     finally:
+         buf.flush()
+-    return result
++
++
++def run(prompt: str) -> dict:
++    agent_id = os.environ.get("RECON_AGENT_ID", "").strip()
++    if not agent_id:
++        raise RuntimeError("RECON_AGENT_ID is not set: it must equal the Domino agent's native id "
++                           "(see agents/recon_agent/README.md)")
++    with agent_run():
++        return _traced_run(prompt, agent_id)
+diff --git a/agents/recon_agent/experiment_setup.py b/agents/recon_agent/experiment_setup.py
+deleted file mode 100644
+index 5626e91..0000000
+--- a/agents/recon_agent/experiment_setup.py
++++ /dev/null
+@@ -1,18 +0,0 @@
+-"""MLflow experiment naming: {base}-{project}-{username} (unique across the deployment)."""
+-import os
+-
+-
+-def experiment_name(base: str) -> str:
+-    return f"{base}-{os.environ.get('DOMINO_PROJECT_NAME', 'local')}-{os.environ.get('DOMINO_STARTING_USERNAME', 'dev')}"
+-
+-
+-def setup_experiment(base: str) -> str:
+-    import mlflow
+-    name = experiment_name(base)
+-    mlflow.set_experiment(name)
+-    return name
+-
+-
+-def domino_tags() -> dict:
+-    return {"domino.project": os.environ.get("DOMINO_PROJECT_NAME", ""),
+-            "domino.run_id": os.environ.get("DOMINO_RUN_ID", "")}
+diff --git a/agents/recon_agent/tracing_setup.py b/agents/recon_agent/tracing_setup.py
+deleted file mode 100644
+index e6bfe4b..0000000
+--- a/agents/recon_agent/tracing_setup.py
++++ /dev/null
+@@ -1,30 +0,0 @@
+-"""Tracing helpers: Domino @add_tracing when available, otherwise a no-op decorator.
+-MLflow problems (no tracking server) never fail the agent run."""
+-import functools
+-import logging
+-
+-log = logging.getLogger(__name__)
+-
+-try:
+-    from domino.agents.tracing import add_tracing as _domino_add_tracing
+-except Exception:  # noqa: BLE001
+-    _domino_add_tracing = None
+-
+-
+-def add_tracing(name, **kw):
+-    def deco(fn):
+-        if _domino_add_tracing is None:
+-            return fn
+-        traced = _domino_add_tracing(name=name, **kw)(fn)
+-
+-        @functools.wraps(fn)
+-        def wrapper(*a, **k):
+-            try:
+-                return traced(*a, **k)
+-            except Exception as e:  # noqa: BLE001
+-                if getattr(e, "_agent_error", False):
+-                    raise
+-                log.warning("tracing failed (%s); running untraced", type(e).__name__)
+-                return fn(*a, **k)
+-        return wrapper
+-    return deco
+diff --git a/experiment_setup.py b/experiment_setup.py
+index b618f03..338ed5c 100644
+--- a/experiment_setup.py
++++ b/experiment_setup.py
+@@ -24,6 +24,13 @@ import mlflow
+ DEFAULT_BASE = "act-recon"
+ 
+ 
++def experiment_name(base_name: str = DEFAULT_BASE) -> str:
++    """act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME> (for the default base)."""
++    username = os.environ.get('DOMINO_STARTING_USERNAME', 'unknown')
++    project = os.environ.get('DOMINO_PROJECT_NAME', 'unknown')
++    return f"{base_name}-{project}-{username}"
++
++
+ def setup_experiment(base_name: str = DEFAULT_BASE) -> str:
+     """
+     Set up a Domino-compatible MLflow experiment.
+@@ -37,16 +44,10 @@ def setup_experiment(base_name: str = DEFAULT_BASE) -> str:
+     Returns:
+         The full experiment name
+     """
+-    username = os.environ.get('DOMINO_STARTING_USERNAME', 'unknown')
+-    project = os.environ.get('DOMINO_PROJECT_NAME', 'unknown')
+-
+-    # Create unique experiment name
+-    experiment_name = f"{base_name}-{project}-{username}"
+-
+-    mlflow.set_experiment(experiment_name)
+-    print(f"Experiment set: {experiment_name}")
+-
+-    return experiment_name
++    name = experiment_name(base_name)
++    mlflow.set_experiment(name)
++    print(f"Experiment set: {name}")
++    return name
+ 
+ 
+ def log_domino_context():
+diff --git a/models/break_classifier/train.py b/models/break_classifier/train.py
+index b6053d9..762f63d 100644
+--- a/models/break_classifier/train.py
++++ b/models/break_classifier/train.py
+@@ -5,6 +5,8 @@ As __main__ (a Domino job): logs to MLflow, registers "break_classifier", alias
+ import os
+ import sys
+ 
++sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
++
+ import joblib
+ import numpy as np
+ from sklearn.linear_model import LogisticRegression
+@@ -40,13 +42,12 @@ def main(output_dir="/tmp/break_classifier"):
+     import mlflow
+     import pandas as pd
+     from mlflow.models import infer_signature
+-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+-    from agents.recon_agent.experiment_setup import domino_tags, setup_experiment
++    from experiment_setup import log_domino_context, setup_experiment
+     setup_experiment("break-classifier")
+     model, X, y = _fit()
+     df = pd.DataFrame(X[:5], columns=FEATURES)
+     with mlflow.start_run(run_name="break-classifier-train"):
+-        mlflow.set_tags(domino_tags())
++        log_domino_context()
+         mlflow.log_metric("train_accuracy", float(model.score(X, y)))
+         info = mlflow.sklearn.log_model(model, "model", signature=infer_signature(df, model.predict(df)),
+                                         input_example=df, registered_model_name="break_classifier")
+diff --git a/tracing_setup.py b/tracing_setup.py
+index d1d59c4..c8b208b 100644
+--- a/tracing_setup.py
++++ b/tracing_setup.py
+@@ -1,26 +1,65 @@
+ """MLflow tracing for the recon agent via the Domino agents SDK (@add_tracing).
+ 
+-The agent calls the gateway with requests (not the Anthropic SDK), so LLM calls are traced by
+-decorating create_message / tool functions with @add_tracing rather than by autologging.
+-ACT export is separate (agents/recon_agent/act_export.py).
++The agent calls the gateway with requests (not the Anthropic SDK), so LLM calls are recorded as
++spans by agents/recon_agent/act_export.py; @add_tracing wraps the agent entry point.
++When domino.agents or mlflow cannot be imported, add_tracing is a no-op and agent_run yields None.
++MLflow problems (no tracking server) never fail the agent run.
+ 
+     from tracing_setup import add_tracing, agent_run
+-    with agent_run() as run:      # sets the experiment, starts a Domino agent run
++    with agent_run() as run:      # sets experiment act-recon-<project>-<user>, starts an agent run
+         traced_fn(...)
+ """
++import functools
++import logging
+ import os
+ from contextlib import contextmanager
+ 
+-import mlflow
+-from domino.agents.logging import DominoAgentContext
+-from domino.agents.tracing import add_tracing  # noqa: F401  (re-exported)
++log = logging.getLogger(__name__)
+ 
+-from experiment_setup import setup_experiment
++try:
++    from domino.agents.logging import DominoAgentContext
++    from domino.agents.tracing import add_tracing as _domino_add_tracing
++    from experiment_setup import setup_experiment
++except Exception:  # noqa: BLE001
++    DominoAgentContext = _domino_add_tracing = setup_experiment = None
+ 
+ CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents", "recon_agent", "config.yaml")
+ BASE = "act-recon"
+ 
+ 
++def add_tracing(name, **kw):
++    """Domino @add_tracing, or a no-op. A tracing failure re-runs nothing twice: errors raised by
++    the wrapped function propagate; only setup failures fall back to an untraced call."""
++    def deco(fn):
++        if _domino_add_tracing is None:
++            return fn
++        started = {}
++
++        @functools.wraps(fn)
++        def inner(*a, **k):
++            started["v"] = True
++            try:
++                return fn(*a, **k)
++            except Exception as e:  # noqa: BLE001
++                started["err"] = e
++                raise
++
++        traced = _domino_add_tracing(name=name, **kw)(inner)
++
++        @functools.wraps(fn)
++        def wrapper(*a, **k):
++            started.clear()
++            try:
++                return traced(*a, **k)
++            except Exception as e:  # noqa: BLE001
++                if started.get("v"):
++                    raise
++                log.warning("tracing failed (%s); running untraced", type(e).__name__)
++                return fn(*a, **k)
++        return wrapper
++    return deco
++
++
+ def span_evaluator(span):
+     """Numeric score only when the output carries one; never invent defaults."""
+     out = span.outputs if isinstance(span.outputs, dict) else {}
+@@ -29,8 +68,31 @@ def span_evaluator(span):
+ 
+ @contextmanager
+ def agent_run(summary_metrics=None, config_path=CONFIG):
+-    """Set experiment act-recon-<project>-<user>, then yield the Domino agent MLflow run."""
+-    setup_experiment(BASE)
+-    with DominoAgentContext(agent_config_path=config_path,
+-                            custom_summary_metrics=summary_metrics or []) as run:
++    """Set experiment act-recon-<project>-<user>, then yield the Domino agent MLflow run
++    (None when the SDK or tracking server is unavailable)."""
++    ctx = None
++    if DominoAgentContext is not None:
++        try:
++            setup_experiment(BASE)
++            ctx = DominoAgentContext(agent_config_path=config_path,
++                                     custom_summary_metrics=summary_metrics or [])
++            run = ctx.__enter__()
++        except Exception as e:  # noqa: BLE001
++            log.warning("agent run setup failed (%s); continuing without an MLflow run", type(e).__name__)
++            ctx = run = None
++    else:
++        run = None
++    try:
+         yield run
++    except BaseException:
++        import sys
++        if ctx is not None and not ctx.__exit__(*sys.exc_info()):
++            raise
++        if ctx is None:
++            raise
++    else:
++        if ctx is not None:
++            try:
++                ctx.__exit__(None, None, None)
++            except Exception as e:  # noqa: BLE001
++                log.warning("agent run close failed (%s)", type(e).__name__)
