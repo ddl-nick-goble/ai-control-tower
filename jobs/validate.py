@@ -3,6 +3,8 @@
 Run as a Domino Job: `python jobs/validate.py`. Every prompt in eval/prompts.jsonl is run for each of
 5 repetitions; one MLflow run per repetition; the score distribution is posted to ACT.
 All LLM calls go through the Domino LLM Gateway by alias (agents.recon_agent.llm.create_message).
+With ACT_URL unset the record is written in-process to the ACT database (same rules as the route).
+ACT_LLM_PROVIDER=mock uses the offline mock judge and agent loop (judge_model_id "mock-llm").
 Env: RECON_AGENT_ID (required; ACT id derived from it unless ACT_AGENT_ID is set), ACT_URL, ACT_TOKEN_URL (default localhost:8899/access-token),
 LLM_GATEWAY_URL, VALIDATE_REPS, VALIDATE_THRESHOLD.
 """
@@ -183,6 +185,15 @@ def post_validation(agent_id: str, result: dict):
     return r
 
 
+def record_in_process(agent_id: str, result: dict):
+    """No ACT_URL: write the record straight into the ACT database with the route's own validation logic."""
+    from backend import db
+    from backend.normalize import default_actor
+    from backend.routes.validation import record_validation
+    db.init_db()
+    return record_validation(agent_id, result, default_actor())
+
+
 def act_agent_id(recon_id: str) -> str:
     override = (os.environ.get("ACT_AGENT_ID") or "").strip()
     return override or "act:domino:" + hashlib.sha256(recon_id.encode()).hexdigest()[:16]
@@ -204,7 +215,10 @@ def main() -> int:
                   f"{res['invalid_count']} unparseable judge replies out of {total} (limit {MAX_ERROR_RATE:.0%}). "
                   f"Check the agent and the LLM gateway, then rerun.", file=sys.stderr)
             return 3
-        post_validation(agent_id, res)
+        if (os.environ.get("ACT_URL") or "").strip():
+            post_validation(agent_id, res)
+        else:
+            record_in_process(agent_id, res)
     except Exception as e:  # noqa: BLE001
         print(f"validation failed: {e}", file=sys.stderr)
         return 1

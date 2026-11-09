@@ -47,8 +47,17 @@ def _view(r):
             "created_at": r.created_at, "detail": r.detail}
 
 
+MOCK_JUDGE = "mock-llm"
+
+
 @router.post("/api/agents/{agent_id}/validation")
 def post_validation(agent_id: str, body: dict = Body(...), user: User = Depends(require_user)):
+    return record_validation(agent_id, body, (user.user_id, user.username))
+
+
+def record_validation(agent_id: str, body: dict, actor):
+    """Validate and store a validation record (shared by the route and jobs/validate.py in-process mode).
+    Raises HTTPException on invalid input or an unknown agent."""
     n = {k: _num(body.get(k), k) for k in NUMERIC}
     n_prompts, reps = _count(body, "n_prompts", True), _count(body, "reps", True)
     if n_prompts < MIN_PROMPTS or reps < MIN_REPS:
@@ -91,13 +100,15 @@ def post_validation(agent_id: str, body: dict = Body(...), user: User = Depends(
             agent_id=agent_id, kind="repeated_eval", result=result,
             created_at=datetime.now(timezone.utc).isoformat(), detail=detail)).inserted_primary_key[0]
         _audit(cx, "validation_recorded", agent_id, {"validation_id": rid, "result": result, "mean": body["mean"]},
-               actor=(user.user_id, user.username))
+               actor=actor)
     governance_note = None
     bundle_id = agent.bundle_id or None
     if bundle_id:
         summary = (f"ACT validation record {rid}: {body['n_prompts']} prompts x {body['reps']} repetitions, "
                    f"mean {body['mean']:.3f}, p5 {body['p5']:.3f}, p95 {body['p95']:.3f}, pass rate "
-                   f"{body['pass_rate']:.1%}, result {result}; judged by a frontier model via the LLM gateway.")
+                   f"{body['pass_rate']:.1%}, result {result}; "
+                   + ("judged by the mock judge (not a model)." if detail["judge_model_id"] == MOCK_JUDGE
+                      else "judged by a frontier model via the LLM gateway."))
         try:
             governance.attach_evidence(bundle_id, "validation", {
                 "summary": summary, "citation": f"validation_records:{rid}"})
@@ -106,7 +117,7 @@ def post_validation(agent_id: str, body: dict = Body(...), user: User = Depends(
             log.exception("validation evidence submit failed")
             governance_note, action = "attach_failed", "validation_attach_failed"
         with db.engine.begin() as cx:
-            _audit(cx, action, agent_id, {"validation_id": rid, "bundle_id": bundle_id}, actor=(user.user_id, user.username))
+            _audit(cx, action, agent_id, {"validation_id": rid, "bundle_id": bundle_id}, actor=actor)
     return {"id": rid, "agent_id": agent_id, "kind": "repeated_eval", "result": result, "governance": governance_note}
 
 

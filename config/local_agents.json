@@ -1,0 +1,22 @@
+{
+  "_note": "Locally hosted agents merged into the Domino adapter listing when ACT_DOMINO_LOCAL_AGENTS points here. Strings may use ${VAR:-default}. Remove the entry once the agent is deployed as a Domino Agent (see docs/INTEGRATION.md).",
+  "agents": [
+    {
+      "native_id": "local-recon-agent",
+      "name": "recon-agent",
+      "description": "Ledger reconciliation assistant. Hosting: workspace (not deployed); it runs in a Domino workspace or Job and exports OTLP spans to ACT.",
+      "owner": "${ACT_LOCAL_AGENT_OWNER:-nick_goble}",
+      "version": "1",
+      "status": "workspace (not deployed)",
+      "tools": ["fetch_ledger", "compare_entries", "propose_adjustment"],
+      "data_scopes": ["ledger.gl", "ledger.custodian"],
+      "systems": [],
+      "principal": "${ACT_LOCAL_AGENT_PRINCIPAL:-${ACT_LOCAL_AGENT_OWNER:-nick_goble}}",
+      "dependencies": {
+        "models": [
+          {"name": "break_classifier", "registry_version": "${BREAK_CLASSIFIER_REGISTRY_VERSION:-6}"}
+        ]
+      }
+    }
+  ]
+}

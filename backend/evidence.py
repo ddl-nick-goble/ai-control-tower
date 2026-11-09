@@ -200,7 +200,9 @@ def _validation(d, aid):
             parts.append(f"pass rate {float(pr):.1%}")
         if det.get("n_prompts") and det.get("reps"):
             parts.append(f"{int(det['n_prompts'])} prompts x {int(det['reps'])} repetitions")
-        if det.get("judge_alias") or det.get("judge_model_id") or det.get("judge_version"):
+        if det.get("judge_model_id") == "mock-llm":
+            parts.append("mock judge (not a model) — rerun with the LLM Gateway for a model-graded record")
+        elif det.get("judge_alias") or det.get("judge_model_id") or det.get("judge_version"):
             parts.append(f"judge: frontier model via the LLM gateway; alias and version on file in "
                          f"validation_records:{r.id}")
         if det.get("error_count") is not None or det.get("invalid_count") is not None:
@@ -243,10 +245,15 @@ def _monitoring(d, aid):
                                                limit=f.limit)]
         for v in viols:
             lines.append("  - " + _violation(v))
-        lines.append(f"  - Explanation: {esc(det.get('explanation') or f.message) or 'none'}")
+        mock = det.get("explanation_model") == "mock-llm"
+        lines.append(f"  - Explanation{' (template text from the mock explainer, not a model)' if mock else ''}: "
+                     f"{esc(det.get('explanation') or f.message) or 'none'}")
         if run:
             lines.append(f"  - Timeline: runs/{esc(run)}/timeline")
             cites.append(_c("events", run))
+    if any((f.detail or {}).get("explanation_model") == "mock-llm" for f in fs):
+        lines.append("Note: explanations marked mock were produced by the mock explainer (ACT_LLM_PROVIDER=mock), "
+                     "a template, not a model.")
     if not fs:
         lines.append("No findings recorded for this agent.")
         cites = [_c("agents", aid)]
