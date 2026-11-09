@@ -68,7 +68,14 @@ def test_ac5_timeline_matches_api_and_renders_fast(page, shot, seeded):
     assert spans == [e.get("span_id") for e in events]
     # names appear in ts order
     for item, ev in zip(items.all(), events):
-        expect(item).to_contain_text(ev["name"])
+        if ev["kind"] == "model_call":
+            expect(item).to_have_attribute("data-kind", "model_call")
+            label = item.inner_text().strip()
+            assert label, "model_call event must show a non-empty label"
+            assert ev["name"] not in item.inner_html()
+            assert ev["name"] not in label
+        else:
+            expect(item).to_contain_text(ev["name"])
     # tool-call arguments are shown
     transfer = items.filter(has_text="transfer_funds")
     expect(transfer.get_by_test_id("timeline-event-args")).to_contain_text("4750000")
@@ -182,5 +189,5 @@ def test_no_page_mentions_claude(page, shot, seeded, route):
         route = f"./#/runs/{seeded['run_id']}"
     page.goto(route)
     expect(page.get_by_role("heading").first).to_be_visible()
-    assert "Claude" not in page.locator("body").inner_text()
+    assert "claude" not in page.locator("body").inner_text().lower()
     shot("then")
