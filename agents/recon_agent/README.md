@@ -17,8 +17,8 @@ Experiment: `act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME>` (root `
 
 ## break_classifier endpoint (live)
 
-Published as Domino sync endpoint `break-classifier` from registry model `break_classifier` version 2
-(alias `champion`), model ID `6af239a468f40b2f5611dd6c`, hardware tier `small-model-api`.
+Published as Domino sync endpoint `break-classifier` from registry model `break_classifier`, serving the version
+currently behind alias `champion`, model ID `6af239a468f40b2f5611dd6c`, hardware tier `small-model-api`.
 
 | Variable | Value |
 |---|---|
