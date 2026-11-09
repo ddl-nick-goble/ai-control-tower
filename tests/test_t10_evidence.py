@@ -203,3 +203,219 @@ def test_ac7_audit_event_evidence_pack_generated(client):
         rows = [r for r in cx.execute(db.audit_events.select()).fetchall() if r.action == "evidence_pack_generated"]
     assert len(rows) == 1
     assert rows[0].actor_user_id == "alice-id" and rows[0].actor_username == "alice"
+
+
+# ---------------- round 2: honesty, inertness, counts, orphans ----------------
+
+EVIL = "evil ![x](http://169.254.169.254/latest) [y](file:///etc/passwd) <img src=x>"
+EVIL_MSG = "bad thing ![z](http://127.0.0.1:1/) happened"
+
+
+def _seed_agent(aid="act:test:evil0001", name="plain-agent"):
+    from backend import db
+    with db.engine.begin() as cx:
+        cx.execute(db.agents.insert().values(
+            id=aid, source_platform="aws", native_id=aid, name=name, owner="o", tier="2", status="pending_review",
+            record={}, criteria={}, tier_reasoning="r"))
+    return aid
+
+
+def _seed_finding(aid, **kw):
+    from backend import db
+    vals = dict(agent_id=aid, run_id="r-seed", severity="high", rule="scope_drift", message="m", status="open",
+                created_at="2026-11-07T02:14:00Z", detail={}, type="scope_drift", ts="2026-11-07T02:14:00Z")
+    vals.update(kw)
+    with db.engine.begin() as cx:
+        return cx.execute(db.findings.insert().values(**vals)).inserted_primary_key[0]
+
+
+def _records_text(client, aid):
+    return json.dumps(_section(_pack(client, aid), "records_retention")["content"])
+
+
+@pytest.fixture
+def failing_gov(monkeypatch):
+    """Fake Governance API whose submit-result fails with 500; records every POST body."""
+    posts = []
+    orig = FakeDomino.__call__
+
+    def call(self, *a, **k):
+        url = next((x for x in a if isinstance(x, str) and x.startswith("http")), "")
+        if "/api/governance/v1" in url and k.get("json") is not None:
+            posts.append((url, k["json"]))
+        if "submit-result" in url:
+            from test_t8_governance import _Resp
+            return _Resp({"error": "boom"}, 500)
+        return orig(self, *a, **k)
+    monkeypatch.setattr(FakeDomino, "__call__", call)
+    return posts
+
+
+def _sources(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == "source":
+                yield v
+            yield from _sources(v)
+    elif isinstance(o, list):
+        for x in o:
+            yield from _sources(x)
+
+
+def _bundled(client):
+    aid = _agent(client, "domino-deployed-agent")
+    bid = client.post(f"/api/agents/{aid}/governance", headers=ALICE).json()["bundle_id"]
+    return aid, bid
+
+
+def test_ac7_no_fake_attachment_when_submit_fails(client, failing_gov):
+    aid, bid = _bundled(client)
+    n = len(failing_gov)
+    r = _gen(client, aid)
+    assert r.status_code == 200, r.text
+    b = r.json()
+    for url, body in failing_gov[n:]:
+        if "attachments" in url:
+            assert all(s == "git" for s in _sources(body)), (url, body)
+    assert "attach_failed" in str(b.get("governance")), b.get("governance")
+    assert Path(b["markdown_path"]).is_file() and Path(b["pdf_path"]).is_file()
+
+
+def test_ac7_honest_wording_and_audit_when_attach_fails(client, failing_gov):
+    aid, bid = _bundled(client)
+    b = _gen(client, aid).json()
+    text = _records_text(client, aid)
+    md = Path(b["markdown_path"]).read_text()
+    for t in (text, md):
+        assert not re.search(r"\battached\b", t, re.I), t
+    assert "act/evidence/" in text and safe_id_of(aid) in text
+    from backend import db
+    with db.engine.connect() as cx:
+        acts = [r.action for r in cx.execute(db.audit_events.select()).fetchall()]
+    assert "evidence_pack_attach_failed" in acts
+    assert "evidence_pack_attached" not in acts
+
+
+def safe_id_of(aid):
+    return re.sub(r"[^A-Za-z0-9]+", "-", aid).strip("-")
+
+
+def test_ac7_no_bundle_wording_names_dataset_location(client):
+    aid = _agent(client)
+    assert _gen(client, aid).status_code == 200
+    text = _records_text(client, aid)
+    assert not re.search(r"\battached\b", text, re.I), text
+    assert "act/evidence/" in text and safe_id_of(aid) in text
+
+
+def test_ac7_untrusted_text_is_inert(client, monkeypatch):
+    import weasyprint
+    aid = _seed_agent(name=EVIL)
+    _seed_finding(aid, message=EVIL_MSG, detail={"explanation": EVIL_MSG})
+    fetched, htmls = [], []
+    orig_html = weasyprint.HTML
+
+    def fetcher(url, *a, **k):
+        fetched.append(url)
+        raise ValueError("fetch blocked by test")
+
+    class H(orig_html):
+        def __init__(self, *a, **k):
+            if k.get("string") is not None:
+                htmls.append(k["string"])
+            k.setdefault("url_fetcher", fetcher)
+            super().__init__(*a, **k)
+    if hasattr(weasyprint, "default_url_fetcher"):
+        monkeypatch.setattr(weasyprint, "default_url_fetcher", fetcher)
+    monkeypatch.setattr(weasyprint, "HTML", H)
+    r = _gen(client, aid)
+    assert r.status_code == 200, r.text
+    assert fetched == []
+    for h in htmls:
+        assert "<img" not in h.lower() and 'href="file:' not in h.lower() and "href='file:" not in h.lower(), h
+    md = Path(r.json()["markdown_path"]).read_text()
+    assert "![" not in md
+    assert "](http" not in md and "](file:" not in md
+    assert "<img" not in md.lower()
+
+
+def test_ac12_pack_event_and_run_counts_match_db(client):
+    aid = _agent(client)
+    _ingest_drift(client)
+    from backend import db
+    from sqlalchemy import func, select
+    with db.engine.connect() as cx:
+        n_ev = cx.execute(select(func.count()).select_from(db.events).where(db.events.c.agent_id == aid)).scalar()
+        n_runs = cx.execute(select(func.count()).select_from(db.runs).where(db.runs.c.agent_id == aid)).scalar()
+    assert n_runs == 2
+    assert _gen(client, aid).status_code == 200
+    text = _records_text(client, aid)
+    assert re.search(rf"Events for this agent: {n_ev}\b", text), (n_ev, text)
+    assert re.search(r"\b2 runs\b", text), text
+
+
+def test_ac12_missing_values_omitted_and_present_values_shown(client):
+    aid = _seed_agent()
+    _seed_finding(aid, run_id="r1", reason="tool_not_in_manifest", tool="list_credentials",
+                  observed_value=None, limit=None,
+                  detail={"violations": [{"tool": "list_credentials", "reason": "tool_not_in_manifest",
+                                          "observed_value": None, "limit": None}]})
+    _seed_finding(aid, run_id="r2", type="value_limit", reason="value_limit_exceeded", tool="transfer_funds",
+                  observed_value="7500", limit="5000",
+                  detail={"violations": [{"tool": "transfer_funds", "reason": "value_limit_exceeded",
+                                          "observed_value": 7500, "limit": 5000}]})
+    md = Path(_gen(client, aid).json()["markdown_path"]).read_text()
+    lines = [ln for ln in md.splitlines() if "reason tool_not_in_manifest" in ln or "tool_not_in_manifest" in ln]
+    assert lines
+    for ln in lines:
+        assert not re.search(r"\b(observed|limit)\b", ln, re.I), ln
+    vl = [ln for ln in md.splitlines() if "value_limit_exceeded" in ln]
+    assert vl
+    assert any("7500" in ln and "5000" in ln for ln in vl), vl
+
+
+def test_ac7_pack_cites_model_dependency(client):
+    aid = _agent(client)
+    from backend import db
+    with db.engine.begin() as cx:
+        did = cx.execute(db.dependencies.insert().values(
+            agent_id=aid, kind="model", name="break_classifier", target="2",
+            record={"name": "break_classifier"})).inserted_primary_key[0]
+    assert _gen(client, aid).status_code == 200
+    pack = _pack(client, aid)
+    cites = json.dumps([_section(pack, s)["citations"] for s in
+                        ("identity_ownership", "tier_criteria", "permitted_actions")])
+    assert f"dependencies:{did}" in cites
+
+
+def test_ac7_runs_by_agent_endpoint_lists_all_runs_newest_first(client):
+    aid = _agent(client)
+    _ingest_drift(client)
+    r = client.get(f"/api/agents/{aid}/runs")
+    assert r.status_code == 200, r.text
+    runs = r.json()
+    assert len(runs) == 2
+    for x in runs:
+        assert x.get("run_id") and x.get("started_at")
+        assert any("span" in k and isinstance(v, int) for k, v in x.items()), x
+    assert runs[0]["started_at"] >= runs[1]["started_at"]
+
+
+def test_ac7_render_failure_leaves_no_orphan_md_and_returns_500(client, evdir, monkeypatch):
+    aid = _agent(client)
+    ev = importlib.import_module("backend.evidence")
+
+    def boom(*a, **k):
+        raise RuntimeError("renderer exploded")
+    monkeypatch.setattr(ev, "render_pdf", boom)
+    monkeypatch.setattr(ev, "_pdf_weasy", boom, raising=False)
+    monkeypatch.setattr(ev, "_pdf_reportlab", boom, raising=False)
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app, raise_server_exceptions=False) as c:
+        r = c.post(f"/api/agents/{aid}/evidence-pack", headers=ALICE)
+    assert r.status_code == 500
+    assert r.text.strip() and r.text.strip() != "Internal Server Error", r.text
+    assert list(evdir.rglob("*.md")) == [] if evdir.exists() else True
+    from backend import db
+    with db.engine.connect() as cx:
+        assert cx.execute(db.evidence_packs.select()).first() is None
