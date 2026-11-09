@@ -16,9 +16,9 @@ from .normalize import _audit
 
 log = logging.getLogger(__name__)
 SCHEMA = json.loads((Path(__file__).resolve().parent.parent / "schemas" / "evidence-pack.json").read_text())
-# Whole tokens only: the vendor word must be a complete component of a dotted/dashed/slashed id.
+# The vendor word must start a word (so "corpus" is safe) but may run on into letters/digits (claude3, ClaudeSonnet4).
 MODEL_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[.:/_-])*(?:claude|anthropic|sonnet|haiku|opus)"
-                      r"(?:[.:/_-][A-Za-z0-9]+)*(?![A-Za-z0-9])", re.I)
+                      r"[A-Za-z0-9]*(?:[.:/_-][A-Za-z0-9]+)*", re.I)
 _MD_META = re.compile(r"[\\!\[\]()`*#|&]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])")
 TITLES = [("identity_ownership", "Identity and ownership"), ("tier_criteria", "Tier and criteria"),
           ("permitted_actions", "Permitted actions"), ("validation", "Validation"),
@@ -332,7 +332,8 @@ def _pdf_reportlab(md: str, dest: Path):
             flow.append(Spacer(1, 4))
             continue
         m = re.match(r"^(#{1,2})\s+(.*)", line)
-        t = html.escape(m.group(2) if m else line.lstrip())
+        t = m.group(2) if m else line.lstrip()
+        t = html.escape(t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&"))
         t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t).replace("`", "")
         t = re.sub(r"\\([\\!\[\]()*_#|&])", r"\1", t)
         if m:
@@ -385,7 +386,7 @@ def generate(agent_id: str, user_id: str, username: str) -> dict:
         log.exception("evidence pack rendering failed")
         for p in (md_tmp, pdf_tmp, md_path, pdf_path):
             p.unlink(missing_ok=True)
-        raise RenderError(f"evidence pack PDF rendering failed: {clean(str(e))[:300]}") from e
+        raise RenderError("evidence pack PDF rendering failed") from e
     with db.engine.begin() as cx:
         pack_id = cx.execute(db.evidence_packs.insert().values(
             agent_id=agent_id, created_at=pack["generated_at"], created_by=username, path=str(md_path),
@@ -405,7 +406,7 @@ def generate(agent_id: str, user_id: str, username: str) -> dict:
             governance_note, action = "attached", "evidence_pack_attached"
         except Exception as e:
             log.exception("policy evidence submit failed")
-            governance_note, action = f"attach_failed: {clean(str(e))[:200]}", "evidence_pack_attach_failed"
+            governance_note, action = "attach_failed", "evidence_pack_attach_failed"
             detail["error"] = clean(str(e))[:200]
         detail["outcome"] = governance_note
         with db.engine.begin() as cx:
