@@ -60,7 +60,10 @@ def _wrapper_cls():
                     isinstance(v, (list, tuple)) for v in model_input.values()) else model_input
             df = pd.DataFrame(model_input)
             x = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce").fillna(0.0)
-            return self.model.predict(x.to_numpy(dtype="float64"))
+            labels = [str(c) for c in self.model.predict(x.to_numpy(dtype="float64"))]
+            # Same shape as models/break_classifier/predict.py: {"class": str}; one row -> one dict.
+            out = [{"class": c} for c in labels]
+            return out[0] if len(out) == 1 else out
 
     return BreakClassifierPyfunc
 
