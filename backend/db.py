@@ -123,11 +123,14 @@ events = Table(
     Column("ts", String),
     Column("kind", String),
     Column("span_id", String),  # nullable; unique with run_id for idempotent ingest
+    Column("parent_span_id", String),  # additive: span tree for ancestor agent inheritance
+    Column("agent_source", String),  # additive: explicit | ancestor | run_fallback | unknown
     Column("raw_span", JSON),
     Column("event", JSON),
     Column("prev_hash", String),
     Column("hash", String, unique=True),
     Index("ux_events_run_span", "run_id", "span_id", unique=True),
+    Index("ix_events_run_agent", "run_id", "agent_id"),
 )
 
 findings = Table(
@@ -228,6 +231,8 @@ def _migrate() -> None:
         if insp.has_table("events"):
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_events_run_span "
                               "ON events (run_id, span_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_run_agent "
+                              "ON events (run_id, agent_id)"))
 
 
 def _ensure_findings_index() -> None:
