@@ -4,7 +4,9 @@ Proposals only; ACT receives the OTel spans as evidence."""
 import json
 import logging
 import os
+import re
 import sys
+import threading
 
 import requests
 
@@ -59,15 +61,67 @@ def _from_endpoint(url, payload):
     return str(res["class"] if isinstance(res, dict) else res)
 
 
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+_HOST_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:/\S*)?")
+REGISTRY_TIMEOUT_S = 8.0
+
+
+def _safe_msg(e):
+    """Exception message with URLs and hostnames removed."""
+    msg = _HOST_RE.sub("<host>", _URL_RE.sub("<url>", str(e)))
+    return msg.replace("\n", " ")[:120]
+
+
+def _note(step, e):
+    """Sanitised failure note: step name, exception type and a URL-free message."""
+    return f"{step} failed ({type(e).__name__}: {_safe_msg(e)})"
+
+
+def _load_registry_model():
+    import mlflow.pyfunc
+    wanted = {"MLFLOW_HTTP_REQUEST_TIMEOUT": "5", "MLFLOW_HTTP_REQUEST_MAX_RETRIES": "0"}
+    set_here = [k for k in wanted if k not in os.environ]
+    for k in set_here:
+        os.environ[k] = wanted[k]
+    try:
+        return mlflow.pyfunc.load_model("models:/break_classifier@champion")
+    finally:
+        for k in set_here:
+            os.environ.pop(k, None)
+
+
+def _registry_model():
+    """Load the registry model at most once per process (failures are memoised) within a wall-clock cap."""
+    if "m" in _registry_cache:
+        return _registry_cache["m"]
+    if "err" in _registry_cache:
+        raise _registry_cache["err"]
+    box = {}
+
+    def work():
+        try:
+            box["m"] = _load_registry_model()
+        except BaseException as e:  # noqa: BLE001
+            box["err"] = e
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(REGISTRY_TIMEOUT_S)
+    if "m" in box:
+        _registry_cache["m"] = box["m"]
+        return box["m"]
+    err = box.get("err")
+    if err is None:
+        err = TimeoutError(f"registry lookup exceeded {REGISTRY_TIMEOUT_S:g}s")
+    _registry_cache["err"] = err
+    raise err
+
+
 def _from_registry(payload):
-    """Best effort: MLflow registry models:/break_classifier@champion with a short timeout."""
-    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
-    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
-    if "m" not in _registry_cache:
-        import mlflow.pyfunc
-        _registry_cache["m"] = mlflow.pyfunc.load_model("models:/break_classifier@champion")
+    """Best effort: MLflow registry models:/break_classifier@champion."""
+    model = _registry_model()
     import pandas as pd
-    out = _registry_cache["m"].predict(pd.DataFrame([payload]))
+    out = model.predict(pd.DataFrame([payload]))
     out = list(out)[0] if hasattr(out, "__len__") else out
     return str(out["class"] if isinstance(out, dict) else out)
 
@@ -83,17 +137,17 @@ def classify_break(br: dict, notes=None):
         try:
             return _from_endpoint(url, payload), "endpoint"
         except Exception as e:  # noqa: BLE001
-            notes.append(f"endpoint failed ({type(e).__name__}: {str(e)[:120]})")
+            notes.append(_note("endpoint", e))
     if os.environ.get("BREAK_CLASSIFIER_MODEL_PATH"):
         try:
             from models.break_classifier.predict import predict
             return predict(payload)["class"], "local"
         except Exception as e:  # noqa: BLE001
-            notes.append(f"model path failed ({type(e).__name__}: {str(e)[:120]})")
+            notes.append(_note("model path", e))
     try:
         return _from_registry(payload), "registry"
     except Exception as e:  # noqa: BLE001
-        notes.append(f"registry models:/break_classifier@champion failed ({type(e).__name__}: {str(e)[:120]})")
+        notes.append(_note("registry", e))
     return UNCLASSIFIED, "unavailable"
 
 
@@ -147,7 +201,7 @@ def _run(prompt: str, buf: ActTraceBuffer) -> dict:
                     out = _dispatch(u["name"], u.get("input") or {}, buf, store)
                     err = False
                 except Exception as e:  # noqa: BLE001
-                    out, err = {"error": str(e)}, True
+                    out, err = {"error": _note(u["name"], e)}, True
                 a["gen_ai.tool.call.result"] = json.dumps(out, default=str)[:2000]
             if u["name"] == "propose_adjustment" and not err:
                 proposals.append(out)
