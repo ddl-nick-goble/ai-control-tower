@@ -16,6 +16,11 @@ import re
 import pytest
 from playwright.sync_api import expect
 
+@pytest.fixture(autouse=True)
+def _identity(context):
+    context.set_extra_http_headers({"X-Domino-User-Id": "risk-officer-1", "X-Domino-User": "risk.officer"})
+
+
 SECTIONS = [r"identity", r"tier", r"permitted actions", r"validation", r"monitoring", r"approvals", r"records"]
 
 
