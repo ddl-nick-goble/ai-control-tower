@@ -38,19 +38,42 @@ def train(output_dir: str) -> str:
     return path
 
 
+def _wrapper_cls():
+    import mlflow.pyfunc
+
+    class BreakClassifierPyfunc(mlflow.pyfunc.PythonModel):
+        """Coerces every feature to float64 so JSON ints and floats are both accepted.
+
+        MLflow schema enforcement rejects an int64 column when the signature says double
+        (HTTP 400 "Can not safely convert int64 to float64"), so the logged model carries no
+        enforcing column schema and casting happens here instead.
+        """
+
+        def load_context(self, context):
+            self.model = joblib.load(context.artifacts["model"])
+
+        def predict(self, context, model_input, params=None):
+            import pandas as pd
+            df = pd.DataFrame(model_input)
+            x = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            return self.model.predict(x.to_numpy(dtype="float64"))
+
+    return BreakClassifierPyfunc
+
+
 def main(output_dir="/tmp/break_classifier"):
     import mlflow
-    import pandas as pd
-    from mlflow.models import infer_signature
     from experiment_setup import log_domino_context, setup_experiment
     setup_experiment("break-classifier")
     model, X, y = _fit()
-    df = pd.DataFrame(X[:5], columns=FEATURES)
+    path = train(output_dir)
     with mlflow.start_run(run_name="break-classifier-train"):
         log_domino_context()
         mlflow.log_metric("train_accuracy", float(model.score(X, y)))
-        info = mlflow.sklearn.log_model(model, "model", signature=infer_signature(df, model.predict(df)),
-                                        input_example=df, registered_model_name="break_classifier")
+        info = mlflow.pyfunc.log_model(
+            "model", python_model=_wrapper_cls()(), artifacts={"model": path},
+            pip_requirements=["mlflow", "scikit-learn", "joblib", "pandas", "numpy"],
+            registered_model_name="break_classifier")
     client = mlflow.MlflowClient()
     ver = max(int(v.version) for v in client.search_model_versions("name='break_classifier'"))
     client.set_registered_model_alias("break_classifier", "champion", str(ver))
