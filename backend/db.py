@@ -61,6 +61,8 @@ agents = Table(
     Column("registered_by", String),
     Column("last_seen", String),
     Column("record", JSON),
+    Column("bundle_id", String),
+    Column("governance", JSON),
 )
 
 agent_versions = Table(
@@ -156,6 +158,19 @@ approvals = Table(
     Column("created_at", String),
     Column("expires_at", String),
     Column("note", Text),
+    Column("run_id", String),
+    Column("governance_sync", String),
+)
+
+overrides = Table(
+    "overrides", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_id", String, index=True),
+    Column("agent_id", String, index=True),
+    Column("actor_user_id", String),
+    Column("actor_username", String),
+    Column("reason", Text),
+    Column("ts", String),
 )
 
 validation_records = Table(
