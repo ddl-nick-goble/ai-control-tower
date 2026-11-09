@@ -616,3 +616,160 @@ def test_ac2_cli_mock_run_without_classifier_still_reports_breaks(tmp_path):
     assert "TXN-007" in out, out
     assert "TXN-012" in out or "TXN-014" in out, out
     assert "unclassified" in low or "classifier" in low, out
+
+
+# ---------------------------------------------------------------- round 3: registry fallback contracts
+SECRET_URL = "https://secret-host.example/model"
+BRK = {"amount_diff": 10.0, "days_diff": 1, "missing_side": "none"}
+
+
+@pytest.fixture
+def reg_agent(monkeypatch):
+    """Fresh agent module, no endpoint / model path, so only the registry fallback is reachable."""
+    for k in ("BREAK_CLASSIFIER_ENDPOINT_URL", "BREAK_CLASSIFIER_ACCESS_KEY", "BREAK_CLASSIFIER_MODEL_PATH"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+    monkeypatch.setenv("RECON_AGENT_ID", LOCAL_NATIVE)
+    pytest.importorskip("mlflow.pyfunc")
+    agent = importlib.reload(_mod("agents.recon_agent.agent"))
+    return agent
+
+
+def test_ac_registry_attempted_at_most_once_per_process(reg_agent, monkeypatch):
+    import mlflow.pyfunc
+    calls = []
+
+    def loader(*a, **k):
+        calls.append(a)
+        raise RuntimeError("registry down")
+    monkeypatch.setattr(mlflow.pyfunc, "load_model", loader)
+    for _ in range(6):
+        cls, _src = reg_agent.classify_break(dict(BRK), [])
+        assert cls == "unclassified"
+    assert len(calls) == 1, f"registry loader called {len(calls)} times"
+
+
+def test_ac_registry_lookup_bounded_by_wall_clock(reg_agent, monkeypatch):
+    import mlflow.pyfunc
+    release = threading.Event()
+
+    def slow(*a, **k):
+        release.wait(30)
+        raise RuntimeError("late")
+    monkeypatch.setattr(mlflow.pyfunc, "load_model", slow)
+    t0 = time.monotonic()
+    try:
+        cls, _src = reg_agent.classify_break(dict(BRK), [])
+    finally:
+        release.set()
+    assert time.monotonic() - t0 < 12
+    assert cls == "unclassified"
+
+
+def test_ac_warnings_and_spans_do_not_leak_urls(reg_agent, monkeypatch):
+    import requests
+    posts = []
+
+    class ActH(BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", 0))
+            posts.append(self.rfile.read(n))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    class TokH(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"tok")
+
+        def log_message(self, *a):
+            pass
+    act = HTTPServer(("127.0.0.1", 0), ActH)
+    tok = HTTPServer(("127.0.0.1", 0), TokH)
+    for s in (act, tok):
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ACT_TRACES_URL", f"http://127.0.0.1:{act.server_port}/v1/traces")
+    monkeypatch.setenv("ACT_TOKEN_URL", f"http://127.0.0.1:{tok.server_port}/access-token")
+    monkeypatch.setenv("DOMINO_API_PROXY", "")
+    monkeypatch.delenv("LLM_GATEWAY_URL", raising=False)
+    monkeypatch.setenv("BREAK_CLASSIFIER_ENDPOINT_URL", SECRET_URL)
+    monkeypatch.setenv("BREAK_CLASSIFIER_ACCESS_KEY", "k")
+    real_post = requests.post
+
+    def failing_post(url, *a, **k):
+        if url == SECRET_URL:
+            raise requests.ConnectionError(f"HTTPSConnectionPool: Max retries exceeded with url {SECRET_URL}")
+        return real_post(url, *a, **k)
+    monkeypatch.setattr(requests, "post", failing_post)
+    import mlflow.pyfunc
+    monkeypatch.setattr(mlflow.pyfunc, "load_model",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError(f"cannot reach {SECRET_URL}")))
+    try:
+        result = reg_agent.run("Reconcile the GL and custodian ledgers")
+    finally:
+        act.shutdown()
+        tok.shutdown()
+    assert posts, "no spans exported"
+    assert "secret-host" not in json.dumps(result.get("warnings", []))
+    assert "secret-host" not in (result.get("summary") or "")
+    assert "secret-host" not in json.dumps(result, default=str)
+    for body in posts:
+        assert "secret-host" not in body.decode("utf-8", "replace")
+    assert any(r in (result.get("summary") or "") for r in BREAK_REFS)
+
+
+def test_ac_classify_notes_do_not_contain_urls(reg_agent, monkeypatch):
+    import requests
+    monkeypatch.setenv("BREAK_CLASSIFIER_ENDPOINT_URL", SECRET_URL)
+    monkeypatch.setenv("BREAK_CLASSIFIER_ACCESS_KEY", "k")
+    monkeypatch.setattr(requests, "post", lambda *a, **k: (_ for _ in ()).throw(
+        requests.ConnectionError(f"failed for url {SECRET_URL}")))
+    notes = []
+    reg_agent.classify_break(dict(BRK), notes)
+    assert notes
+    assert "secret-host" not in " ".join(notes)
+    assert "https://" not in " ".join(notes)
+
+
+def test_ac_mlflow_env_not_left_modified(reg_agent, monkeypatch):
+    import os
+    import mlflow.pyfunc
+    names = ("MLFLOW_HTTP_REQUEST_TIMEOUT", "MLFLOW_HTTP_REQUEST_MAX_RETRIES")
+    for n in names:
+        monkeypatch.delenv(n, raising=False)
+    monkeypatch.setattr(mlflow.pyfunc, "load_model",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    before = dict(os.environ)
+    reg_agent.classify_break(dict(BRK), [])
+    for n in names:
+        assert n not in os.environ, f"{n} leaked into os.environ"
+    assert dict(os.environ) == before
+
+
+def test_ac_mlflow_env_preserved_when_user_set(reg_agent, monkeypatch):
+    import os
+    import mlflow.pyfunc
+    monkeypatch.setenv("MLFLOW_HTTP_REQUEST_TIMEOUT", "77")
+    monkeypatch.setenv("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "9")
+    monkeypatch.setattr(mlflow.pyfunc, "load_model",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    reg_agent.classify_break(dict(BRK), [])
+    assert os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] == "77"
+    assert os.environ["MLFLOW_HTTP_REQUEST_MAX_RETRIES"] == "9"
+
+
+def test_ac_integration_doc_endpoint_row_describes_fallback_order():
+    rows = [l for l in (ROOT / "docs" / "INTEGRATION.md").read_text().splitlines()
+            if l.startswith("|") and "BREAK_CLASSIFIER_ENDPOINT_URL" in l]
+    assert rows
+    row = rows[0]
+    pos = [row.find(s) for s in ("BREAK_CLASSIFIER_MODEL_PATH", "champion", "unclassified")]
+    assert all(p >= 0 for p in pos), row
+    assert pos == sorted(pos), row
+    assert row.find("BREAK_CLASSIFIER_MODEL_PATH") > row.find("endpoint")
