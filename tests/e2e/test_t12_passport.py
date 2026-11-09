@@ -90,12 +90,75 @@ def test_ac11_fleet_shows_external(page, authed, shot, card_urls):
     expect(page.get_by_test_id("passport")).to_be_visible(timeout=15000)
     page.goto("./#/")
     row = page.get_by_test_id("fleet-row").filter(has_text=CARD["name"]).first
+    row.scroll_into_view_if_needed()
     expect(row).to_be_visible()
     expect(row.get_by_test_id("fleet-source")).to_contain_text("external", ignore_case=True)
-    expect(row.get_by_test_id("fleet-status")).to_contain_text(re.compile("pending_review|pending review", re.I))
+    expect(row.get_by_test_id("fleet-status")).to_have_text(re.compile(r"^\s*Pending review\s*$"))
+    shot("fleet")
     row.get_by_role("link", name=CARD["name"]).first.click()
     expect(page.get_by_test_id("passport")).to_be_visible()
     expect(page.get_by_test_id("passport-skill")).to_have_count(len(SKILL_IDS))
+    expect(page.get_by_test_id("agent-status")).to_have_text(re.compile(r"^\s*Pending review\s*$"))
+    shot("then")
+
+
+def test_ac11_external_identity_card_asserted(page, authed, shot, card_urls):
+    _register(page, card_urls["signed"])
+    expect(page.get_by_test_id("passport")).to_be_visible(timeout=15000)
+    asserted = page.get_by_test_id("identity-card-asserted")
+    expect(asserted).to_be_visible()
+    expect(asserted).to_contain_text(re.compile(r"asserted by the agent card", re.I))
+    expect(asserted).to_contain_text(re.compile(r"signed", re.I))
+    expect(page.get_by_test_id("identity-flag-no-distinct")).to_have_count(0)
+    shot("then")
+
+
+@pytest.fixture
+def tampered_url(tmp_path):
+    import socket
+    import subprocess
+    import sys
+    import time
+    card = json.loads((ROOT / "fixtures/external/agent-card-signed.json").read_text())
+    card["description"] = card["description"] + " (tampered)"
+    d = tmp_path / "srv" / ".well-known"
+    d.mkdir(parents=True)
+    (d / "agent-card.json").write_text(json.dumps(card))
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    proc = subprocess.Popen([sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1",
+                             "--directory", str(tmp_path / "srv")],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(40):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+            break
+        except OSError:
+            time.sleep(0.25)
+    yield f"http://127.0.0.1:{port}/.well-known/agent-card.json"
+    proc.terminate()
+    proc.wait(timeout=10)
+
+
+def test_ac11_invalid_signature_warning(page, authed, shot, tampered_url, card_urls):
+    _register(page, tampered_url)
+    sig = page.get_by_test_id("passport-signature")
+    expect(sig).to_be_visible(timeout=15000)
+    expect(sig).to_contain_text("Invalid signature")
+    expect(sig).to_have_attribute("data-signature", "invalid")
+    warn = sig.evaluate("""e => { for (let n = e; n; n = n.parentElement) {
+        if (/warn|alert/i.test(n.className || '') || n.getAttribute('data-severity') === 'warning') return true;
+      } return false; }""")
+    assert warn, "invalid signature has no warning style"
+    shot("then")
+
+
+def test_ac11_signature_attributes(page, authed, shot, card_urls):
+    _register(page, card_urls["signed"])
+    expect(page.get_by_test_id("passport-signature")).to_have_attribute("data-signature", "signed", timeout=15000)
+    _register(page, card_urls["unsigned"])
+    expect(page.get_by_test_id("passport-signature")).to_have_attribute("data-signature", "unsigned", timeout=15000)
     shot("then")
 
 
@@ -121,6 +184,7 @@ def test_ac11_errors_visible(page, authed, shot):
     err = page.get_by_test_id("register-error")
     expect(err).to_be_visible(timeout=15000)
     expect(err).to_contain_text(re.compile(r"not allowed", re.I))
+    assert not re.match(r"\s*\d{3}\b", err.inner_text()), f"error starts with a status code: {err.inner_text()!r}"
     shot("then")
 
 
