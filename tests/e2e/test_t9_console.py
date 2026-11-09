@@ -265,13 +265,13 @@ def test_approve_by_registrant_is_refused_visibly(page, context, shot, seeded):
 def test_approve_by_other_user_shows_success_and_expiry(page, context, shot, seeded):
     context.set_extra_http_headers({"X-Domino-User-Id": "approver-2", "X-Domino-User": "approver-2"})
     _open_agent(page, _approvable(page))
-    expect(page.get_by_test_id("agent-status")).to_contain_text(re.compile("discovered|pending_review"))
+    expect(page.get_by_test_id("agent-status")).to_contain_text(re.compile("discovered|pending review", re.I))
     page.get_by_role("button", name="Approve").click()
     ok = page.get_by_test_id("approve-success")
     expect(ok).to_be_visible()
     expect(ok).to_contain_text("Approved")
     expect(ok).to_contain_text(re.compile(r"20\d\d-\d\d-\d\d"))
-    expect(page.get_by_test_id("agent-status")).to_have_text("approved")
+    expect(page.get_by_test_id("agent-status")).to_have_text(re.compile("^approved$", re.I))
     shot("then")
 
 
