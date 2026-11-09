@@ -1,8 +1,90 @@
+diff --git a/agents/recon_agent/README.md b/agents/recon_agent/README.md
+index 41513a8..e7e87b6 100644
+--- a/agents/recon_agent/README.md
++++ b/agents/recon_agent/README.md
+@@ -17,8 +17,8 @@ Experiment: `act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME>` (root `
+ 
+ ## break_classifier endpoint (live)
+ 
+-Published as Domino sync endpoint `break-classifier` from registry model `break_classifier` version 2
+-(alias `champion`), model ID `6af239a468f40b2f5611dd6c`, hardware tier `small-model-api`.
++Published as Domino sync endpoint `break-classifier` from registry model `break_classifier`, serving the version
++currently behind alias `champion`, model ID `6af239a468f40b2f5611dd6c`, hardware tier `small-model-api`.
+ 
+ | Variable | Value |
+ |---|---|
+diff --git a/models/break_classifier/predict.py b/models/break_classifier/predict.py
+index 55adef3..5c4646f 100644
+--- a/models/break_classifier/predict.py
++++ b/models/break_classifier/predict.py
+@@ -15,7 +15,7 @@ def _model():
+ 
+ 
+ def predict(payload: dict = None, **kw) -> dict:
+-    d = payload if payload is not None else kw
+-    d = d.get("data", d)
+-    x = [[float(d.get(f, 0)) for f in FEATURES]]
+-    return {"class": str(_model().predict(x)[0])}
++    from models.break_classifier.train import validate_features
++    x, is_list = validate_features(payload if payload is not None else kw)
++    out = [{"class": str(c)} for c in _model().predict(x)]
++    return out if is_list else out[0]
 diff --git a/models/break_classifier/train.py b/models/break_classifier/train.py
-index 762f63d..decc1c0 100644
+index 762f63d..1898204 100644
 --- a/models/break_classifier/train.py
 +++ b/models/break_classifier/train.py
-@@ -38,19 +38,49 @@ def train(output_dir: str) -> str:
+@@ -15,6 +15,50 @@ FEATURES = ["amount_diff", "days_diff", "missing_side"]
+ MODEL_FILE = "break_classifier.joblib"
+ 
+ 
++def validate_features(payload):
++    """Validate a payload into (float64 ndarray [n, len(FEATURES)], is_list). Raises ValueError.
++
++    Shared by the pyfunc wrapper and predict.py. Self-contained (local imports) so it survives
++    being pickled by value into the logged model.
++    """
++    import numpy as np
++    import pandas as pd
++    feats = ["amount_diff", "days_diff", "missing_side"]
++    if isinstance(payload, dict) and "data" in payload and isinstance(payload["data"], (dict, list)):
++        payload = payload["data"]
++    is_list = not isinstance(payload, dict)
++    if isinstance(payload, pd.DataFrame):
++        df = payload
++    elif isinstance(payload, dict):
++        if not payload:
++            raise ValueError("empty input")
++        if any(isinstance(v, (list, tuple)) for v in payload.values()):
++            df = pd.DataFrame(payload)
++            is_list = True
++        else:
++            df = pd.DataFrame([payload])
++    elif isinstance(payload, (list, tuple)):
++        if len(payload) == 0:
++            raise ValueError("empty input")
++        df = pd.DataFrame(list(payload))
++    else:
++        raise ValueError("unsupported input type %s" % type(payload).__name__)
++    if len(df) == 0:
++        raise ValueError("empty input")
++    missing = [f for f in feats if f not in df.columns]
++    if missing:
++        raise ValueError("missing required feature(s): %s" % ", ".join(missing))
++    x = df[feats]
++    try:
++        x = x.apply(pd.to_numeric, errors="raise")
++    except (ValueError, TypeError) as e:
++        raise ValueError("non-numeric feature value: %s" % e) from e
++    arr = x.to_numpy(dtype="float64")
++    if not np.isfinite(arr).all():
++        raise ValueError("feature values must be finite (no NaN/inf)")
++    return arr, is_list
++
++
+ def _data(n=300, seed=0):
+     r = np.random.default_rng(seed)
+     t = np.c_[np.zeros(n), r.integers(1, 6, n), np.zeros(n)]
+@@ -38,19 +82,42 @@ def train(output_dir: str) -> str:
      return path
  
  
@@ -21,17 +103,10 @@ index 762f63d..decc1c0 100644
 +            self.model = joblib.load(context.artifacts["model"])
 +
 +        def predict(self, context, model_input, params=None):
-+            import pandas as pd
-+            if isinstance(model_input, dict):  # harness passes {"data": {...}} as a dict of scalars
-+                model_input = model_input.get("data", model_input)
-+                model_input = [model_input] if isinstance(model_input, dict) and not any(
-+                    isinstance(v, (list, tuple)) for v in model_input.values()) else model_input
-+            df = pd.DataFrame(model_input)
-+            x = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce").fillna(0.0)
-+            labels = [str(c) for c in self.model.predict(x.to_numpy(dtype="float64"))]
-+            # Same shape as models/break_classifier/predict.py: {"class": str}; one row -> one dict.
++            x, is_list = validate_features(model_input)
++            labels = [str(c) for c in self.model.predict(x)]
 +            out = [{"class": c} for c in labels]
-+            return out[0] if len(out) == 1 else out
++            return out if is_list else out[0]
 +
 +    return BreakClassifierPyfunc
 +
@@ -59,16 +134,18 @@ index 762f63d..decc1c0 100644
      client.set_registered_model_alias("break_classifier", "champion", str(ver))
 diff --git a/scripts/diag_break_endpoint.py b/scripts/diag_break_endpoint.py
 new file mode 100644
-index 0000000..359d3e2
+index 0000000..2455ee2
 --- /dev/null
 +++ b/scripts/diag_break_endpoint.py
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,32 @@
 +"""Diagnostic: POST variants to the break_classifier endpoint; print only status + body (never the key)."""
 +import itertools, os, sys
 +import requests
 +
-+URL = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL",
-+                     "https://se-demo.domino.tech/models/6af239a468f40b2f5611dd6c/latest/model")
++ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
++URL = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL") or (ARGS[0] if ARGS else None)
++if not URL:
++    sys.exit("error: endpoint URL required: set BREAK_CLASSIFIER_ENDPOINT_URL or pass it as an argument")
 +KEY = os.environ["BREAK_CLASSIFIER_ACCESS_KEY"]
 +
 +
@@ -88,5 +165,132 @@ index 0000000..359d3e2
 +    vals = [(5, "int"), (5.5, "float")]
 +    for (a, an), (d, dn), (m, mn) in itertools.product(vals, vals, [(0, "int"), (1.0, "float")]):
 +        cases.append({"amount_diff": a, "days_diff": d, "missing_side": m})
++if "--negative" in sys.argv:  # bad payloads must come back as 4xx/5xx, never a class
++    cases = [{"amount_diff": 12, "missing_side": 0},
++             {"amount_diff": "abc", "days_diff": 2, "missing_side": 0}]
 +for c in cases:
 +    print(c, "->", *call(c))
+diff --git a/tests/test_t7l2_classifier_inputs.py b/tests/test_t7l2_classifier_inputs.py
+new file mode 100644
+index 0000000..8e9ce75
+--- /dev/null
++++ b/tests/test_t7l2_classifier_inputs.py
+@@ -0,0 +1,118 @@
++"""T-7L2: break_classifier input contracts (fail loudly on bad input, never a confident guess)."""
++import os
++import re
++import subprocess
++import sys
++from types import SimpleNamespace
++
++import pytest
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, ROOT)
++
++from models.break_classifier import train as train_mod  # noqa: E402
++
++
++@pytest.fixture(scope="module")
++def model_path(tmp_path_factory):
++    return train_mod.train(str(tmp_path_factory.mktemp("bc")))
++
++
++@pytest.fixture()
++def wrapper(model_path):
++    w = train_mod._wrapper_cls()()
++    ctx = SimpleNamespace(artifacts={"model": model_path})
++    w.load_context(ctx)
++    return lambda inp: w.predict(ctx, inp)
++
++
++def _is_cls(r):
++    return isinstance(r, dict) and set(r) == {"class"} and isinstance(r["class"], str)
++
++
++# ---- 1. pyfunc wrapper
++def test_ac1_wrapper_ints(wrapper):
++    assert _is_cls(wrapper({"amount_diff": 12, "days_diff": 2, "missing_side": 0}))
++
++
++def test_ac1_wrapper_floats(wrapper):
++    assert _is_cls(wrapper({"amount_diff": 12.5, "days_diff": 2.0, "missing_side": 0.0}))
++
++
++def test_ac1_wrapper_mixed(wrapper):
++    assert _is_cls(wrapper({"amount_diff": 12.5, "days_diff": 2, "missing_side": 1.0}))
++
++
++def test_ac1_wrapper_list_of_two_returns_list(wrapper):
++    rows = [{"amount_diff": 12, "days_diff": 2, "missing_side": 0},
++            {"amount_diff": 1200.0, "days_diff": 0, "missing_side": 1}]
++    out = wrapper(rows)
++    assert isinstance(out, list) and len(out) == 2 and all(_is_cls(r) for r in out)
++
++
++def test_ac1_wrapper_list_of_one_returns_list(wrapper):
++    out = wrapper([{"amount_diff": 12, "days_diff": 2, "missing_side": 0}])
++    assert isinstance(out, list) and len(out) == 1 and _is_cls(out[0])
++
++
++def test_ac1_wrapper_missing_days_diff_raises_naming_it(wrapper):
++    with pytest.raises(ValueError, match="days_diff"):
++        wrapper({"amount_diff": 12, "missing_side": 0})
++
++
++def test_ac1_wrapper_non_numeric_raises(wrapper):
++    with pytest.raises(ValueError):
++        wrapper({"amount_diff": "abc", "days_diff": 2, "missing_side": 0})
++
++
++@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
++def test_ac1_wrapper_non_finite_raises(wrapper, bad):
++    with pytest.raises(ValueError):
++        wrapper({"amount_diff": bad, "days_diff": 2, "missing_side": 0})
++
++
++def test_ac1_wrapper_empty_list_raises(wrapper):
++    with pytest.raises(ValueError):
++        wrapper([])
++
++
++# ---- 2. predict.predict
++@pytest.fixture()
++def predict_fn(model_path, monkeypatch):
++    monkeypatch.setenv("BREAK_CLASSIFIER_MODEL_PATH", model_path)
++    from models.break_classifier.predict import predict
++    return predict
++
++
++def test_ac2_predict_valid_ints(predict_fn):
++    assert _is_cls(predict_fn({"amount_diff": 12, "days_diff": 2, "missing_side": 0}))
++
++
++def test_ac2_predict_missing_feature_raises_naming_it(predict_fn):
++    with pytest.raises(ValueError, match="days_diff"):
++        predict_fn({"amount_diff": 12, "missing_side": 0})
++
++
++def test_ac2_predict_non_numeric_raises(predict_fn):
++    with pytest.raises(ValueError):
++        predict_fn({"amount_diff": "abc", "days_diff": 2, "missing_side": 0})
++
++
++# ---- 3. diag script
++DIAG = os.path.join(ROOT, "scripts", "diag_break_endpoint.py")
++
++
++def test_ac3_diag_requires_url():
++    env = {k: v for k, v in os.environ.items()
++           if k not in ("BREAK_CLASSIFIER_ENDPOINT_URL", "BREAK_CLASSIFIER_ACCESS_KEY")}
++    env["PYTHONDONTWRITEBYTECODE"] = "1"
++    env["BREAK_CLASSIFIER_ACCESS_KEY"] = "dummy"
++    p = subprocess.run([sys.executable, DIAG], env=env, capture_output=True, text=True,
++                       timeout=60, cwd=ROOT)
++    assert p.returncode != 0
++    assert "BREAK_CLASSIFIER_ENDPOINT_URL" in (p.stdout + p.stderr)
++
++
++def test_ac3_diag_no_hardcoded_domino_host():
++    with open(DIAG) as f:
++        assert not re.search(r"domino\.tech", f.read())
