@@ -11,6 +11,14 @@ export function fmtJson(v) {
   return typeof v === 'string' ? v : JSON.stringify(v, null, 2)
 }
 
+const STATUS_LABELS = { pending_review: 'Pending review', discovered: 'Discovered', approved: 'Approved', shadow: 'Shadow' }
+export function fmtStatus(s) {
+  if (!s) return 'Unknown'
+  if (STATUS_LABELS[s]) return STATUS_LABELS[s]
+  const t = String(s).replace(/_/g, ' ')
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
 // Never show provider/model ids from trace or finding data.
 const MODEL_RE = /(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[.:/_-])*(?:claude|anthropic|sonnet|haiku|opus)[A-Za-z0-9]*(?:[.:/_-][A-Za-z0-9]+)*/gi
 export function clean(v) {

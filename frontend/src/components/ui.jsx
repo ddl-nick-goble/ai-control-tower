@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
-import { clean } from '../format'
+import { clean, fmtStatus } from '../format'
 
 export function TierBadge({ tier }) {
   if (tier == null) return <span className="badge tier-none" data-testid="tier-badge" data-tier="">Unrated</span>
@@ -8,7 +8,7 @@ export function TierBadge({ tier }) {
 }
 
 export function StatusPill({ status, testid }) {
-  return <span className={`pill status-${status}`} data-testid={testid}>{status || 'unknown'}</span>
+  return <span className={`pill status-${status}`} data-testid={testid}>{fmtStatus(status)}</span>
 }
 
 export function Panel({ title, children, testid, aside, className }) {

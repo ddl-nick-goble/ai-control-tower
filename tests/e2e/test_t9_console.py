@@ -142,11 +142,16 @@ def test_ac12_fleet_tier1_badge_one_open_finding_links_to_timeline(page, shot, s
 
 def test_fleet_columns_filters_and_register_button(page, shot, seeded):
     page.goto("./#/")
-    rows = page.get_by_test_id("fleet-row")
+    all_rows = page.get_by_test_id("fleet-row")
+    ext = re.compile(r"^\s*external\s*$", re.I)
+    # Order-independent: external agents registered by other modules may be present.
+    rows = all_rows.filter(has_not=page.get_by_test_id("fleet-source").filter(has_text=ext))
     expect(rows).to_have_count(12)
+    n_ext = all_rows.count() - 12
+    expect(all_rows.filter(has=page.get_by_test_id("fleet-source").filter(has_text=ext))).to_have_count(n_ext)
     for col in ("Source", "Name", "Owner", "Tier", "Status", "Open findings", "Last seen"):
         expect(page.get_by_role("columnheader", name=re.compile(col, re.I))).to_be_visible()
-    first = rows.first
+    first = all_rows.first
     for tid in ("fleet-source", "fleet-name", "fleet-owner", "tier-badge", "fleet-status", "open-findings",
                 "fleet-last-seen"):
         expect(first.get_by_test_id(tid)).to_be_visible()
@@ -158,6 +163,7 @@ def test_fleet_columns_filters_and_register_button(page, shot, seeded):
     expect(rows).to_have_count(3)
     page.get_by_test_id("source-filter").select_option("")
     expect(rows).to_have_count(12)
+    expect(all_rows).to_have_count(12 + n_ext)
     page.get_by_test_id("tier-filter").select_option("1")
     expect(rows).to_have_count(2)  # treasury-sweep-agent, payments-fraud-screener
     for r in rows.all():
@@ -259,13 +265,13 @@ def test_approve_by_registrant_is_refused_visibly(page, context, shot, seeded):
 def test_approve_by_other_user_shows_success_and_expiry(page, context, shot, seeded):
     context.set_extra_http_headers({"X-Domino-User-Id": "approver-2", "X-Domino-User": "approver-2"})
     _open_agent(page, _approvable(page))
-    expect(page.get_by_test_id("agent-status")).to_contain_text(re.compile("discovered|pending_review"))
+    expect(page.get_by_test_id("agent-status")).to_contain_text(re.compile("discovered|pending review", re.I))
     page.get_by_role("button", name="Approve").click()
     ok = page.get_by_test_id("approve-success")
     expect(ok).to_be_visible()
     expect(ok).to_contain_text("Approved")
     expect(ok).to_contain_text(re.compile(r"20\d\d-\d\d-\d\d"))
-    expect(page.get_by_test_id("agent-status")).to_have_text("approved")
+    expect(page.get_by_test_id("agent-status")).to_have_text(re.compile("^approved$", re.I))
     shot("then")
 
 

@@ -29,3 +29,4 @@ def db_mod(db_env):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: needs a live deployment; skipped unless its env var is set")
+    config.addinivalue_line("markers", "default_hosts: run with ACT_EXTERNAL_ALLOW_HOSTS unset")

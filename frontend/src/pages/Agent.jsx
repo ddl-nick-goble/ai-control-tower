@@ -2,6 +2,7 @@ import React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { clean, fmtTs } from '../format'
+import Passport from '../components/Passport'
 import Markdown from '../components/Markdown'
 import EvidencePack from '../components/EvidencePack'
 import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
@@ -28,18 +29,27 @@ function TierCard({ agent }) {
   )
 }
 
-function Identity({ agent }) {
+function wrapId(s) {
+  return String(s).split(/([/:@#?&=._-])/).map((part, i) => (i % 2 ? <React.Fragment key={i}>{part}<wbr /></React.Fragment> : part))
+}
+
+export function Identity({ agent }) {
   const id = agent.identity || {}
-  const noDistinct = !agent.identity || !id.type || id.type === 'none' || id.distinct === false
+  const asserted = id.type === 'a2a-card'
+  const sigText = { signed: 'signed and verified', unsigned: 'unsigned', invalid: 'signature invalid' }[agent.card_signature] || 'unsigned'
+  const noDistinct = !asserted && (!agent.identity || !id.type || id.type === 'none' || id.distinct === false)
   return (
     <Panel title="Identity binding" testid="identity-panel">
+      {asserted && (
+        <div className="alert asserted" data-testid="identity-card-asserted">Identity asserted by the agent card ({sigText})</div>
+      )}
       {noDistinct && (
         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
       )}
       <dl className="kv">
         <dt>Type</dt><dd>{id.type || '-'}</dd>
         <dt>Issuer</dt><dd>{id.issuer || '-'}</dd>
-        <dt>Principal id</dt><dd>{id.principal || id.subject || '-'}</dd>
+        <dt>Principal id</dt><dd className="wrap-id">{wrapId(id.principal || id.subject || '-')}</dd>
       </dl>
     </Panel>
   )
@@ -213,6 +223,7 @@ function AgentView({ id }) {
         <h1>{clean(a.name)}</h1>
       </div>
       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
+      {a.origin === 'external' && <Passport agent={a} />}
       <div className="grid">
         <TierCard agent={a} />
         <Identity agent={a} />

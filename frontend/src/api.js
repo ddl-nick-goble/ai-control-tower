@@ -30,3 +30,7 @@ export const api = {
   }),
   timeline: (runId) => request(`runs/${encodeURIComponent(runId)}/timeline`),
 }
+
+export const registerExternal = (body) => request('agents/external', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+})

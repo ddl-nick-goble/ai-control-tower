@@ -57,7 +57,9 @@ def app_session(tmp_path_factory):
     logf = open(log_path, "w")
     proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
                             env={**env, "ACT_DB": db_path, "ACT_DB_PREWARM_COUNT": "0", "PORT": PORT,
-                                 "ACT_EVIDENCE_DIR": str(tmp_path_factory.mktemp("act-evidence"))},
+                                 "ACT_EVIDENCE_DIR": str(tmp_path_factory.mktemp("act-evidence")),
+                                 "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
+                                 "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")},
                             start_new_session=True)
     try:
         url = None
@@ -102,3 +104,40 @@ def base_url(app_session):
 def seeded(app_session):
     """ids from the seed: recon_id, treasury_id, run_id."""
     return app_session
+
+
+# ---- T-12: fixture A2A card servers ----------------------------------------------------------
+import socket  # noqa: E402
+
+
+def _start_card_server(signed):
+    for _ in range(5):
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            port = sk.getsockname()[1]
+        cmd = [sys.executable, str(ROOT / "fixtures" / "external" / "serve.py"), "--port", str(port)]
+        if signed:
+            cmd.append("--signed")
+        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(40):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+                return proc, f"http://127.0.0.1:{port}/.well-known/agent-card.json"
+            except OSError:
+                time.sleep(0.25)
+        proc.terminate()
+    raise RuntimeError("card server did not start")
+
+
+@pytest.fixture(scope="session")
+def card_urls():
+    servers = [_start_card_server(False), _start_card_server(True)]
+    try:
+        yield {"unsigned": servers[0][1], "signed": servers[1][1]}
+    finally:
+        for proc, _ in servers:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()

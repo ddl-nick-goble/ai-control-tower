@@ -32,7 +32,8 @@ def list_agents(source: str | None = None, tier: int | None = None, include_shad
                                  .group_by(db.findings.c.agent_id)).all())
     return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
              "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
-             "open_findings": int(open_f.get(r.id, 0))} for r in rows]
+             "open_findings": int(open_f.get(r.id, 0)),
+             "origin": (r.record or {}).get("origin", "internal")} for r in rows]
 
 
 @router.get("/api/agents/{agent_id}")
