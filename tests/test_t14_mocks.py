@@ -590,3 +590,29 @@ def test_ac2_cli_mock_run_names_real_breaks(trained_model, tmp_path):
     assert "no breaks found" not in out.lower(), out
     assert "TXN-007" in out, out
     assert "TXN-012" in out or "TXN-014" in out, out
+
+
+def test_ac2_cli_mock_run_without_classifier_still_reports_breaks(tmp_path):
+    import os
+    import subprocess
+    repo = Path(__file__).resolve().parent.parent
+    env = dict(os.environ)
+    for k in ("ACT_TRACES_URL", "BREAK_CLASSIFIER_ENDPOINT_URL",
+              "BREAK_CLASSIFIER_ACCESS_KEY", "BREAK_CLASSIFIER_MODEL_PATH", "DOMINO_RUN_ID"):
+        env.pop(k, None)
+    env.update({
+        "ACT_LLM_PROVIDER": "mock",
+        "RECON_AGENT_ID": "local-recon-agent",
+        "MLFLOW_TRACKING_URI": f"file:{tmp_path}/empty-mlruns",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    r = subprocess.run(
+        [sys.executable, "-m", "agents.recon_agent", "Reconcile the GL and custodian ledgers"],
+        cwd=str(repo), env=env, capture_output=True, text=True, timeout=120)
+    out = r.stdout
+    low = (out + r.stderr).lower()
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert "no breaks found" not in out.lower(), out
+    assert "TXN-007" in out, out
+    assert "TXN-012" in out or "TXN-014" in out, out
+    assert "unclassified" in low or "classifier" in low, out
