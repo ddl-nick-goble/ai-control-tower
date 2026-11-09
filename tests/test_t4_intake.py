@@ -30,26 +30,49 @@ class _Resp:
         pass
 
 
+STATE = {}
+OTHER_ID = "dom-agent-other"
+
+
+def _item(nid, name, pub, owner):
+    return {"id": nid, "agentId": nid, "appId": nid, "name": name,
+            "ownerName": owner, "owner": owner, "status": "Running",
+            "description": "stub", "versions": [], "lastUpdated": "2026-11-05T00:00:00Z",
+            "currentVersion": {"versionNumber": 1, "currentInstance": {"publisher": {"name": pub}}}}
+
+
 def _fake_http(url, *a, **k):
     url = str(url)
     if "8899" in url:
         return _Resp("tok")
-    item = {"id": DOMINO_ID, "agentId": DOMINO_ID, "appId": DOMINO_ID, "name": "domino-deployed-agent",
-            "ownerName": "dom-owner", "owner": "dom-owner", "status": "Running",
-            "description": "stub", "versions": [], "lastUpdated": "2026-11-05T00:00:00Z"}
-    return _Resp({"agents": [item], "apps": [], "items": [item], "data": [item], "results": [item]})
+    if url.endswith("/api/apps/v1/apps"):
+        params = dict(k.get("params") or {})
+        STATE.setdefault("calls", []).append(params)
+        if STATE.get("apps_status"):
+            return _Resp({"error": "boom"}, STATE["apps_status"])
+        pub, owner = STATE.get("publisher", "dom-owner"), STATE.get("owner", "dom-owner")
+        mine, other = _item(DOMINO_ID, "domino-deployed-agent", pub, owner), _item(OTHER_ID, "other-project-agent", "someone", "someone")
+        pid = params.get("projectId")
+        items = [mine, other] if pid is None else ([mine] if pid == STATE["project"] else [other])
+        return _Resp({"items": items})
+    return _Resp({"items": []})
 
 
 @pytest.fixture
 def env(db_env, monkeypatch, tmp_path):
+    STATE.clear()
+    STATE["project"] = "proj-123"
     monkeypatch.setenv("DOMINO_API_HOST", "http://domino.invalid")
+    monkeypatch.setenv("DOMINO_PROJECT_ID", "proj-123")
+    for k in ("ACT_DOMINO_PROJECT_ID", "ACT_DOMINO_SCOPE", "ACT_SERVICE_ACCOUNTS", "DOMINO_STARTING_USERNAME"):
+        monkeypatch.delenv(k, raising=False)
     for p in ("AWS", "GOOGLE", "MICROSOFT", "DATABRICKS"):
         monkeypatch.delenv(f"ACT_LIVE_{p}", raising=False)
     import requests
     monkeypatch.setattr(requests, "get", _fake_http)
-    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: _fake_http(u))
-    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: _fake_http(u))
-    monkeypatch.setattr(requests.Session, "get", lambda self, u, *a, **k: _fake_http(u))
+    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: _fake_http(u, **k))
+    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: _fake_http(u, **k))
+    monkeypatch.setattr(requests.Session, "get", lambda self, u, *a, **k: _fake_http(u, **k))
     return tmp_path
 
 
@@ -86,9 +109,12 @@ def test_ac1_adapters_exist_with_interface():
     for mod in ("base", "aws", "google", "microsoft", "databricks", "domino"):
         importlib.import_module(f"adapters.{mod}")
     base = importlib.import_module("adapters.base")
-    for n in ("list_agents", "get_agent", "list_runs"):
-        assert hasattr(base, "SourceAgent") or True
     assert hasattr(base, "SourceAgent") and hasattr(base, "SourceRun")
+    for mod in ("aws", "google", "microsoft", "databricks", "domino"):
+        m = importlib.import_module(f"adapters.{mod}")
+        cls = [v for k, v in vars(m).items() if k.endswith("Adapter") and isinstance(v, type) and k != "AdapterBase"][0]
+        for n in ("list_agents", "get_agent", "list_runs"):
+            assert callable(getattr(cls, n, None)), (mod, n)
 
 
 @pytest.mark.parametrize("plat,count", [("aws", 3), ("google", 3), ("microsoft", 3), ("databricks", 2)])
@@ -246,11 +272,226 @@ def test_ac3_changed_tools_and_permissions_retier_with_audit(client, env, monkey
             m["criteria"] = {"autonomy": "autonomous", "consequence": "moves_money",
                              "human_in_loop": False, "customer_impact": "high"}
     path.write_text(json.dumps(d))
-    reg = fx / "aws" / "list-discoverable-registry-records.json"
     _intake()
     after = client.get(f"/api/agents/{a['id']}").json()
     assert after["manifest"] != before["manifest"]
     assert after["tier"] < before["tier"]
     ev = [r._mapping for r in _rows(db.audit_events) if r._mapping["action"] == "retier" and r._mapping["target"] == a["id"]]
     assert ev, "expected a retier audit event"
-    assert len(_rows(db.manifests)) == len({r._mapping["agent_id"] for r in _rows(db.manifests)}) or True
+    mrows = [r._mapping for r in _rows(db.manifests) if r._mapping["agent_id"] == a["id"]]
+    assert len(mrows) >= 1
+    assert any(r["content"] == after["manifest"] for r in mrows)
+    assert any("transfer_funds" in json.dumps(r["content"]) for r in mrows)
+
+
+# ---------------------------------------------------------------- round 2 contracts
+
+def _domino_agents():
+    return importlib.import_module("adapters.domino").DominoAdapter().list_agents()
+
+
+def _apps_calls():
+    return STATE.get("calls", [])
+
+
+def test_ac1_domino_default_scope_is_current_project(env):
+    ags = _domino_agents()
+    assert [a.native_id for a in ags] == [DOMINO_ID]
+    assert _apps_calls() and all(c.get("projectId") == "proj-123" for c in _apps_calls())
+
+
+def test_ac1_domino_act_project_id_overrides(env, monkeypatch):
+    monkeypatch.setenv("ACT_DOMINO_PROJECT_ID", "proj-other")
+    ags = _domino_agents()
+    assert [a.native_id for a in ags] == [OTHER_ID]
+    assert all(c.get("projectId") == "proj-other" for c in _apps_calls())
+
+
+def test_ac1_domino_scope_all_sends_no_project_filter(env, monkeypatch):
+    monkeypatch.setenv("ACT_DOMINO_SCOPE", "all")
+    ags = _domino_agents()
+    assert {a.native_id for a in ags} == {DOMINO_ID, OTHER_ID}
+    assert _apps_calls() and all("projectId" not in c for c in _apps_calls())
+
+
+def test_ac1_domino_identity_distinct_for_service_account(env, monkeypatch):
+    monkeypatch.setenv("ACT_SERVICE_ACCOUNTS", "svc-act-recon, other-svc")
+    STATE.update(publisher="svc-act-recon", owner="svc-act-recon")
+    ident = _domino_agents()[0].identity
+    assert ident["distinct"] is True
+    assert ident["type"] == "domino_service_account"
+    assert ident["principal"] == "svc-act-recon"
+
+
+def test_ac1_domino_identity_not_distinct_for_human_publisher(env, monkeypatch):
+    monkeypatch.setenv("ACT_SERVICE_ACCOUNTS", "svc-act-recon")
+    STATE.update(publisher="alice", owner="alice")
+    ident = _domino_agents()[0].identity
+    assert ident["distinct"] is False
+    assert ident["principal"] == "alice"
+    assert ident["type"] != "domino_service_account"
+
+
+def test_ac1_domino_service_account_flows_to_record(client, monkeypatch):
+    monkeypatch.setenv("ACT_SERVICE_ACCOUNTS", "svc-act-recon")
+    STATE.update(publisher="svc-act-recon", owner="svc-act-recon")
+    _intake()
+    a = _by_name(client, "domino-deployed-agent")
+    rec = client.get(f"/api/agents/{a['id']}").json()
+    assert rec["identity"]["distinct"] is True
+    assert rec["identity"]["type"] == "domino_service_account"
+    assert rec["identity"]["principal"] == "svc-act-recon"
+
+
+# -- POST /api/agents/intake takes raw source agents and normalizes server-side
+
+def _raw_aws(name):
+    import dataclasses
+    mod = importlib.import_module("adapters.aws")
+    cls = [v for k, v in vars(mod).items() if k.endswith("Adapter") and isinstance(v, type)][0]
+    sa = next(x for x in cls().list_agents() if x.name == name)
+    return json.loads(json.dumps(dataclasses.asdict(sa), default=str))
+
+
+def _post_raw(client, raws, headers=HDR):
+    # body key is not fixed by the contract text: send the same list under both plausible keys
+    return client.post("/api/agents/intake", json={"agents": raws, "records": raws}, headers=headers)
+
+
+def test_ac1_intake_route_recomputes_id_and_tier_server_side(client):
+    raw = _raw_aws("treasury-sweep-agent")
+    raw["tier"] = 4
+    raw["id"] = "act:aws:forged"
+    r = _post_raw(client, [raw])
+    assert r.status_code == 200, r.text
+    expected = "act:aws:" + hashlib.sha256(raw["native_id"].encode()).hexdigest()[:16]
+    ids = {a["id"] for a in _fleet(client)}
+    assert expected in ids and "act:aws:forged" not in ids
+    rec = client.get(f"/api/agents/{expected}").json()
+    assert rec["id"] == expected
+    assert rec["tier"] != 4 and rec["tier"] == 1
+
+
+@pytest.mark.parametrize("drop", ["native_id", "platform"])
+def test_ac1_intake_route_missing_source_fields_422(client, drop):
+    raw = _raw_aws("treasury-sweep-agent")
+    del raw[drop]
+    assert _post_raw(client, [raw]).status_code == 422
+
+
+def test_ac1_intake_route_anonymous_401(client):
+    assert _post_raw(client, [_raw_aws("treasury-sweep-agent")], headers={}).status_code == 401
+
+
+# -- audit actor and retier on every manifest change
+
+def _audit_after(since_id):
+    from backend import db
+    return [r._mapping for r in _rows(db.audit_events) if r._mapping["id"] > since_id]
+
+
+def _max_audit_id():
+    from backend import db
+    return max([r._mapping["id"] for r in _rows(db.audit_events)] or [0])
+
+
+def _actors(ev):
+    return {ev["actor_user_id"], ev["actor_username"]}
+
+
+def _edit_aws(fx, name, fn):
+    path = fx / "aws" / "list-agent-runtimes.json"
+    d = json.loads(path.read_text())
+    for rt in d["agentRuntimes"]:
+        if rt["agentRuntimeName"] == name:
+            fn(rt["metadata"])
+    path.write_text(json.dumps(d))
+
+
+@pytest.fixture
+def fx(env, monkeypatch):
+    d = env / "fixtures"
+    shutil.copytree(ROOT / "fixtures", d)
+    monkeypatch.setenv("ACT_FIXTURES_DIR", str(d))
+    return d
+
+
+def test_ac3_retier_when_tier_unchanged_has_from_to_and_actor(client, fx, monkeypatch):
+    from backend import db
+    monkeypatch.setenv("DOMINO_STARTING_USERNAME", "job-runner")
+    _intake()
+    a = _by_name(client, "treasury-sweep-agent")
+    mark = _max_audit_id()
+    _edit_aws(fx, "treasury-sweep-agent", lambda m: m["tools"].append("lookup_note"))
+    _intake()
+    after = client.get(f"/api/agents/{a['id']}").json()
+    assert "lookup_note" in json.dumps(after["manifest"])
+    assert after["tier"] == 1
+    ev = [e for e in _audit_after(mark) if e["action"] == "retier" and e["target"] == a["id"]]
+    assert len(ev) == 1, ev
+    e = ev[0]
+    assert "job-runner" in _actors(e)
+    assert "system:intake" not in _actors(e)
+    assert set(("from", "to")) <= set(e["detail"])
+    assert str(e["detail"]["from"]) == "1" and str(e["detail"]["to"]) == "1"
+
+
+def test_ac3_inprocess_audit_events_record_caller_not_system(client, fx, monkeypatch):
+    monkeypatch.setenv("DOMINO_STARTING_USERNAME", "job-runner")
+    _intake()
+    a = _by_name(client, "trade-break-triage")
+    mark = _max_audit_id()
+
+    def esc(m):
+        m["tools"].append("transfer_funds")
+        m["value_limits"] = {"transfer_funds": {"amount": 5000000, "currency": "USD"}}
+        m["criteria"] = {"autonomy": "autonomous", "consequence": "moves_money",
+                         "human_in_loop": False, "customer_impact": "high"}
+    _edit_aws(fx, "trade-break-triage", esc)
+    _intake()
+    evs = [e for e in _audit_after(mark) if e["target"] == a["id"]]
+    assert any(e["action"] == "retier" for e in evs)
+    for e in evs:
+        assert "job-runner" in _actors(e), e
+        assert "system:intake" not in _actors(e)
+    retier = next(e for e in evs if e["action"] == "retier")
+    assert str(retier["detail"]["to"]) != str(retier["detail"]["from"])
+
+
+def test_ac3_http_intake_route_audit_actor_is_caller(client, fx):
+    raw = _raw_aws("treasury-sweep-agent")
+    assert _post_raw(client, [raw]).status_code == 200
+    mark = _max_audit_id()
+    raw2 = json.loads(json.dumps(raw))
+    raw2["tools"] = list(raw2["tools"]) + ["lookup_note"]
+    assert _post_raw(client, [raw2], headers={"X-Domino-User-Id": "u-http", "X-Domino-User": "http-user"}).status_code == 200
+    evs = _audit_after(mark)
+    ret = [e for e in evs if e["action"] == "retier"]
+    assert len(ret) == 1, evs
+    assert set(("from", "to")) <= set(ret[0]["detail"])
+    for e in evs:
+        assert "u-http" in _actors(e), e
+        assert "system:intake" not in _actors(e)
+
+
+# -- adapter failure is surfaced
+
+def test_ac1_domino_api_500_reported_in_intake_errors(client):
+    STATE["apps_status"] = 500
+    out = _intake()
+    assert out["errors"], out
+    assert any("domino" in str(e).lower() for e in out["errors"])
+
+
+def test_ac1_intake_main_exits_nonzero_when_adapter_fails(client, monkeypatch):
+    import runpy
+    STATE["apps_status"] = 500
+    monkeypatch.setenv("ACT_INTAKE_INPROCESS", "1")
+    mod = importlib.import_module("jobs.intake")
+    if hasattr(mod, "main"):
+        rc = mod.main()
+    else:  # no main(): execute the script entry point
+        with pytest.raises(SystemExit) as ei:
+            runpy.run_path(str(ROOT / "jobs" / "intake.py"), run_name="__main__")
+        rc = ei.value.code
+    assert rc not in (None, 0)
