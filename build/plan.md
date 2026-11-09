@@ -29,8 +29,8 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 
 | Id | ACs | Depends on | Touches | Builder | QA | Branch | Test baseline | Status |
 |----|-----|-----------|---------|---------|----|--------|---------------|--------|
-| T-1 | enables all (health, DB init, anon write rejected) | — | app.sh, requirements.txt, package.json, vite.config.js, backend/db.py, backend/domino_identity.py, backend/main.py, frontend/ scaffold, .gitignore, .env.example | domino-deploy (sonnet) | test-author, code-reviewer | task/T-1 | — | pending |
-| T-2 | AC-2, AC-3 (scorer) | — | schemas/, config/, backend/tiering.py, docs/BORROWED.md | builder | test-author, code-reviewer | task/T-2 | — | pending |
+| T-1 | enables all (health, DB init, anon write rejected) | — | app.sh, requirements.txt, package.json, vite.config.js, backend/db.py, backend/domino_identity.py, backend/main.py, frontend/ scaffold, .gitignore, .env.example | domino-deploy (sonnet) | test-author, code-reviewer | task/T-1 | 7cb6d7e | building |
+| T-2 | AC-2, AC-3 (scorer) | — | schemas/, config/, backend/tiering.py, docs/BORROWED.md | builder | test-author, code-reviewer | task/T-2 | 43fce0a | building |
 | T-3 | AC-1, AC-12 (data) | T-2 | fixtures/ | builder | test-author, code-reviewer | task/T-3 | — | pending |
 | T-5 | AC-4, AC-5 (backend) | T-1, T-2 | backend/otlp.py, backend/normalize_span.py, backend/chain.py, backend/routes/traces.py, backend/routes/runs.py | builder | test-author, code-reviewer | task/T-5 | — | pending |
 | T-7 | AC-8 (data), AC-10 (agent) | T-1 | models/, agents/, tracing_setup.py, experiment_setup.py | domino-setup (sonnet) + domino-deploy (sonnet) + builder | test-author, code-reviewer | task/T-7 | — | pending |
