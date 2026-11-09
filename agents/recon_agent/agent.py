@@ -4,8 +4,13 @@ Proposals only; ACT receives the OTel spans as evidence."""
 import json
 import logging
 import os
+import sys
 
 import requests
+
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from agents.recon_agent import llm, tools
 from agents.recon_agent.act_export import ActTraceBuffer
@@ -49,6 +54,8 @@ def classify_break(br: dict):
     r = requests.post(url, json={"data": payload}, auth=(key, key), timeout=30)
     r.raise_for_status()
     res = r.json().get("result")
+    if isinstance(res, (list, tuple)):  # registry (MLflow pyfunc) endpoints return {"result": ["<class>"]}
+        res = res[0] if res else None
     return str(res["class"] if isinstance(res, dict) else res), "endpoint"
 
 
