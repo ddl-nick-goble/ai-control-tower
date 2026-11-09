@@ -1,7 +1,11 @@
 """OTLP/HTTP trace ingest and audit-chain verification."""
+import hashlib
+import logging
+import os
+import zlib
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy import insert, select, update
@@ -12,11 +16,18 @@ from ..otlp import parse_request
 
 router = APIRouter()
 
-# Hooks called with run_id after a run's spans are ingested (T-6 drift detector registers here).
+# Hooks called with run_id after a run's new spans are committed (T-6 drift detector registers here).
 run_ingested_hooks: list = []
+
+log = logging.getLogger(__name__)
+DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 
 
 def register_run_hook(fn) -> None:
+    """Register fn(run_id), called after commit for each run that gained new spans.
+
+    A run may arrive in several batches, so a hook can fire more than once per run_id
+    and must be idempotent. Exceptions are logged and never fail the ingest."""
     run_ingested_hooks.append(fn)
 
 
@@ -24,29 +35,64 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def shadow_id(native: str) -> str:
+    return "act:shadow:" + hashlib.sha256(native.encode()).hexdigest()[:16]
+
+
+def _max_bytes() -> int:
+    try:
+        return int(os.environ.get("ACT_OTLP_MAX_BYTES", DEFAULT_MAX_BYTES))
+    except ValueError:
+        return DEFAULT_MAX_BYTES
+
+
 def ingest(spans: list[dict]) -> dict:
+    # Normalize before taking the lock.
+    prepared = []
+    for sp in spans:
+        native, explicit = native_agent_id(sp["attributes"], sp["resource"])
+        prepared.append((sp, native, explicit, normalize_span(sp, None, native)))
+
     matched_spans = 0
     runs: dict[str, dict] = {}
     items = []
     shadow: dict[str, dict] = {}
     with chain.lock, db.engine.begin() as conn:
+        chain.begin_write(conn)
         amap = {r.native_id: r.id for r in conn.execute(select(db.agents.c.id, db.agents.c.native_id))}
-        for sp in spans:
-            native, explicit = native_agent_id(sp["attributes"], sp["resource"])
+        seen = {(r.run_id, r.span_id) for r in conn.execute(
+            select(db.events.c.run_id, db.events.c.span_id).where(
+                db.events.c.run_id.in_({p[3]["run_id"] for p in prepared}),
+                db.events.c.span_id.is_not(None)))}
+        for sp, native, explicit, ev in prepared:
+            key = (ev["run_id"], sp.get("span_id") or None)
+            if key[1] is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
             act_id = amap.get(native) if native else None
             if act_id:
                 matched_spans += 1
-            elif native and explicit and native not in shadow:
-                shadow[native] = sp
-            ev = normalize_span(sp, act_id, native)
+            elif native and explicit:
+                act_id = shadow_id(native)
+                if native not in shadow:
+                    shadow[native] = {"id": act_id, "ev": ev}
+            ev["agent_id"] = act_id or "unknown"
             items.append({"run_id": ev["run_id"], "agent_id": ev["agent_id"], "ts": ev["ts"],
-                          "kind": ev["kind"], "raw_span": sp, "event": ev})
+                          "kind": ev["kind"], "span_id": key[1], "raw_span": sp, "event": ev})
             r = runs.setdefault(ev["run_id"], {"agent_id": act_id, "start": ev["ts"], "end": ev["ts"], "n": 0})
             r["agent_id"] = r["agent_id"] or act_id
             r["start"] = min(r["start"], ev["ts"])
             end = sp.get("end_ns") and iso(sp["end_ns"])
             r["end"] = max(r["end"], end or ev["ts"])
             r["n"] += 1
+        for native, sh in shadow.items():
+            pid = sh["id"]
+            if conn.execute(select(db.agents.c.id).where(db.agents.c.id == pid)).first() is None:
+                conn.execute(insert(db.agents).values(
+                    id=pid, source_platform="shadow", native_id=native, name=native,
+                    status="shadow", last_seen=sh["ev"]["ts"]))
+        # agents rows must exist before runs/events reference them
         chain.append_events(conn, items)
         for rid, r in runs.items():
             cur = conn.execute(select(db.runs).where(db.runs.c.id == rid)).first()
@@ -61,36 +107,65 @@ def ingest(spans: list[dict]) -> dict:
                     agent_id=cur.agent_id or r["agent_id"],
                     started_at=min(cur.started_at or r["start"], r["start"]),
                     ended_at=max(cur.ended_at or r["end"], r["end"]), record=rec))
-        for native, sp in shadow.items():
-            exists = [f for f in conn.execute(select(db.findings.c.detail).where(
-                db.findings.c.rule == "shadow_agent", db.findings.c.agent_id.is_(None)))
-                if (f.detail or {}).get("native_agent_id") == native]
-            if exists:
+        for native, sh in shadow.items():
+            pid, ev = sh["id"], sh["ev"]
+            if conn.execute(select(db.findings.c.id).where(
+                    db.findings.c.rule == "shadow_agent", db.findings.c.agent_id == pid)).first():
                 continue
             conn.execute(insert(db.findings).values(
-                agent_id=None, run_id=sp["trace_id"], severity="high", rule="shadow_agent",
+                agent_id=pid, run_id=ev["run_id"], severity="high", rule="shadow_agent",
                 type="shadow_agent", message=f"Traces received from unregistered agent id {native}",
-                status="open", created_at=_now(), span_id=sp["span_id"],
-                ts=items[0]["ts"], reason="gen_ai.agent.id not found in agent inventory",
-                observed_value=native, detail={"native_agent_id": native, "run_id": sp["trace_id"]}))
+                status="open", created_at=_now(), span_id=ev["span_id"], ts=ev["ts"],
+                detail={"native_agent_id": native, "run_id": ev["run_id"],
+                        "explanation": "gen_ai.agent.id not found in agent inventory"}))
     for rid in runs:
         for fn in list(run_ingested_hooks):
             try:
                 fn(rid)
             except Exception:  # hooks must not break ingest
-                import logging
-                logging.getLogger(__name__).exception("run hook failed")
+                log.exception("run hook failed")
     return {"accepted": len(spans), "agents_matched": matched_spans}
+
+
+async def _read_body(request: Request, limit: int) -> bytes:
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > limit:
+        raise HTTPException(413, "request body too large")
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > limit:
+            raise HTTPException(413, "request body too large")
+    body = bytes(buf)
+    enc = request.headers.get("content-encoding", "").strip().lower()
+    if enc == "gzip":
+        d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        try:
+            out = d.decompress(body, limit + 1)
+            if d.unconsumed_tail:
+                raise HTTPException(413, "request body too large")
+            out += d.flush()
+        except zlib.error as e:
+            raise HTTPException(400, f"invalid gzip body: {e}")
+        if len(out) > limit:
+            raise HTTPException(413, "request body too large")
+        return out
+    if enc not in ("", "identity"):
+        raise HTTPException(415, f"unsupported Content-Encoding {enc}")
+    return body
 
 
 @router.post("/v1/traces")
 async def post_traces(request: Request):
-    body = await request.body()
+    body = await _read_body(request, _max_bytes())
     try:
         spans = parse_request(body, request.headers.get("content-type", ""))
-    except Exception as e:
+    except ValueError as e:
         return JSONResponse({"detail": f"invalid OTLP payload: {e}"}, status_code=400)
-    return await run_in_threadpool(ingest, spans)
+    try:
+        return await run_in_threadpool(ingest, spans)
+    except (KeyError, TypeError, AttributeError) as e:
+        return JSONResponse({"detail": f"invalid span: {e}"}, status_code=400)
 
 
 @router.get("/api/audit/verify")

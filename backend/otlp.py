@@ -79,6 +79,15 @@ def parse_protobuf(body: bytes) -> list[dict]:
 
 
 def parse_request(body: bytes, content_type: str) -> list[dict]:
-    if "protobuf" in (content_type or "").lower():
-        return parse_protobuf(body)
-    return parse_json(body)
+    """Raises ValueError for any malformed payload or a span with an empty traceId."""
+    try:
+        if "protobuf" in (content_type or "").lower():
+            spans = parse_protobuf(body)
+        else:
+            spans = parse_json(body)
+    except Exception as e:
+        raise ValueError(str(e)) from e
+    for sp in spans:
+        if not sp["trace_id"] or not set(sp["trace_id"]) - {"0"}:
+            raise ValueError("span with empty traceId")
+    return spans
