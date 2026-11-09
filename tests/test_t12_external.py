@@ -67,9 +67,11 @@ def fixture_server():
 def card_server():
     servers = []
 
-    def start(body: bytes, delay=0.0, ctype="application/json"):
+    def start(body: bytes, delay=0.0, ctype="application/json", hits=None):
         class H(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
+                if hits is not None:
+                    hits.append(self.path)
                 time.sleep(delay)
                 try:
                     self.send_response(200)
@@ -93,8 +95,12 @@ def card_server():
 
 
 @pytest.fixture
-def env(db_env, monkeypatch):
+def env(db_env, monkeypatch, request):
     monkeypatch.setenv("ACT_TRUSTED_JWKS_PATH", str(EXT / "signing-key.pub.jwk.json"))
+    if request.node.get_closest_marker("default_hosts"):
+        monkeypatch.delenv("ACT_EXTERNAL_ALLOW_HOSTS", raising=False)
+    else:
+        monkeypatch.setenv("ACT_EXTERNAL_ALLOW_HOSTS", "127.0.0.1,localhost")
     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
         del sys.modules[m]
     return db_env
@@ -112,6 +118,22 @@ def _register(client, url, criteria=None, headers=HDR):
     if criteria is not None:
         body["criteria"] = criteria
     return client.post("/api/agents/external", json=body, headers=headers)
+
+
+def _register_bounded(client, url, limit=25):
+    """Register in a thread so a missing deadline fails the test instead of hanging it."""
+    out = {}
+
+    def run():
+        try:
+            out["r"] = _register(client, url, HIGH)
+        except Exception as e:  # noqa
+            out["e"] = e
+    t0 = time.monotonic()
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    th.join(limit)
+    return out.get("r"), time.monotonic() - t0
 
 
 def _create(client, url, criteria=None):
@@ -250,3 +272,148 @@ def test_ac11_audit_event_external_registered(client, fixture_server):
             db.audit_events.c.action == "external_registered")).fetchall()
     assert rows
     assert rows[0].actor_user_id == HDR["X-Domino-User-Id"]
+
+
+# ---- round 2: SSRF, total deadline, malformed key, non-numeric criteria ----
+
+@pytest.fixture
+def raw_server():
+    """Raw TCP server; handler(conn) runs per connection in a thread."""
+    state = {"socks": [], "stop": False}
+
+    def start(handler):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(8)
+        state["socks"].append(srv)
+
+        def loop():
+            while not state["stop"]:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                state["socks"].append(conn)
+                threading.Thread(target=handler, args=(conn,), daemon=True).start()
+        threading.Thread(target=loop, daemon=True).start()
+        return f"http://127.0.0.1:{srv.getsockname()[1]}{WK}"
+    yield start
+    state["stop"] = True
+    for s_ in state["socks"]:
+        try:
+            s_.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            s_.close()
+        except OSError:
+            pass
+
+
+@pytest.mark.default_hosts
+def test_ac11_ssrf_loopback_rejected_and_no_request_made(client, card_server):
+    hits = []
+    url = card_server(json.dumps(_card()).encode(), hits=hits)
+    r = _register(client, url, HIGH)
+    assert r.status_code == 422, r.text
+    assert "not allowed" in r.text.lower()
+    assert hits == []
+    port = url.split(":")[2].split("/")[0]
+    r = _register(client, f"http://localhost:{port}{WK}", HIGH)
+    assert r.status_code == 422, r.text
+    assert "not allowed" in r.text.lower()
+    assert hits == []
+
+
+@pytest.mark.default_hosts
+@pytest.mark.parametrize("url", [
+    "http://169.254.169.254/latest/meta-data",
+    "http://10.0.0.1/x",
+    "http://172.16.5.4/x",
+    "http://192.168.1.1/x",
+    "http://0.0.0.0/x",
+    "http://[::1]:%d/x" % 9,
+    "http://[fe80::1]/x",
+    "http://[fd00::1]/x",
+])
+def test_ac11_ssrf_internal_addresses_rejected(client, url):
+    r = _register(client, url, HIGH)
+    assert r.status_code == 422, r.text
+    assert "not allowed" in r.text.lower()
+
+
+@pytest.mark.default_hosts
+def test_ac11_ssrf_default_rejects_even_fixture_server(client, fixture_server):
+    r = _register(client, fixture_server(), HIGH)
+    assert r.status_code == 422, r.text
+
+
+def test_ac11_ssrf_allowlist_permits_fixture_server(client, fixture_server):
+    r = _register(client, fixture_server(), HIGH)
+    assert r.status_code in (200, 201), r.text
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:8899/access-token",
+    "http://localhost:8899/access-token",
+    "http://169.254.169.254/latest/meta-data",
+    "http://169.254.1.1/x",
+])
+def test_ac11_ssrf_always_blocked_even_when_allowlisted(client, monkeypatch, url):
+    monkeypatch.setenv("ACT_EXTERNAL_ALLOW_HOSTS", "127.0.0.1,localhost,169.254.169.254,169.254.1.1")
+    r = _register(client, url, HIGH)
+    assert r.status_code == 422, r.text
+
+
+def test_ac11_deadline_slow_drip_body_504(client, raw_server):
+    def drip(conn):
+        try:
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: 100000\r\n\r\n")
+            # "forever" for the purposes of the 6.5 s deadline; stop at 15 s so a
+            # missing deadline fails the test rather than hanging the suite.
+            for _ in range(30):
+                conn.sendall(b" ")
+                time.sleep(0.5)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+    url = raw_server(drip)
+    r, dt_ = _register_bounded(client, url)
+    assert r is not None, "request still running after 25s: no total deadline"
+    assert dt_ < 6.5, f"took {dt_:.1f}s: no total deadline"
+    assert r.status_code == 504, r.text
+
+
+def test_ac11_deadline_never_responds_504(client, raw_server):
+    def hang(conn):
+        try:
+            conn.recv(4096)
+            time.sleep(60)
+        except OSError:
+            pass
+    url = raw_server(hang)
+    r, dt_ = _register_bounded(client, url)
+    assert r is not None, "request still running after 25s: no total deadline"
+    assert dt_ < 6.5, f"took {dt_:.1f}s: no total deadline"
+    assert r.status_code == 504, r.text
+
+
+def test_ac11_malformed_first_trusted_key_still_verifies(env, monkeypatch, tmp_path, fixture_server):
+    good = json.loads((EXT / "signing-key.pub.jwk.json").read_text())
+    keys = good["keys"] if "keys" in good else [good]
+    p = tmp_path / "jwks.json"
+    p.write_text(json.dumps({"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "!!notbase64!!"}] + keys}))
+    monkeypatch.setenv("ACT_TRUSTED_JWKS_PATH", str(p))
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        rec = _create(c, fixture_server(signed=True))
+    assert rec["card_signature"] == "signed"
+
+
+@pytest.mark.parametrize("bad", ["high", "", None, [1], {"a": 1}])
+def test_ac11_non_numeric_criteria_422(client, fixture_server, bad):
+    r = _register(client, fixture_server(), dict(HIGH, decision_impact=bad))
+    assert r.status_code == 422, r.text
