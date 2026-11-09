@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://act.example/schemas/evidence-pack.json",
+  "title": "ACT Evidence Pack",
+  "description": "Seven sections in OCC 2026-54 order; each cites the source records.",
+  "type": "object",
+  "required": [
+    "agent_id",
+    "generated_at",
+    "sections"
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "identity_ownership"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "tier_criteria"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "permitted_actions"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "validation"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "monitoring_findings"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "approvals_overrides"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/section",
+          "properties": {
+            "id": {
+              "const": "records_retention"
+            }
+          }
+        }
+      ],
+      "items": false
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "section": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "content",
+        "citations"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {},
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "ref"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

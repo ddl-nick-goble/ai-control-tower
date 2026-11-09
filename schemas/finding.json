@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://act.example/schemas/finding.json",
+  "title": "ACT Finding",
+  "type": "object",
+  "required": [
+    "type",
+    "severity",
+    "agent_id"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "type": {
+      "enum": [
+        "scope_drift",
+        "shadow_agent"
+      ]
+    },
+    "severity": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "span_id": {
+      "type": "string"
+    },
+    "tool": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "open",
+        "acknowledged",
+        "resolved"
+      ]
+    },
+    "explanation": {
+      "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "tool_not_in_manifest",
+        "value_limit_exceeded"
+      ]
+    },
+    "observed_value": {
+      "type": "number"
+    },
+    "limit": {
+      "type": "number"
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "scope_drift"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "tool",
+          "span_id",
+          "ts",
+          "run_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reason": {
+            "const": "value_limit_exceeded"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "then": {
+        "required": [
+          "observed_value",
+          "limit"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# Tiering by consequence (OCC 2026-54). Each criterion scored 1 (low) to 5 (high).
+# Weighted mean of scores is mapped to tier: Tier 1 = highest consequence.
+score_range: {min: 1, max: 5}
+criteria:
+  decision_impact:     {weight: 0.20, description: "Materiality of decisions the agent makes or drives"}
+  financial_exposure:  {weight: 0.20, description: "Money the agent can move or commit"}
+  customer_impact:     {weight: 0.15, description: "Effect on customers"}
+  autonomy:            {weight: 0.15, description: "Degree of action without human review"}
+  data_sensitivity:    {weight: 0.10, description: "Sensitivity of data accessed"}
+  reversibility:       {weight: 0.10, description: "Difficulty of undoing actions"}
+  regulatory_exposure: {weight: 0.10, description: "Regulatory and legal exposure"}
+# Weighted mean >= min_score gives that tier; checked in order.
+tiers:
+  - {tier: 1, min_score: 4.0}
+  - {tier: 2, min_score: 3.0}
+  - {tier: 3, min_score: 2.0}
+  - {tier: 4, min_score: 0.0}
+no_benchmark_rule:
+  name: no_benchmark_rule
+  message: "Rule no_benchmark_rule: backtest and benchmark results are not valid tier inputs; tier on consequence criteria only."
+  rejected_keys: [backtest, benchmark]   # substring match, case-insensitive
