@@ -1,23 +1,32 @@
 replacement: "[REDACTED]"
-keys:   # case-insensitive substring match on argument keys
+# Exact argument keys (case-insensitive, full-key match). Never list "amount".
+keys:
   - password
   - passwd
   - secret
+  - client_secret
   - token
+  - access_token
+  - refresh_token
+  - id_token
   - api_key
   - apikey
   - authorization
   - credential
+  - credentials
   - ssn
   - account_number
   - acct
+  - acct_number
   - card_number
   - pan
+# Word-boundary regexes on keys (case-insensitive); underscores/hyphens count as separators.
+key_patterns:
+  - '(?i)(^|[_\-.])(password|passwd|secret|ssn)($|[_\-.])'
+  - '(?i)(^|[_\-.])(api[_\-]?key|access[_\-]token|auth[_\-]token|bearer[_\-]token)($|[_\-.])'
 patterns:   # regexes applied to string values
   - name: ssn
     regex: '\b\d{3}-\d{2}-\d{4}\b'
-  - name: account_number
-    regex: '\b\d{9,17}\b'
   - name: bearer_token
     regex: '(?i)bearer\s+[A-Za-z0-9._~+/=-]+'
   - name: jwt

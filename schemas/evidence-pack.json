@@ -18,293 +18,113 @@
       "format": "date-time"
     },
     "sections": {
-      "type": "object",
-      "required": [
-        "identity_ownership",
-        "tier_criteria",
-        "permitted_actions",
-        "validation",
-        "monitoring_findings",
-        "approvals_overrides",
-        "records_retention"
-      ],
-      "properties": {
-        "identity_ownership": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "identity_ownership"
             }
-          },
-          "additionalProperties": true,
-          "description": "Identity and ownership"
+          }
         },
-        "tier_criteria": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "tier_criteria"
             }
-          },
-          "additionalProperties": true,
-          "description": "Tier and criteria"
+          }
         },
-        "permitted_actions": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "permitted_actions"
             }
-          },
-          "additionalProperties": true,
-          "description": "Permitted actions"
+          }
         },
-        "validation": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "validation"
             }
-          },
-          "additionalProperties": true,
-          "description": "Validation"
+          }
         },
-        "monitoring_findings": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "monitoring_findings"
             }
-          },
-          "additionalProperties": true,
-          "description": "Monitoring and findings"
+          }
         },
-        "approvals_overrides": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "approvals_overrides"
             }
-          },
-          "additionalProperties": true,
-          "description": "Approvals and overrides"
+          }
         },
-        "records_retention": {
-          "type": "object",
-          "required": [
-            "title",
-            "content",
-            "citations"
-          ],
+        {
+          "$ref": "#/$defs/section",
           "properties": {
-            "title": {
-              "type": "string"
-            },
-            "content": {},
-            "citations": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "source",
-                  "ref"
-                ],
-                "properties": {
-                  "source": {
-                    "type": "string"
-                  },
-                  "ref": {
-                    "type": "string"
-                  },
-                  "url": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              }
+            "id": {
+              "const": "records_retention"
             }
-          },
-          "additionalProperties": true,
-          "description": "Records and retention"
+          }
         }
-      },
-      "additionalProperties": false
+      ],
+      "items": false
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "$defs": {
+    "section": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "content",
+        "citations"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {},
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "ref"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "ref": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
 }

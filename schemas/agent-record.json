@@ -168,8 +168,7 @@
     "identity": {
       "type": "object",
       "required": [
-        "type",
-        "subject"
+        "type"
       ],
       "properties": {
         "type": {
@@ -177,9 +176,37 @@
         },
         "subject": {
           "type": "string"
+        },
+        "distinct": {
+          "type": "boolean"
         }
       },
-      "additionalProperties": true
+      "additionalProperties": true,
+      "if": {
+        "properties": {
+          "type": {
+            "const": "none"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "distinct"
+        ],
+        "properties": {
+          "distinct": {
+            "const": false
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "subject"
+        ]
+      }
     },
     "dependencies": {
       "type": "object",
@@ -196,6 +223,36 @@
                 "type": "string"
               },
               "registry_version": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
                 "type": "string"
               }
             },
@@ -233,6 +290,47 @@
         },
         "additionalProperties": true
       }
+    },
+    "origin": {
+      "enum": [
+        "internal",
+        "external"
+      ]
+    },
+    "card_signature": {
+      "enum": [
+        "signed",
+        "unsigned",
+        "invalid"
+      ]
+    },
+    "passport": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "allowed_skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data_scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    },
+    "registered_by": {
+      "type": "string"
     }
   },
   "additionalProperties": true

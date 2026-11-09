@@ -15,8 +15,7 @@
     "type": {
       "enum": [
         "scope_drift",
-        "shadow_agent",
-        "value_limit"
+        "shadow_agent"
       ]
     },
     "severity": {
@@ -31,22 +30,13 @@
       "type": "string"
     },
     "run_id": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "span_id": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "tool": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": "string"
     },
     "ts": {
       "type": "string",
@@ -61,7 +51,59 @@
     },
     "explanation": {
       "type": "string"
+    },
+    "reason": {
+      "enum": [
+        "tool_not_in_manifest",
+        "value_limit_exceeded"
+      ]
+    },
+    "observed_value": {
+      "type": "number"
+    },
+    "limit": {
+      "type": "number"
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "scope_drift"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "required": [
+          "tool",
+          "span_id",
+          "ts",
+          "run_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reason": {
+            "const": "value_limit_exceeded"
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "then": {
+        "required": [
+          "observed_value",
+          "limit"
+        ]
+      }
+    }
+  ]
 }
