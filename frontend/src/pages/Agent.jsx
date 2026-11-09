@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { clean, fmtTs } from '../format'
 import Markdown from '../components/Markdown'
+import EvidencePack from '../components/EvidencePack'
 import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
 
 const CRITERIA = [
@@ -198,10 +199,10 @@ function AgentView({ id }) {
   return (
     <div>
       <p><Link to="/">Fleet</Link> / {clean(a.name)}</p>
-      <div className="page-head">
+      <div className="page-head" style={{ flexWrap: 'wrap' }}>
         <h1>{clean(a.name)}</h1>
         {/* SLOT: "Generate evidence pack" button (added by a later task) */}
-        <div id="evidence-pack-slot" data-slot="evidence-pack" />
+        <div id="evidence-pack-slot" data-slot="evidence-pack" style={{ display: 'contents' }}><EvidencePack id={id} /></div>
       </div>
       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
       <div className="grid">
