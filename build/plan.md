@@ -6,6 +6,7 @@ Budget: $1,900. If spend passes $1,100 before T-9 is green, defer T-11 and T-12 
 
 ## Environment facts (2026-11-09)
 - Playwright and Chromium are installed in the running workspace with sudo (`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`). This is not in the compute environment, so reinstall after a workspace restart. `packaging` is pinned back to 23.2 for dominodatalab and mlflow.
+- Node 22 + npm 10 installed in the workspace with sudo from NodeSource (not in the compute environment, so reinstall after a restart). A deployed App needs node in its environment, or a committed frontend/dist.
 - MLflow 3.3.2 (< 3.11): T-7 posts spans to ACT `/v1/traces` directly from the agent's tracing hook (handoff fallback).
 - Open: LLM Gateway 2.0 aliases (needed by T-6), Governance API from a service account (T-8), second approver user (AC-9 demo).
 
