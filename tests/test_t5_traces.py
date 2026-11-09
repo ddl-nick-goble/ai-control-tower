@@ -300,3 +300,100 @@ def test_ac5_timeline_500_spans_under_2s(client, db_path):
     items = data if isinstance(data, list) else (data.get("events") or data.get("timeline"))
     assert len(items) == 500
     assert dt < 2.0
+
+
+# ---------------- Round 2 contracts ----------------
+
+def _tool_span(i, agent, trace="a" * 32, name=None):
+    return span(f"execute_tool {name or i}", {
+        "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name or f"t{i}",
+        "gen_ai.agent.id": agent}, i, trace)
+
+
+def test_ac4_idempotent_ingest(client, db_path):
+    seed_agent(db_path)
+    trace = "e" * 32
+    payload = otlp([_tool_span(i, NATIVE, trace) for i in range(3)])
+    assert client.post("/v1/traces", json=payload, headers=HDR).status_code == 200
+    n_events = len(rows(db_path, "select * from events"))
+    runs_before = rows(db_path, "select * from runs order by id")
+    tl_before = client.get(f"/api/runs/{trace}/timeline").json()
+    tl_before = tl_before if isinstance(tl_before, list) else (tl_before.get("events") or tl_before.get("timeline"))
+    assert n_events == 3
+    r = client.post("/v1/traces", json=payload, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert len(rows(db_path, "select * from events")) == n_events
+    tl = client.get(f"/api/runs/{trace}/timeline").json()
+    tl = tl if isinstance(tl, list) else (tl.get("events") or tl.get("timeline"))
+    assert len(tl) == len(tl_before) == 3
+    assert rows(db_path, "select * from runs order by id") == runs_before
+    assert client.get("/api/audit/verify").json() == {"ok": True, "events": n_events}
+
+
+def _finding_dict(row):
+    f = {k: v for k, v in row.items() if v is not None and k != "id"}
+    if isinstance(f.get("detail"), str):
+        f["detail"] = json.loads(f["detail"])
+    return f
+
+
+def test_ac4_shadow_agent_placeholder_and_finding(client, db_path):
+    import hashlib
+    import jsonschema
+    from datetime import datetime
+    seed_agent(db_path)
+    unknown = "unknown-agent-xyz"
+    spans = [_tool_span(0, NATIVE, "f" * 32, "a"), _tool_span(1, unknown, "f" * 32, "b")]
+    r = post(client, spans)
+    assert r.status_code == 200, r.text
+    ph = "act:shadow:" + hashlib.sha256(unknown.encode()).hexdigest()[:16]
+    ags = rows(db_path, "select * from agents where id=?", (ph,))
+    assert len(ags) == 1 and ags[0]["status"] == "shadow"
+    fs = rows(db_path, "select * from findings where type='shadow_agent'")
+    assert len(fs) == 1
+    assert fs[0]["agent_id"] == ph
+    f = _finding_dict(fs[0])
+    schema = json.loads((ROOT / "schemas" / "finding.json").read_text())
+    jsonschema.validate(f, schema, format_checker=jsonschema.FormatChecker())
+    assert unknown in json.dumps(f["detail"])
+    want = datetime.fromtimestamp((T0 + 1_000_000) / 1e9, tz=__import__("datetime").timezone.utc)
+    got = datetime.fromisoformat(f["ts"].replace("Z", "+00:00"))
+    if got.tzinfo is None:
+        got = got.replace(tzinfo=want.tzinfo)
+    assert got == want
+    # second run from same unmatched agent: no second placeholder
+    assert post(client, [_tool_span(0, unknown, "9" * 32, "c")]).status_code == 200
+    assert len(rows(db_path, "select * from agents where status='shadow'")) == 1
+    assert len(rows(db_path, "select * from agents where id=?", (ph,))) == 1
+
+
+def test_ac4_invalid_json_returns_400(client):
+    r = client.post("/v1/traces", content=b"{not json",
+                    headers={**HDR, "Content-Type": "application/json"})
+    assert r.status_code == 400
+
+
+def test_ac4_empty_trace_id_returns_400(client, db_path):
+    seed_agent(db_path)
+    s = _tool_span(0, NATIVE, "")
+    r = post(client, [s])
+    assert r.status_code == 400
+
+
+def test_ac4_gzip_accepted(client, db_path):
+    import gzip
+    seed_agent(db_path)
+    spans = [_tool_span(i, NATIVE, "7" * 32) for i in range(2)]
+    body = gzip.compress(json.dumps(otlp(spans)).encode())
+    r = client.post("/v1/traces", content=body, headers={
+        **HDR, "Content-Type": "application/json", "Content-Encoding": "gzip"})
+    assert r.status_code == 200, r.text
+    assert r.json()["accepted"] == 2
+
+
+def test_ac4_oversize_body_returns_413(client, monkeypatch):
+    monkeypatch.setenv("ACT_OTLP_MAX_BYTES", "1000")
+    body = b" " * 2000
+    r = client.post("/v1/traces", content=body,
+                    headers={**HDR, "Content-Type": "application/json"})
+    assert r.status_code == 413
