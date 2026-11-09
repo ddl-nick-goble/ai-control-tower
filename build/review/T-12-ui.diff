@@ -1,0 +1,150 @@
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index bf27e48..6dcc39f 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -30,3 +30,7 @@ export const api = {
+   }),
+   timeline: (runId) => request(`runs/${encodeURIComponent(runId)}/timeline`),
+ }
++
++export const registerExternal = (body) => request('agents/external', {
++  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
++})
+diff --git a/frontend/src/components/Passport.jsx b/frontend/src/components/Passport.jsx
+new file mode 100644
+index 0000000..7a21008
+--- /dev/null
++++ b/frontend/src/components/Passport.jsx
+@@ -0,0 +1,32 @@
++import React from 'react'
++import { clean } from '../format'
++import { Panel, StatusPill, TierBadge } from './ui'
++
++const SIGNATURE = { signed: 'Signed (verified)', unsigned: 'Unsigned', invalid: 'Invalid signature' }
++
++function isoDate(ts) {
++  const d = new Date(ts)
++  return Number.isNaN(d.getTime()) ? clean(String(ts || '')) : d.toISOString().slice(0, 10)
++}
++
++export default function Passport({ agent }) {
++  const p = agent.passport || {}
++  const sig = SIGNATURE[agent.card_signature] || 'Unsigned'
++  const status = agent.status === 'pending_review' ? 'Pending review' : clean(agent.status)
++  return (
++    <Panel title="AI Passport" testid="passport" aside={<TierBadge tier={agent.tier} />}>
++      <dl className="kv">
++        <dt>Identity</dt><dd data-testid="passport-identity">{clean(p.identity || agent.name)}</dd>
++        <dt>Allowed skills</dt>
++        <dd><ul className="tags">{(p.allowed_skills || []).map((s) => <li key={s} className="chip" data-testid="passport-skill">{clean(s)}</li>)}
++          {!(p.allowed_skills || []).length && <li className="muted">none</li>}</ul></dd>
++        <dt>Data scopes</dt>
++        <dd><ul className="tags">{(p.data_scopes || []).map((s) => <li key={s} className="chip" data-testid="passport-scope">{clean(s)}</li>)}
++          {!(p.data_scopes || []).length && <li className="muted">none</li>}</ul></dd>
++        <dt>Expires</dt><dd data-testid="passport-expiry">{isoDate(p.expires_at)}</dd>
++        <dt>Card signature</dt><dd data-testid="passport-signature">{sig}</dd>
++        <dt>Status</dt><dd data-testid="passport-status">{status}</dd>
++      </dl>
++    </Panel>
++  )
++}
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index 91e0b6b..9f53fb3 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -2,6 +2,7 @@ import React from 'react'
+ import { Link, useParams } from 'react-router-dom'
+ import { api } from '../api'
+ import { clean, fmtTs } from '../format'
++import Passport from '../components/Passport'
+ import Markdown from '../components/Markdown'
+ import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
+ 
+@@ -204,6 +205,7 @@ function AgentView({ id }) {
+         <div id="evidence-pack-slot" data-slot="evidence-pack" />
+       </div>
+       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
++      {a.origin === 'external' && <Passport agent={a} />}
+       <div className="grid">
+         <TierCard agent={a} />
+         <Identity agent={a} />
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+index 6169b40..7e7d0a6 100644
+--- a/frontend/src/pages/Register.jsx
++++ b/frontend/src/pages/Register.jsx
+@@ -1,12 +1,73 @@
+ import React from 'react'
+ import { Link } from 'react-router-dom'
++import { registerExternal } from '../api'
++import { clean } from '../format'
++import Passport from '../components/Passport'
++
++// No GET /api/tiering/criteria route exists, so the seven names from config/tiering.yaml are listed here.
++const CRITERIA = [
++  ['decision_impact', 'Decision impact', 'How material are the decisions this agent makes or drives?'],
++  ['financial_exposure', 'Financial exposure', 'How much money can it move or commit?'],
++  ['customer_impact', 'Customer impact', 'How strongly can it affect customers?'],
++  ['autonomy', 'Autonomy', 'How much does it act without human review?'],
++  ['data_sensitivity', 'Data sensitivity', 'How sensitive is the data it can reach?'],
++  ['reversibility', 'Reversibility', 'How hard is it to undo what it does?'],
++  ['regulatory_exposure', 'Regulatory exposure', 'How much regulatory or legal exposure does it carry?'],
++]
+ 
+ export default function Register() {
++  const [url, setUrl] = React.useState('')
++  const [vals, setVals] = React.useState(() => Object.fromEntries(CRITERIA.map(([k]) => [k, '3'])))
++  const [scopes, setScopes] = React.useState('')
++  const [busy, setBusy] = React.useState(false)
++  const [error, setError] = React.useState(null)
++  const [agent, setAgent] = React.useState(null)
++
++  const submit = async (e) => {
++    e.preventDefault()
++    setBusy(true); setError(null); setAgent(null)
++    const criteria = Object.fromEntries(CRITERIA.map(([k]) => [k, Number(vals[k])]))
++    criteria.data_scopes = scopes.split(',').map((s) => s.trim()).filter(Boolean)
++    try {
++      setAgent(await registerExternal({ card_url: url.trim(), criteria }))
++    } catch (err) {
++      setError(`${err.status ? err.status + ': ' : ''}${clean(err.message)}`)
++    } finally { setBusy(false) }
++  }
++
+   return (
+     <div>
++      <p><Link to="/">Fleet</Link> / Register external agent</p>
+       <h1>Register external agent</h1>
+-      <p className="muted">Registration form arrives in a later task.</p>
+-      <Link to="/">Back to fleet</Link>
++      <form onSubmit={submit} className="panel">
++        <div className="panel-body">
++          <p><label>Agent card URL<br />
++            <input type="url" data-testid="card-url" value={url} onChange={(e) => setUrl(e.target.value)}
++                   placeholder="https://agent.example.com/.well-known/agent-card.json" style={{ width: '100%' }} />
++          </label></p>
++          <h2>Consequence criteria</h2>
++          <p className="muted">Score each from 1 (low) to 5 (high).</p>
++          {CRITERIA.map(([k, name, prompt]) => (
++            <p key={k}><label>{name}: <span className="muted">{prompt}</span><br />
++              <select data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
++                {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
++              </select>
++            </label></p>
++          ))}
++          <p><label>Data scopes (comma-separated)<br />
++            <input type="text" data-testid="data-scopes" value={scopes} onChange={(e) => setScopes(e.target.value)}
++                   placeholder="accounts:read, payments:write" style={{ width: '100%' }} />
++          </label></p>
++          {error && <div className="alert error" role="alert" data-testid="register-error">{error}</div>}
++          <button type="submit" className="btn primary" disabled={!url.trim() || busy}>Register</button>
++        </div>
++      </form>
++      {agent && (
++        <div>
++          <Passport agent={agent} />
++          <p><Link to={`/agents/${encodeURIComponent(agent.id)}`}>Open the agent page</Link></p>
++        </div>
++      )}
+     </div>
+   )
+ }

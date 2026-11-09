@@ -1,9 +1,9 @@
 diff --git a/backend/external.py b/backend/external.py
 new file mode 100644
-index 0000000..c94b3be
+index 0000000..2a46f18
 --- /dev/null
 +++ b/backend/external.py
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,346 @@
 +"""External (client-side) A2A agent intake: fetch an Agent Card, verify its JWS, build the record and passport.
 +
 +Evidence, not enforcement: an invalid signature is recorded on the record and in the audit event; the
@@ -18,18 +18,23 @@ index 0000000..c94b3be
 +card without "signatures")  with trusted keys from ACT_TRUSTED_JWKS_PATH (a JWK or {"keys": [...]}),
 +matched by kid. ES256 and RS256 only. Library: cryptography (Apache-2.0/BSD).
 +
-+Follow-up: SSRF hardening (block private/link-local targets, pin resolved IPs); only http/https is enforced.
++SSRF: the host is resolved inside the 5 s deadline, every address is vetted (loopback/private/link-local/
++reserved are refused unless allowlisted in ACT_EXTERNAL_ALLOW_HOSTS; port 8899 and link-local are always
++refused) and the connection is made to the vetted IP (Host header and SNI keep the original name).
 +"""
 +import base64
 +import copy
 +import hashlib
++import http.client
++import ipaddress
 +import json
 +import os
++import socket
++import threading
 +import time
 +from datetime import datetime, timedelta, timezone
 +from urllib.parse import urlparse
 +
-+import requests
 +from cryptography.exceptions import InvalidSignature
 +from cryptography.hazmat.primitives import hashes
 +from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
@@ -57,26 +62,148 @@ index 0000000..c94b3be
 +    return url
 +
 +
++def _allow_hosts() -> set:
++    return {h.strip().lower().strip("[]") for h in os.environ.get("ACT_EXTERNAL_ALLOW_HOSTS", "").split(",") if h.strip()}
++
++
++def _always_blocked(ip) -> bool:
++    return ip.is_link_local  # 169.254.0.0/16, fe80::/10
++
++
++def _ip_blocked(ip) -> bool:
++    return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified or ip.is_multicast
++            or ip.is_reserved or ip.is_site_local or (ip.version == 6 and ip in ipaddress.ip_network("fc00::/7")))
++
++
++def resolve_checked(host: str, port: int, deadline: float) -> list:
++    """Resolve host inside the deadline and return the vetted addresses to connect to (pinned)."""
++    bad = ExternalError(422, "card_url address is not allowed (internal, loopback, link-local or reserved)")
++    if port == 8899:
++        raise bad
++    result = {}
++
++    def work():
++        try:
++            result["v"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
++        except Exception as e:  # noqa: BLE001
++            result["e"] = e
++    t = threading.Thread(target=work, daemon=True)
++    t.start()
++    t.join(max(deadline - time.monotonic(), 0))
++    if t.is_alive():
++        raise ExternalError(504, "timed out resolving the Agent Card host (5 s)")
++    if "e" in result:
++        raise ExternalError(502, "could not resolve the Agent Card host")
++    ips = []
++    for info in result["v"]:
++        try:
++            ip = ipaddress.ip_address(info[4][0].split("%")[0])
++        except ValueError:
++            raise bad
++        if ip.version == 6 and ip.ipv4_mapped:
++            ip = ip.ipv4_mapped
++        ips.append(ip)
++    allowed = host.lower().strip("[]") in _allow_hosts() or any(str(i) in _allow_hosts() for i in ips)
++    for ip in ips:
++        if _always_blocked(ip) or (not allowed and _ip_blocked(ip)):
++            raise bad
++    return [i.compressed for i in ips]
++
++
++class _PinnedMixin:
++    pinned: list = []
++    deadline: float = 0.0
++
++    def _dial(self):
++        err = None
++        for ip in self.pinned:
++            remaining = self.deadline - time.monotonic()
++            if remaining <= 0:
++                raise socket.timeout()
++            try:
++                return socket.create_connection((ip, self.port), timeout=remaining)
++            except socket.timeout:
++                raise
++            except OSError as e:
++                err = e
++        raise err or OSError("no address")
++
++
++class _PinnedHTTP(_PinnedMixin, http.client.HTTPConnection):
++    def connect(self):
++        self.sock = self._dial()
++
++
++class _PinnedHTTPS(_PinnedMixin, http.client.HTTPSConnection):
++    def connect(self):
++        raw = self._dial()
++        raw.settimeout(max(self.deadline - time.monotonic(), 0.001))
++        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
++
++
 +def fetch_card(url: str) -> dict:
 +    deadline = time.monotonic() + FETCH_TIMEOUT
++    u = urlparse(url)
 +    try:
-+        resp = requests.get(url, timeout=(FETCH_TIMEOUT, FETCH_TIMEOUT), stream=True, allow_redirects=False,
-+                            headers={"Accept": "application/json"})
++        host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
++    except ValueError:
++        raise ExternalError(422, "card_url has an invalid port")
++    if not host:
++        raise ExternalError(422, "card_url must be an http or https URL")
++    pinned = resolve_checked(host, port, deadline)
++    cls = _PinnedHTTPS if u.scheme == "https" else _PinnedHTTP
++    conn = cls(host, port, timeout=FETCH_TIMEOUT)
++    conn.pinned, conn.deadline = pinned, deadline
++    # Watchdog: unblocks any stalled connect/recv at the wall-clock deadline.
++    expired = threading.Event()
++
++    def kill():
++        expired.set()
++        sock = conn.sock
++        if sock is not None:
++            try:
++                sock.shutdown(socket.SHUT_RDWR)
++            except OSError:
++                pass
++            try:
++                sock.close()
++            except OSError:
++                pass
++    timer = threading.Timer(FETCH_TIMEOUT, kill)
++    timer.daemon = True
++    timer.start()
++    timeout_err = ExternalError(504, "timed out fetching the Agent Card (5 s)")
++    try:
 +        try:
-+            if resp.status_code != 200:
-+                raise ExternalError(502, f"card URL returned HTTP {resp.status_code}")
++            path = (u.path or "/") + ("?" + u.query if u.query else "")
++            conn.request("GET", path, headers={"Accept": "application/json"})
++            resp = conn.getresponse()
++            if resp.status != 200:
++                raise ExternalError(502, f"card URL returned HTTP {resp.status}")
 +            buf = b""
-+            for chunk in resp.iter_content(8192):
++            while True:
++                if time.monotonic() >= deadline:
++                    raise timeout_err
++                if conn.sock is not None:
++                    conn.sock.settimeout(max(deadline - time.monotonic(), 0.001))
++                chunk = resp.read1(1024)
++                if not chunk:
++                    break
 +                buf += chunk
 +                if len(buf) > MAX_BYTES:
 +                    raise ExternalError(422, "card exceeds 1 MB")
-+                if time.monotonic() > deadline:
-+                    raise requests.Timeout()
++            if expired.is_set() or time.monotonic() > deadline:
++                raise timeout_err
 +        finally:
-+            resp.close()
-+    except requests.Timeout:
-+        raise ExternalError(504, "timed out fetching the Agent Card (5 s)")
-+    except requests.RequestException as e:
++            timer.cancel()
++            conn.close()
++    except ExternalError:
++        raise
++    except (socket.timeout, TimeoutError):
++        raise timeout_err
++    except (OSError, http.client.HTTPException) as e:
++        if expired.is_set() or time.monotonic() >= deadline:
++            raise timeout_err
 +        raise ExternalError(502, f"could not fetch the Agent Card: {type(e).__name__}")
 +    try:
 +        card = json.loads(buf.decode("utf-8"))

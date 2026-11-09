@@ -1,0 +1,599 @@
+diff --git a/backend/external.py b/backend/external.py
+new file mode 100644
+index 0000000..ece3ce6
+--- /dev/null
++++ b/backend/external.py
+@@ -0,0 +1,358 @@
++"""External (client-side) A2A agent intake: fetch an Agent Card, verify its JWS, build the record and passport.
++
++Evidence, not enforcement: an invalid signature is recorded on the record and in the audit event; the
++record is still created (pending_review) so a reviewer can see it.
++
++Tier rule: the seven consequence criteria go through tiering.score_tier (backtest/benchmark keys are
++rejected by no_benchmark_rule). Then the money_movement_floor applies: if any skill id, name or tag
++contains payments/transfer/payment/wire/funds, the card can move money, so the tier is never
++lower-consequence than Tier 2 (tier = min(tier, 2); Tier 1 is highest consequence).
++
++JWS: signatures[] entries are verified over  protected_b64 + "." + b64url(compact key-sorted JSON of the
++card without "signatures")  with trusted keys from ACT_TRUSTED_JWKS_PATH (a JWK or {"keys": [...]}),
++matched by kid. ES256 and RS256 only. Library: cryptography (Apache-2.0/BSD).
++
++SSRF: the host is resolved inside the 5 s deadline, every address is vetted (anything not globally routable is
++refused unless allowlisted in ACT_EXTERNAL_ALLOW_HOSTS; port 8899 and link-local are always
++refused) and the connection is made to the vetted IP (Host header and SNI keep the original name).
++"""
++import base64
++import copy
++import hashlib
++import http.client
++import ipaddress
++import json
++import os
++import socket
++import threading
++import time
++from datetime import datetime, timedelta, timezone
++from urllib.parse import urlparse
++
++from cryptography.exceptions import InvalidSignature
++from cryptography.hazmat.primitives import hashes
++from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
++from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
++
++FETCH_TIMEOUT = 5.0
++MAX_BYTES = 1_000_000
++MONEY_WORDS = ("payments", "transfer", "payment", "wire", "funds")
++EXPIRY_DAYS = {1: 90, 2: 180, 3: 365, 4: 365}
++
++
++class ExternalError(Exception):
++    def __init__(self, status, message):
++        super().__init__(message)
++        self.status, self.message = status, message
++
++
++def external_id(card_url: str) -> str:
++    return f"act:external:{hashlib.sha256(card_url.encode()).hexdigest()[:16]}"
++
++
++def check_url(url) -> str:
++    if not isinstance(url, str) or urlparse(url).scheme not in ("http", "https") or not urlparse(url).netloc:
++        raise ExternalError(422, "card_url must be an http or https URL")
++    return url
++
++
++def _allow_hosts() -> set:
++    return {h.strip().lower().strip("[]") for h in os.environ.get("ACT_EXTERNAL_ALLOW_HOSTS", "").split(",") if h.strip()}
++
++
++def _always_blocked(ip) -> bool:
++    return ip.is_link_local  # 169.254.0.0/16, fe80::/10
++
++
++def _ip_blocked(ip) -> bool:
++    return not ip.is_global
++
++
++_NAT64 = ipaddress.ip_network("64:ff9b::/96")
++
++
++def _unwrap(ip):
++    """Return the IPv4 embedded in IPv4-mapped, NAT64 (64:ff9b::/96) and 6to4 (2002::/16) addresses."""
++    if ip.version == 6:
++        if ip.ipv4_mapped:
++            return ip.ipv4_mapped
++        if ip in _NAT64:
++            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
++        if ip.sixtofour:
++            return ip.sixtofour
++    return ip
++
++
++def resolve_checked(host: str, port: int, deadline: float) -> list:
++    """Resolve host inside the deadline and return the vetted addresses to connect to (pinned)."""
++    bad = ExternalError(422, "card_url address is not allowed (internal, loopback, link-local or reserved)")
++    if port == 8899:
++        raise bad
++    result = {}
++
++    def work():
++        try:
++            result["v"] = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
++        except Exception as e:  # noqa: BLE001
++            result["e"] = e
++    t = threading.Thread(target=work, daemon=True)
++    t.start()
++    t.join(max(deadline - time.monotonic(), 0))
++    if t.is_alive():
++        raise ExternalError(504, "timed out resolving the Agent Card host (5 s)")
++    if "e" in result:
++        raise ExternalError(502, "could not resolve the Agent Card host")
++    ips = []
++    for info in result["v"]:
++        try:
++            ip = ipaddress.ip_address(info[4][0].split("%")[0])
++        except ValueError:
++            raise bad
++        ips.append(_unwrap(ip))
++    allowed = host.lower().strip("[]") in _allow_hosts() or any(str(i) in _allow_hosts() for i in ips)
++    for ip in ips:
++        if _always_blocked(ip) or (not allowed and _ip_blocked(ip)):
++            raise bad
++    return [i.compressed for i in ips]
++
++
++class _PinnedMixin:
++    pinned: list = []
++    deadline: float = 0.0
++
++    def _dial(self):
++        err = None
++        for ip in self.pinned:
++            remaining = self.deadline - time.monotonic()
++            if remaining <= 0:
++                raise socket.timeout()
++            try:
++                return socket.create_connection((ip, self.port), timeout=remaining)
++            except socket.timeout:
++                raise
++            except OSError as e:
++                err = e
++        raise err or OSError("no address")
++
++
++class _PinnedHTTP(_PinnedMixin, http.client.HTTPConnection):
++    def connect(self):
++        self.sock = self._dial()
++
++
++class _PinnedHTTPS(_PinnedMixin, http.client.HTTPSConnection):
++    def connect(self):
++        raw = self._dial()
++        raw.settimeout(max(self.deadline - time.monotonic(), 0.001))
++        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
++
++
++def fetch_card(url: str) -> dict:
++    deadline = time.monotonic() + FETCH_TIMEOUT
++    u = urlparse(url)
++    try:
++        host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
++    except ValueError:
++        raise ExternalError(422, "card_url has an invalid port")
++    if not host:
++        raise ExternalError(422, "card_url must be an http or https URL")
++    pinned = resolve_checked(host, port, deadline)
++    cls = _PinnedHTTPS if u.scheme == "https" else _PinnedHTTP
++    conn = cls(host, port, timeout=FETCH_TIMEOUT)
++    conn.pinned, conn.deadline = pinned, deadline
++    # Watchdog: unblocks any stalled connect/recv at the wall-clock deadline.
++    expired = threading.Event()
++
++    def kill():
++        expired.set()
++        sock = conn.sock
++        if sock is not None:
++            try:
++                sock.shutdown(socket.SHUT_RDWR)
++            except OSError:
++                pass
++            try:
++                sock.close()
++            except OSError:
++                pass
++    timer = threading.Timer(FETCH_TIMEOUT, kill)
++    timer.daemon = True
++    timer.start()
++    timeout_err = ExternalError(504, "timed out fetching the Agent Card (5 s)")
++    try:
++        try:
++            path = (u.path or "/") + ("?" + u.query if u.query else "")
++            conn.request("GET", path, headers={"Accept": "application/json"})
++            resp = conn.getresponse()
++            if resp.status != 200:
++                raise ExternalError(502, f"card URL returned HTTP {resp.status}")
++            buf = b""
++            while True:
++                if time.monotonic() >= deadline:
++                    raise timeout_err
++                if conn.sock is not None:
++                    conn.sock.settimeout(max(deadline - time.monotonic(), 0.001))
++                chunk = resp.read1(1024)
++                if not chunk:
++                    break
++                buf += chunk
++                if len(buf) > MAX_BYTES:
++                    raise ExternalError(422, "card exceeds 1 MB")
++            if expired.is_set() or time.monotonic() > deadline:
++                raise timeout_err
++        finally:
++            timer.cancel()
++            conn.close()
++    except ExternalError:
++        raise
++    except (socket.timeout, TimeoutError):
++        raise timeout_err
++    except (OSError, http.client.HTTPException) as e:
++        if expired.is_set() or time.monotonic() >= deadline:
++            raise timeout_err
++        raise ExternalError(502, f"could not fetch the Agent Card: {type(e).__name__}")
++    try:
++        card = json.loads(buf.decode("utf-8"))
++    except (ValueError, UnicodeDecodeError):
++        raise ExternalError(422, "card is not valid JSON")
++    if not isinstance(card, dict):
++        raise ExternalError(422, "card is not a JSON object")
++    missing = [k for k in ("name", "version", "skills", "supportedInterfaces") if k not in card]
++    if missing:
++        raise ExternalError(422, f"not an A2A 1.0 Agent Card, missing: {', '.join(missing)}")
++    if (not isinstance(card["name"], str) or not card["name"].strip() or not isinstance(card["skills"], list)
++            or not isinstance(card["supportedInterfaces"], list)
++            or any(not isinstance(s, dict) or not isinstance(s.get("id"), str) for s in card["skills"])):
++        raise ExternalError(422, "not an A2A 1.0 Agent Card: invalid name, skills or supportedInterfaces")
++    return card
++
++
++# ---- JWS -------------------------------------------------------------------------------------
++
++def _unb64u(s: str) -> bytes:
++    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
++
++
++def _b64u(b: bytes) -> str:
++    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
++
++
++def trusted_keys() -> list:
++    path = os.environ.get("ACT_TRUSTED_JWKS_PATH")
++    if not path:
++        return []
++    try:
++        with open(path) as f:
++            data = json.load(f)
++    except (OSError, ValueError):
++        return []
++    keys = data.get("keys", []) if isinstance(data, dict) and "keys" in data else [data]
++    return [k for k in keys if isinstance(k, dict)]
++
++
++def _public_key(jwk):
++    n = lambda f: int.from_bytes(_unb64u(jwk[f]), "big")
++    if jwk.get("kty") == "EC" and jwk.get("crv") == "P-256":
++        return ec.EllipticCurvePublicNumbers(n("x"), n("y"), ec.SECP256R1()).public_key()
++    if jwk.get("kty") == "RSA":
++        return rsa.RSAPublicNumbers(n("e"), n("n")).public_key()
++    return None
++
++
++def _verify_one(sig, payload_b64, keys) -> bool:
++    try:
++        header = json.loads(_unb64u(sig["protected"]))
++        alg, kid = header.get("alg"), header.get("kid")
++        if alg not in ("ES256", "RS256") or not kid:
++            return False
++        raw = _unb64u(sig["signature"])
++        signing_input = (sig["protected"] + "." + payload_b64).encode()
++        for jwk in keys:
++            if jwk.get("kid") != kid or (jwk.get("alg") not in (None, alg)):
++                continue
++            pub = _public_key(jwk)
++            try:
++                if alg == "ES256" and isinstance(pub, ec.EllipticCurvePublicKey):
++                    if len(raw) != 64:
++                        continue
++                    der = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
++                    pub.verify(der, signing_input, ec.ECDSA(hashes.SHA256()))
++                    return True
++                if alg == "RS256" and isinstance(pub, rsa.RSAPublicKey):
++                    pub.verify(raw, signing_input, padding.PKCS1v15(), hashes.SHA256())
++                    return True
++            except InvalidSignature:
++                continue
++    except (KeyError, TypeError, ValueError, AttributeError):
++        return False
++    return False
++
++
++def verify_card(card: dict, keys=None) -> str:
++    """'unsigned' when no signatures, 'signed' when one verifies against a trusted key, else 'invalid'."""
++    sigs = card.get("signatures")
++    if not sigs:
++        return "unsigned"
++    if not isinstance(sigs, list):
++        return "invalid"
++    body = copy.deepcopy(card)
++    body.pop("signatures")
++    payload_b64 = _b64u(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
++    keys = trusted_keys() if keys is None else keys
++    return "signed" if any(isinstance(s, dict) and _verify_one(s, payload_b64, keys) for s in sigs) else "invalid"
++
++
++# ---- tier and record -------------------------------------------------------------------------
++
++def money_movement(card: dict) -> bool:
++    for s in card["skills"]:
++        text = [str(s.get("id", "")), str(s.get("name", ""))] + [str(t) for t in (s.get("tags") or [])]
++        if any(w in t.lower() for t in text for w in MONEY_WORDS):
++            return True
++    return False
++
++
++def apply_floor(tier: int, reasoning: str, card: dict):
++    if money_movement(card):
++        floored = min(tier, 2)
++        note = ("Money-movement floor: a skill is tagged payments/transfer/wire/funds, so the tier is never "
++                "lower-consequence than Tier 2")
++        return floored, reasoning + " " + note + (f"; raised from Tier {tier} to Tier 2." if floored != tier else "; already Tier 2 or higher.")
++    return tier, reasoning
++
++
++def build_record(card_url: str, card: dict, criteria: dict, scopes, tier: int, reasoning: str,
++                 signature: str, user) -> dict:
++    now = datetime.now(timezone.utc)
++    skills = [{**s, "id": s["id"], "name": str(s.get("name") or s["id"]),
++               "tags": [str(t) for t in (s.get("tags") or [])]} for s in card["skills"]]
++    tags = sorted({t for s in skills for t in s["tags"]})
++    data_scopes = [str(x) for x in scopes] if isinstance(scopes, list) and scopes else tags
++    org = (card.get("provider") or {}).get("organization") if isinstance(card.get("provider"), dict) else None
++    ifaces = [i for i in card["supportedInterfaces"] if isinstance(i, dict) and i.get("url")]
++    rec = {
++        "id": external_id(card_url), "name": card["name"], "description": str(card.get("description") or card["name"]),
++        "version": str(card["version"]),
++        "provider": card["provider"] if isinstance(card.get("provider"), dict) else {"organization": "external"},
++        "capabilities": card.get("capabilities") if isinstance(card.get("capabilities"), dict) else {},
++        "securitySchemes": card.get("securitySchemes") if isinstance(card.get("securitySchemes"), dict) else {},
++        "skills": skills, "oasf": {"skills": tags, "domains": []},
++        "supportedInterfaces": card["supportedInterfaces"],
++        "source_platform": "external", "source_native_id": card_url, "card_url": card_url,
++        "last_seen": now.isoformat(), "owner": user.username or user.user_id,
++        "tier": tier, "tier_reasoning": reasoning, "criteria": criteria,
++        "manifest": {"tools": [s["id"] for s in skills], "data_scopes": data_scopes, "systems": [], "value_limits": {}},
++        "identity": {"type": "a2a-card", "subject": card_url, "distinct": False},
++        "dependencies": {"models": [], "mcp_servers": [], "tools": [{"name": s["id"]} for s in skills]},
++        "status": "pending_review", "versions": [{"version": str(card["version"])}],
++        "origin": "external", "card_signature": signature,
++        "registered_by": user.user_id, "registered_by_username": user.username,
++        "passport": {
++            "identity": f"{org + ' / ' if org else ''}{card['name']}",
++            "allowed_skills": [s["id"] for s in skills], "data_scopes": data_scopes,
++            "expires_at": (now + timedelta(days=EXPIRY_DAYS.get(tier, 365))).isoformat(),
++        },
++    }
++    if ifaces:
++        rec["url"] = ifaces[0]["url"]
++    return rec
+diff --git a/backend/routes/agents.py b/backend/routes/agents.py
+index e5a9996..c8066e6 100644
+--- a/backend/routes/agents.py
++++ b/backend/routes/agents.py
+@@ -32,7 +32,8 @@ def list_agents(source: str | None = None, tier: int | None = None, include_shad
+                                  .group_by(db.findings.c.agent_id)).all())
+     return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
+              "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
+-             "open_findings": int(open_f.get(r.id, 0))} for r in rows]
++             "open_findings": int(open_f.get(r.id, 0)),
++             "origin": (r.record or {}).get("origin", "internal")} for r in rows]
+ 
+ 
+ @router.get("/api/agents/{agent_id}")
+diff --git a/backend/routes/external.py b/backend/routes/external.py
+new file mode 100644
+index 0000000..bdfa134
+--- /dev/null
++++ b/backend/routes/external.py
+@@ -0,0 +1,55 @@
++"""POST /api/agents/external: register a client-side A2A agent from its Agent Card URL."""
++import json
++from pathlib import Path
++
++import jsonschema
++from fastapi import APIRouter, Body, Depends, HTTPException
++from fastapi.responses import JSONResponse
++from sqlalchemy import select
++
++from .. import db, external
++from ..domino_identity import User, require_user
++from ..normalize import _audit, apply_record
++from ..tiering import TieringInputRejected, score_tier
++
++router = APIRouter()
++SCHEMA = json.loads((Path(__file__).resolve().parent.parent.parent / "schemas" / "agent-record.json").read_text())
++
++
++@router.post("/api/agents/external")
++def register_external(body=Body(...), user: User = Depends(require_user)):
++    if not isinstance(body, dict):
++        raise HTTPException(422, "body must be {card_url, criteria}")
++    try:
++        url = external.check_url(body.get("card_url"))
++        crit = body.get("criteria")
++        if not isinstance(crit, dict):
++            raise HTTPException(422, "criteria must be an object of the seven consequence answers")
++        crit = dict(crit)
++        scopes = crit.pop("data_scopes", None)
++        try:
++            res = score_tier(crit)
++        except (TieringInputRejected, ValueError, TypeError) as e:
++            raise HTTPException(422, str(e))
++        aid = external.external_id(url)
++        with db.engine.begin() as cx:
++            row = cx.execute(select(db.agents).where(db.agents.c.id == aid)).first()
++        if row is not None:
++            return JSONResponse(row.record, status_code=200)
++        card = external.fetch_card(url)
++    except external.ExternalError as e:
++        raise HTTPException(e.status, e.message)
++    signature = external.verify_card(card)
++    tier, reasoning = external.apply_floor(res.tier, res.reasoning, card)
++    rec = external.build_record(url, card, {k: float(v) for k, v in crit.items()}, scopes, tier, reasoning,
++                                signature, user)
++    try:
++        jsonschema.validate(rec, SCHEMA)
++    except jsonschema.ValidationError as e:
++        raise HTTPException(422, f"card does not produce a valid record: {e.message}")
++    actor = (user.user_id, user.username)
++    with db.engine.begin() as cx:
++        apply_record(cx, rec, actor=actor)
++        _audit(cx, "external_registered", aid, {"card_url": url, "card_signature": signature, "tier": tier,
++                                                "status": "pending_review"}, actor)
++    return JSONResponse(rec, status_code=201)
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index bf27e48..6dcc39f 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -30,3 +30,7 @@ export const api = {
+   }),
+   timeline: (runId) => request(`runs/${encodeURIComponent(runId)}/timeline`),
+ }
++
++export const registerExternal = (body) => request('agents/external', {
++  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
++})
+diff --git a/frontend/src/components/Passport.jsx b/frontend/src/components/Passport.jsx
+new file mode 100644
+index 0000000..7a21008
+--- /dev/null
++++ b/frontend/src/components/Passport.jsx
+@@ -0,0 +1,32 @@
++import React from 'react'
++import { clean } from '../format'
++import { Panel, StatusPill, TierBadge } from './ui'
++
++const SIGNATURE = { signed: 'Signed (verified)', unsigned: 'Unsigned', invalid: 'Invalid signature' }
++
++function isoDate(ts) {
++  const d = new Date(ts)
++  return Number.isNaN(d.getTime()) ? clean(String(ts || '')) : d.toISOString().slice(0, 10)
++}
++
++export default function Passport({ agent }) {
++  const p = agent.passport || {}
++  const sig = SIGNATURE[agent.card_signature] || 'Unsigned'
++  const status = agent.status === 'pending_review' ? 'Pending review' : clean(agent.status)
++  return (
++    <Panel title="AI Passport" testid="passport" aside={<TierBadge tier={agent.tier} />}>
++      <dl className="kv">
++        <dt>Identity</dt><dd data-testid="passport-identity">{clean(p.identity || agent.name)}</dd>
++        <dt>Allowed skills</dt>
++        <dd><ul className="tags">{(p.allowed_skills || []).map((s) => <li key={s} className="chip" data-testid="passport-skill">{clean(s)}</li>)}
++          {!(p.allowed_skills || []).length && <li className="muted">none</li>}</ul></dd>
++        <dt>Data scopes</dt>
++        <dd><ul className="tags">{(p.data_scopes || []).map((s) => <li key={s} className="chip" data-testid="passport-scope">{clean(s)}</li>)}
++          {!(p.data_scopes || []).length && <li className="muted">none</li>}</ul></dd>
++        <dt>Expires</dt><dd data-testid="passport-expiry">{isoDate(p.expires_at)}</dd>
++        <dt>Card signature</dt><dd data-testid="passport-signature">{sig}</dd>
++        <dt>Status</dt><dd data-testid="passport-status">{status}</dd>
++      </dl>
++    </Panel>
++  )
++}
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index 91e0b6b..9f53fb3 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -2,6 +2,7 @@ import React from 'react'
+ import { Link, useParams } from 'react-router-dom'
+ import { api } from '../api'
+ import { clean, fmtTs } from '../format'
++import Passport from '../components/Passport'
+ import Markdown from '../components/Markdown'
+ import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
+ 
+@@ -204,6 +205,7 @@ function AgentView({ id }) {
+         <div id="evidence-pack-slot" data-slot="evidence-pack" />
+       </div>
+       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
++      {a.origin === 'external' && <Passport agent={a} />}
+       <div className="grid">
+         <TierCard agent={a} />
+         <Identity agent={a} />
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+index 6169b40..7e7d0a6 100644
+--- a/frontend/src/pages/Register.jsx
++++ b/frontend/src/pages/Register.jsx
+@@ -1,12 +1,73 @@
+ import React from 'react'
+ import { Link } from 'react-router-dom'
++import { registerExternal } from '../api'
++import { clean } from '../format'
++import Passport from '../components/Passport'
++
++// No GET /api/tiering/criteria route exists, so the seven names from config/tiering.yaml are listed here.
++const CRITERIA = [
++  ['decision_impact', 'Decision impact', 'How material are the decisions this agent makes or drives?'],
++  ['financial_exposure', 'Financial exposure', 'How much money can it move or commit?'],
++  ['customer_impact', 'Customer impact', 'How strongly can it affect customers?'],
++  ['autonomy', 'Autonomy', 'How much does it act without human review?'],
++  ['data_sensitivity', 'Data sensitivity', 'How sensitive is the data it can reach?'],
++  ['reversibility', 'Reversibility', 'How hard is it to undo what it does?'],
++  ['regulatory_exposure', 'Regulatory exposure', 'How much regulatory or legal exposure does it carry?'],
++]
+ 
+ export default function Register() {
++  const [url, setUrl] = React.useState('')
++  const [vals, setVals] = React.useState(() => Object.fromEntries(CRITERIA.map(([k]) => [k, '3'])))
++  const [scopes, setScopes] = React.useState('')
++  const [busy, setBusy] = React.useState(false)
++  const [error, setError] = React.useState(null)
++  const [agent, setAgent] = React.useState(null)
++
++  const submit = async (e) => {
++    e.preventDefault()
++    setBusy(true); setError(null); setAgent(null)
++    const criteria = Object.fromEntries(CRITERIA.map(([k]) => [k, Number(vals[k])]))
++    criteria.data_scopes = scopes.split(',').map((s) => s.trim()).filter(Boolean)
++    try {
++      setAgent(await registerExternal({ card_url: url.trim(), criteria }))
++    } catch (err) {
++      setError(`${err.status ? err.status + ': ' : ''}${clean(err.message)}`)
++    } finally { setBusy(false) }
++  }
++
+   return (
+     <div>
++      <p><Link to="/">Fleet</Link> / Register external agent</p>
+       <h1>Register external agent</h1>
+-      <p className="muted">Registration form arrives in a later task.</p>
+-      <Link to="/">Back to fleet</Link>
++      <form onSubmit={submit} className="panel">
++        <div className="panel-body">
++          <p><label>Agent card URL<br />
++            <input type="url" data-testid="card-url" value={url} onChange={(e) => setUrl(e.target.value)}
++                   placeholder="https://agent.example.com/.well-known/agent-card.json" style={{ width: '100%' }} />
++          </label></p>
++          <h2>Consequence criteria</h2>
++          <p className="muted">Score each from 1 (low) to 5 (high).</p>
++          {CRITERIA.map(([k, name, prompt]) => (
++            <p key={k}><label>{name}: <span className="muted">{prompt}</span><br />
++              <select data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
++                {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
++              </select>
++            </label></p>
++          ))}
++          <p><label>Data scopes (comma-separated)<br />
++            <input type="text" data-testid="data-scopes" value={scopes} onChange={(e) => setScopes(e.target.value)}
++                   placeholder="accounts:read, payments:write" style={{ width: '100%' }} />
++          </label></p>
++          {error && <div className="alert error" role="alert" data-testid="register-error">{error}</div>}
++          <button type="submit" className="btn primary" disabled={!url.trim() || busy}>Register</button>
++        </div>
++      </form>
++      {agent && (
++        <div>
++          <Passport agent={agent} />
++          <p><Link to={`/agents/${encodeURIComponent(agent.id)}`}>Open the agent page</Link></p>
++        </div>
++      )}
+     </div>
+   )
+ }
+diff --git a/requirements.txt b/requirements.txt
+index 62012d7..63e3798 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -11,3 +11,5 @@ requests
+ scikit-learn
+ joblib
+ mlflow
++jsonschema>=4.0
++cryptography>=41
