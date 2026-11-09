@@ -219,7 +219,7 @@ def test_ac10_evidence_pack_includes_validation_record(client):
     low = text.lower()
     assert "no validation record" not in low
     assert "0.825" in text and "0.400" in text and "0.950" in text
-    assert "80.0%" in text or "0.800" in text or "0.8" in text
+    assert "80.0%" in text
     assert "sonnet" in low
     assert f"validation_records:{rid}" in json.dumps(sec["citations"])
     assert "claude" not in low
