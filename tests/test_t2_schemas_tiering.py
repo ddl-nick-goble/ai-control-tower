@@ -93,39 +93,143 @@ def test_ac2_canonical_event_bad_kind():
         validator("canonical-event.json").validate({**EVENT, "kind": "foo"})
 
 
-@pytest.mark.parametrize("t", ["scope_drift", "shadow_agent"])
-def test_ac2_finding_types(t):
-    f = {"type": t, "severity": "high", "agent_id": "a1", "run_id": "r1",
-         "span_id": "s1", "span": "s1", "tool": "search", "tool_name": "search",
-         "ts": "2026-01-01T00:00:00Z", "timestamp": "2026-01-01T00:00:00Z"}
+FINDING = {"type": "scope_drift", "severity": "high", "agent_id": "a1", "run_id": "r1",
+           "span_id": "s1", "tool": "search", "ts": "2026-01-01T00:00:00Z"}
+
+
+def test_ac6_finding_scope_drift_valid():
+    validator("finding.json").validate(FINDING)
+
+
+@pytest.mark.parametrize("k", ["tool", "span_id", "ts", "run_id"])
+def test_ac6_scope_drift_requires_field(k):
+    f = {x: y for x, y in FINDING.items() if x != k}
+    with pytest.raises(jsonschema.ValidationError):
+        validator("finding.json").validate(f)
+
+
+@pytest.mark.parametrize("reason", ["tool_not_in_manifest", "value_limit_exceeded"])
+def test_ac6_scope_drift_reasons(reason):
+    f = {**FINDING, "reason": reason}
+    if reason == "value_limit_exceeded":
+        f.update(observed_value=5000, limit=1000)
     validator("finding.json").validate(f)
 
 
-def test_ac2_evidence_pack_valid():
-    s = load_schema("evidence-pack.json")
-    text = json.dumps(s).lower()
-    for w in ["identity", "tier", "permitted", "validation", "monitoring", "approvals", "retention", "citations"]:
-        assert w in text, w
-    cit = [{"source": "audit", "ref": "e1", "id": "e1", "url": "http://x/e1"}]
-    names = ["identity_ownership", "tier_criteria", "permitted_actions", "validation",
-             "monitoring_findings", "approvals_overrides", "records_retention"]
-    props = s.get("properties", {})
-    sections = props.get("sections")
-    assert sections is not None or all(n in props for n in names) or True
-    sec = {"title": "t", "content": {}, "citations": cit}
-    candidates = [
-        {"sections": [dict(sec, name=n, id=n, key=n) for n in names]},
-        {"sections": {n: sec for n in names}},
-        {n: sec for n in names},
-    ]
-    v = validator("evidence-pack.json")
-    ok = False
-    for c in candidates:
-        c = {**c, "agent_id": "a1", "generated_at": "2026-01-01T00:00:00Z"}
-        if not list(v.iter_errors(c)):
-            ok = True
-            break
-    assert ok, "no plausible evidence pack example validated"
+def test_ac6_value_limit_breach_is_scope_drift_with_observed_and_limit():
+    f = {**FINDING, "tool": "transfer_funds", "reason": "value_limit_exceeded",
+         "observed_value": 250000, "limit": 10000}
+    validator("finding.json").validate(f)
+    props = load_schema("finding.json").get("properties", {})
+    for k in ("reason", "observed_value", "limit"):
+        assert k in props, k
+
+
+def test_ac6_rejects_value_limit_type():
+    with pytest.raises(jsonschema.ValidationError):
+        validator("finding.json").validate({**FINDING, "type": "value_limit"})
+
+
+def test_ac6_rejects_bad_reason():
+    with pytest.raises(jsonschema.ValidationError):
+        validator("finding.json").validate({**FINDING, "reason": "because"})
+
+
+def test_ac6_shadow_agent_valid_without_tool():
+    f = {"type": "shadow_agent", "severity": "medium", "agent_id": "unknown-1", "run_id": "r1",
+         "ts": "2026-01-01T00:00:00Z"}
+    validator("finding.json").validate(f)
+
+
+SECTION_IDS = ["identity_ownership", "tier_criteria", "permitted_actions", "validation",
+               "monitoring_findings", "approvals_overrides", "records_retention"]
+
+
+def _pack(ids=None):
+    ids = SECTION_IDS if ids is None else ids
+    cit = [{"source": "audit", "ref": "e1"}]
+    return {"agent_id": "a1", "generated_at": "2026-01-01T00:00:00Z",
+            "sections": [{"id": i, "title": i.replace("_", " ").title(), "content": "text",
+                          "citations": copy.deepcopy(cit)} for i in ids]}
+
+
+def test_ac7_evidence_pack_valid():
+    validator("evidence-pack.json").validate(_pack())
+
+
+def test_ac7_evidence_pack_sections_is_array_of_seven():
+    sec = load_schema("evidence-pack.json")["properties"]["sections"]
+    assert sec["type"] == "array"
+    assert sec.get("minItems") == 7 and sec.get("maxItems") == 7
+
+
+def test_ac7_evidence_pack_rejects_swapped_order():
+    ids = list(SECTION_IDS)
+    ids[0], ids[1] = ids[1], ids[0]
+    with pytest.raises(jsonschema.ValidationError):
+        validator("evidence-pack.json").validate(_pack(ids))
+
+
+def test_ac7_evidence_pack_rejects_empty_citations():
+    p = _pack()
+    p["sections"][3]["citations"] = []
+    with pytest.raises(jsonschema.ValidationError):
+        validator("evidence-pack.json").validate(p)
+
+
+def test_ac7_evidence_pack_rejects_six_sections():
+    with pytest.raises(jsonschema.ValidationError):
+        validator("evidence-pack.json").validate(_pack(SECTION_IDS[:6]))
+
+
+@pytest.mark.parametrize("k", ["id", "title", "content", "citations"])
+def test_ac7_evidence_pack_section_requires_field(k):
+    p = _pack()
+    del p["sections"][2][k]
+    with pytest.raises(jsonschema.ValidationError):
+        validator("evidence-pack.json").validate(p)
+
+
+EXTERNAL = {
+    **RECORD,
+    "id": "ext-1",
+    "origin": "external",
+    "status": "pending_review",
+    "card_signature": "signed",
+    "passport": {"identity": "https://partner.example.com/agent",
+                 "allowed_skills": ["triage"], "data_scopes": ["disputes"],
+                 "expires_at": "2027-01-01T00:00:00Z"},
+}
+
+
+def test_ac11_external_agent_record_valid():
+    validator("agent-record.json").validate(EXTERNAL)
+
+
+@pytest.mark.parametrize("sig", ["signed", "unsigned", "invalid"])
+def test_ac11_card_signature_values(sig):
+    validator("agent-record.json").validate({**EXTERNAL, "card_signature": sig})
+
+
+def test_ac11_card_signature_bogus_rejected():
+    with pytest.raises(jsonschema.ValidationError):
+        validator("agent-record.json").validate({**EXTERNAL, "card_signature": "bogus"})
+
+
+def test_ac11_origin_defined():
+    props = load_schema("agent-record.json")["properties"]
+    for k in ("origin", "card_signature", "passport"):
+        assert k in props, k
+
+
+def test_ac1_no_distinct_identity_validates():
+    r = {**RECORD, "identity": {"type": "none", "distinct": False}}
+    validator("agent-record.json").validate(r)
+
+
+def test_ac9_registered_by_accepted():
+    validator("agent-record.json").validate({**RECORD, "registered_by": "alice"})
+    assert "registered_by" in load_schema("agent-record.json")["properties"]
 
 
 def test_ac3_tiering_yaml():
@@ -188,7 +292,7 @@ def test_ac3_benchmark_input_rejected():
         crit = _crit(3); crit[extra] = 5
         with pytest.raises(TieringInputRejected) as e:
             score_tier(crit)
-        assert "benchmark" in str(e.value).lower() or "backtest" in str(e.value).lower()
+        assert "no_benchmark_rule" in str(e.value)
 
 
 def test_ac3_modified_config_weights_change_tier():
@@ -205,3 +309,38 @@ def test_ac3_modified_config_weights_change_tier():
     assert base.tier == 4
     assert changed.tier == 1
     assert changed.tier != base.tier
+
+
+def _scores(v):
+    return {n: v for n in CRITERIA}
+
+
+def test_ac3_all_fours_is_tier1_boundary():
+    # weighted mean is exactly 4.0; guards float rounding at the threshold
+    from backend.tiering import score_tier
+    assert score_tier(_scores(4)).tier == 1
+
+
+def test_ac3_all_threes_is_tier2():
+    from backend.tiering import score_tier
+    assert score_tier(_scores(3)).tier == 2
+
+
+def test_ac3_all_twos_is_tier3():
+    from backend.tiering import score_tier
+    assert score_tier(_scores(2)).tier == 3
+
+
+def test_ac3_non_uniform_weights():
+    # heavy criteria (weights 0.2/0.2/0.15/0.15) at 5, light ones at 2:
+    # weighted mean 4.1 -> Tier 1; unweighted mean 3.71 would be Tier 2.
+    from backend.tiering import score_tier
+    cfg = yaml.safe_load((ROOT / "config" / "tiering.yaml").read_text())
+    for n, w in {"decision_impact": 0.20, "financial_exposure": 0.20, "customer_impact": 0.15,
+                 "autonomy": 0.15, "data_sensitivity": 0.10, "reversibility": 0.10,
+                 "regulatory_exposure": 0.10}.items():
+        cfg["criteria"][n]["weight"] = w
+    s = _scores(2)
+    for n in ("decision_impact", "financial_exposure", "customer_impact", "autonomy"):
+        s[n] = 5
+    assert score_tier(s, config=cfg).tier == 1
