@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://act.example/schemas/evidence-pack.json",
+  "title": "ACT Evidence Pack",
+  "description": "Seven sections in OCC 2026-54 order; each cites the source records.",
+  "type": "object",
+  "required": [
+    "agent_id",
+    "generated_at",
+    "sections"
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sections": {
+      "type": "object",
+      "required": [
+        "identity_ownership",
+        "tier_criteria",
+        "permitted_actions",
+        "validation",
+        "monitoring_findings",
+        "approvals_overrides",
+        "records_retention"
+      ],
+      "properties": {
+        "identity_ownership": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Identity and ownership"
+        },
+        "tier_criteria": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Tier and criteria"
+        },
+        "permitted_actions": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Permitted actions"
+        },
+        "validation": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Validation"
+        },
+        "monitoring_findings": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Monitoring and findings"
+        },
+        "approvals_overrides": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Approvals and overrides"
+        },
+        "records_retention": {
+          "type": "object",
+          "required": [
+            "title",
+            "content",
+            "citations"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "content": {},
+            "citations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "ref"
+                ],
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true,
+          "description": "Records and retention"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

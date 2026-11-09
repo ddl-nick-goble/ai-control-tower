@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://act.example/schemas/canonical-event.json",
+  "title": "ACT Canonical Event",
+  "description": "One normalized trace event. Actor fields follow OCSF 1.8 ai_agent; decision attrs follow Atryum's per-action record.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "agent_id",
+    "ts",
+    "kind",
+    "name",
+    "args_redacted",
+    "attrs"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "kind": {
+      "enum": [
+        "input",
+        "model_call",
+        "tool_call",
+        "output",
+        "approval",
+        "override"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "span_id": {
+      "type": "string"
+    },
+    "parent_span_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "args_redacted": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "null"
+      ]
+    },
+    "attrs": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

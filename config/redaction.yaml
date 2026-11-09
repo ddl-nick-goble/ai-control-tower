@@ -1,0 +1,26 @@
+replacement: "[REDACTED]"
+keys:   # case-insensitive substring match on argument keys
+  - password
+  - passwd
+  - secret
+  - token
+  - api_key
+  - apikey
+  - authorization
+  - credential
+  - ssn
+  - account_number
+  - acct
+  - card_number
+  - pan
+patterns:   # regexes applied to string values
+  - name: ssn
+    regex: '\b\d{3}-\d{2}-\d{4}\b'
+  - name: account_number
+    regex: '\b\d{9,17}\b'
+  - name: bearer_token
+    regex: '(?i)bearer\s+[A-Za-z0-9._~+/=-]+'
+  - name: jwt
+    regex: '\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b'
+  - name: aws_access_key
+    regex: '\bAKIA[0-9A-Z]{16}\b'
