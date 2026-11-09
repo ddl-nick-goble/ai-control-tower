@@ -8,6 +8,48 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 POLICIES = ["ACT 2026-54 Agentic Governance", "SR 26-2 Model Risk (slim)"]
 RECON_NATIVE = "recon-agent"
+RECON_CRITERIA = {}  # filled from config/tiering.yaml at seed time
+SECOND_TRACE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+
+
+def _attr(k, v):
+    return {"key": k, "value": {"intValue": str(v)} if isinstance(v, int) else {"stringValue": v}}
+
+
+def _second_run_doc():
+    t0 = 1794100000  # 2026-11-08, a different day from the weekend-drift run
+    def span(i, name, off, attrs, kind=1):
+        d = {"traceId": SECOND_TRACE, "spanId": f"{i:016x}", "name": name, "kind": kind,
+             "startTimeUnixNano": str((t0 + off) * 10**9), "endTimeUnixNano": str((t0 + off + 1) * 10**9),
+             "attributes": [_attr(k, v) for k, v in attrs], "status": {"code": 1}}
+        if i != 1:
+            d["parentSpanId"] = f"{1:016x}"
+        return d
+    spans = [
+        span(1, "invoke_agent anthropic.claude-sonnet-4", 0, [
+            ("gen_ai.operation.name", "invoke_agent"), ("gen_ai.agent.id", "treasury_sweep_agent-Xk3Lq9ZpT2"),
+            ("gen_ai.agent.name", "treasury-sweep-agent"),
+            ("gen_ai.provider.name", "aws.bedrock"),
+            ("gen_ai.input.messages", json.dumps([{"role": "user", "content": "Sweep surplus balances."}])),
+            ("gen_ai.output.messages", json.dumps([{"role": "assistant", "content": "Sweep submitted."}]))]),
+        span(2, "chat anthropic.claude-sonnet-4", 1, [
+            ("gen_ai.operation.name", "chat"), ("gen_ai.request.model", "anthropic.claude-sonnet-4"),
+            ("gen_ai.usage.input_tokens", 900), ("gen_ai.usage.output_tokens", 120)], kind=3),
+        span(3, "execute_tool get_balance", 2, [
+            ("gen_ai.operation.name", "execute_tool"), ("gen_ai.tool.name", "get_balance"),
+            ("gen_ai.tool.call.arguments", json.dumps({"account": "OPS-USD-001"})),
+            ("gen_ai.tool.call.result", json.dumps({"balance": 5000000}))]),
+        span(4, "execute_tool transfer_funds", 3, [
+            ("gen_ai.operation.name", "execute_tool"), ("gen_ai.tool.name", "transfer_funds"),
+            ("gen_ai.tool.call.arguments", json.dumps(
+                {"from": "OPS-USD-001", "to": "CONC-USD-100", "amount": "5 mln", "currency": "USD"})),
+            ("gen_ai.tool.call.result", json.dumps({"status": "settled"}))]),
+    ]
+    return {"resourceSpans": [{"resource": {"attributes": [
+        _attr("service.name", "treasury-sweep-agent"), _attr("cloud.provider", "aws"),
+        _attr("cloud.platform", "aws_bedrock_agentcore")]},
+        "scopeSpans": [{"scope": {"name": "opentelemetry.instrumentation.genai", "version": "1.0.0"},
+                        "spans": spans}]}]}
 
 
 def seed(db_path: str) -> dict:
@@ -29,6 +71,10 @@ def seed(db_path: str) -> dict:
     from jobs.intake import run_intake
     run_intake()
 
+    import yaml
+    global RECON_CRITERIA
+    spec = yaml.safe_load((ROOT / "config" / "tiering.yaml").read_text())["criteria"]
+    RECON_CRITERIA = {k: 3 for k in spec}
     aid = act_id("domino", RECON_NATIVE)
     ts = now_iso()
     manifest = {"tools": ["fetch_ledger", "compare_entries", "propose_adjustment"],
@@ -42,12 +88,17 @@ def seed(db_path: str) -> dict:
             criteria={}, status="discovered", registered_by="seed-user", registered_by_username="seed-user",
             last_seen=ts, record=rec, bundle_id="bundle-recon-demo-1",
             governance={"policies": POLICIES, "stage": "draft"}))
+        rec["identity"] = {"type": "domino_service_account", "principal": "svc-act-recon", "distinct": True}
+        cx.execute(db.agents.update().where(db.agents.c.id == aid).values(record=rec))
         cx.execute(db.manifests.insert().values(agent_id=aid, version="1", content=manifest, created_at=ts))
         cx.execute(db.dependencies.insert().values(
             agent_id=aid, kind="model", name="break_classifier", target="5",
             record={"name": "break_classifier", "registry_version": "5"}))
 
     client = TestClient(backend.main.app)
+    hdr = {"X-Domino-User-Id": "seed-user", "X-Domino-User": "seed-user"}
+    r = client.post(f"/api/agents/{aid}/tier", headers=hdr, json={"criteria": RECON_CRITERIA})
+    assert r.status_code == 200, r.text
     spans_doc = json.loads((ROOT / "fixtures" / "runs" / "weekend-drift.json").read_text())
     r = client.post("/v1/traces", json=spans_doc,
                     headers={"X-Domino-User-Id": "seed-user", "X-Domino-User": "seed-user"})
@@ -64,8 +115,12 @@ def seed(db_path: str) -> dict:
             break
         time.sleep(0.2)
     assert run_id, "drift finding was not created"
+    r = client.post("/v1/traces", json=_second_run_doc(), headers=hdr)
+    assert r.status_code == 200, r.text
+    time.sleep(1.5)  # let drift evaluation for the second run settle
     db.engine.dispose()
-    return {"recon_id": aid, "treasury_id": tid, "run_id": run_id}
+    return {"recon_id": aid, "treasury_id": tid, "run_id": run_id, "run2_id": SECOND_TRACE,
+            "approvable_id": act_id("aws", "kyc-refresh-agent")}
 
 
 if __name__ == "__main__":
