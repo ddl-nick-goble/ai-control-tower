@@ -44,7 +44,7 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 | T-9 | AC-5 UI, AC-6 UI, AC-8 UI, AC-12 | T-4, T-5, T-6, T-8/T-8b | frontend/src/ | builder + domino-deploy (sonnet, proxy check) | ui-tester, visual-reviewer, code-reviewer | task/T-9 | 50dcd2f | merged (8ee5258) |
 | T-10 | AC-7, AC-12 (pack) | T-8/T-8b, T-9 | backend/evidence.py, backend/routes/evidence.py, frontend/src/components/EvidencePack.jsx, frontend/src/pages/Agent.jsx (evidence-pack slot and runs card), backend/routes/runs.py (GET /api/agents/{id}/runs, granted in round 2) | builder | ui-tester, test-author, visual-reviewer, code-reviewer | task/T-10 | b342075 | merged (0ef9892) |
 | T-12 | AC-11 | T-4, T-9 | backend/external.py, backend/routes/external.py, frontend/src/pages/Register.jsx (replaces the T-9 stub) | builder | test-author, ui-tester, visual-reviewer, code-reviewer | task/T-12 | 65e16e6 | building |
-| T-11 | AC-10 | T-7, T-10 | jobs/validate.py, eval/, backend/routes/validation.py, backend/evidence.py (validation section) | builder | test-author, code-reviewer | task/T-11 | — | pending |
+| T-11 | AC-10 | T-7, T-10 | jobs/validate.py, eval/, backend/routes/validation.py, backend/evidence.py (validation section) | builder | test-author, code-reviewer | task/T-11 | — | tests |
 | T-13 | AC-12 e2e, DoD | all | docs/, jobs/seed_demo.py, README.md | builder | ui-tester (full), test-author (full) | task/T-13 | — | pending |
 
 Shared registration of routers in backend/main.py belongs to T-1. Later tasks that need a router mounted must either use an auto-include pattern that T-1 provides or report the needed change.
