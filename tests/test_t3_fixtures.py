@@ -5,6 +5,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 import urllib.request
 from pathlib import Path
 
@@ -236,15 +237,32 @@ def test_ac1_mlflow_attributes():
 
 # ---------- external agent card ----------
 def test_ac1_agent_card_fields():
+    """A2A 1.0 Agent Card schema."""
     p = FIX / "external" / "agent-card.json"
     assert p.exists(), "fixtures/external/agent-card.json missing"
     c = load(p)
-    for k in ("name", "description", "version", "url", "skills", "capabilities"):
+    for k in ("name", "description", "version", "skills", "capabilities",
+              "defaultInputModes", "defaultOutputModes", "supportedInterfaces"):
         assert k in c, f"agent card missing {k}"
     assert isinstance(c["skills"], list) and c["skills"]
-    for s in c["skills"]:
-        assert s.get("id") and s.get("name")
+    for sk in c["skills"]:
+        for k in ("id", "name", "description", "tags"):
+            assert sk.get(k), f"skill missing {k}"
+        assert isinstance(sk["tags"], list)
     assert isinstance(c["capabilities"], dict)
+    assert isinstance(c["defaultInputModes"], list) and isinstance(c["defaultOutputModes"], list)
+    ifs = c["supportedInterfaces"]
+    assert isinstance(ifs, list) and ifs, "supportedInterfaces must be a non-empty list"
+    for i in ifs:
+        for k in ("url", "protocolBinding", "protocolVersion"):
+            assert i.get(k), f"supportedInterfaces item missing {k}"
+        assert str(i["protocolVersion"]).startswith("1."), i["protocolVersion"]
+
+
+def test_ac1_agent_card_has_no_pre_1_0_top_level_keys():
+    c = load(FIX / "external" / "agent-card.json")
+    for k in ("url", "preferredTransport", "protocolVersion"):
+        assert k not in c, f"pre-1.0 top-level key {k} must not be present"
 
 
 def test_ac1_agent_card_served_over_http():
@@ -313,26 +331,6 @@ def test_ac12_manifest_has_transfer_funds_limit_not_list_credentials():
     assert isinstance(lim, (int, float)) and not isinstance(lim, bool), f"no numeric limit: {limits}"
 
 
-def _amount(span):
-    a = attrs(span)
-    for k, v in a.items():
-        if "amount" in k.lower():
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                pass
-    for v in a.values():
-        if isinstance(v, str) and "amount" in v:
-            try:
-                d = json.loads(v)
-            except ValueError:
-                continue
-            for o in walk(d):
-                if isinstance(o, dict) and "amount" in o:
-                    return float(o["amount"])
-    return None
-
-
 def test_ac12_weekend_drift_calls_and_amount_over_limit():
     assert DRIFT.exists(), "fixtures/runs/weekend-drift.json missing"
     spans = spans_of(load(DRIFT))
@@ -354,11 +352,101 @@ def test_ac12_weekend_drift_calls_and_amount_over_limit():
     assert limits and "transfer_funds" in limits, "manifest limit not found"
     lim = limits["transfer_funds"]
     lim = lim.get("amount") if isinstance(lim, dict) else lim
-    amt = _amount(hit[0])
-    assert amt is not None, "transfer_funds span has no amount argument"
+    execs = [s for s in hit if attrs(s).get("gen_ai.operation.name") == "execute_tool"
+             or s.get("name", "").startswith("execute_tool")]
+    assert execs, "transfer_funds call is not an execute_tool span"
+    raw = attrs(execs[0]).get("gen_ai.tool.call.arguments")
+    assert isinstance(raw, str), "execute_tool span lacks gen_ai.tool.call.arguments JSON string"
+    args = json.loads(raw)
+    assert isinstance(args, dict)
+    amt = args.get("amount")
+    assert isinstance(amt, (int, float)) and not isinstance(amt, bool), f"amount not numeric: {amt!r}"
     assert amt > lim
 
 
 def test_ac12_weekend_drift_is_for_treasury_sweep_agent():
     assert DRIFT.exists(), "fixtures/runs/weekend-drift.json missing"
     assert "treasury-sweep-agent" in DRIFT.read_text()
+
+
+# ---------- native ids / distinct runs / uuid shape ----------
+def _native_ids():
+    ids = set()
+    for a in list_items("aws", "agentRuntimes"):
+        ids.add(a.get("agentRuntimeId"))
+    for f in jfiles("google"):
+        d = load(f)
+        for v in d.values() if isinstance(d, dict) else []:
+            for i in v if isinstance(v, list) else []:
+                if isinstance(i, dict) and str(i.get("name", "")).startswith("projects/"):
+                    ids.add(i["name"]); ids.add(i["name"].rsplit("/", 1)[-1])
+        for o in walk(d):
+            if isinstance(o, dict) and o.get("agentEngine"):
+                ids.add(o["agentEngine"]); ids.add(o["agentEngine"].rsplit("/", 1)[-1])
+    for p in list_items("microsoft", "value"):
+        ids.add(p.get("id"))
+    for f in jfiles("databricks"):
+        d = load(f)
+        for v in d.values() if isinstance(d, dict) else []:
+            for i in v if isinstance(v, list) else []:
+                if isinstance(i, dict):
+                    ids.add(i.get("agent_service_id"))
+    ids.discard(None)
+    assert len(ids) >= 8, f"native id set suspiciously small: {ids}"
+    return ids
+
+
+def _is_agent_span(s):
+    a = attrs(s)
+    return (a.get("gen_ai.operation.name") == "invoke_agent"
+            or s.get("name", "").startswith("invoke_agent")
+            or a.get("openinference.span.kind") == "AGENT"
+            or a.get("mlflow.spanType") == "AGENT")
+
+
+def test_ac1_every_run_agent_span_carries_native_agent_id():
+    ids = _native_ids()
+    files = require("runs")
+    for f in files:
+        d = load(f)
+        res = {}
+        for rs in d.get("resourceSpans", []):
+            res.update(attrs(rs.get("resource", {})))
+        agent_spans = [s for s in spans_of(d) if _is_agent_span(s)]
+        assert agent_spans, f"{f.name}: no agent-level span"
+        for s in agent_spans:
+            v = attrs(s).get("gen_ai.agent.id") or res.get("gen_ai.agent.id")
+            assert v, f"{f.name}: agent span lacks gen_ai.agent.id"
+            assert v in ids, f"{f.name}: gen_ai.agent.id {v!r} is not a native platform id"
+
+
+def test_ac1_trace_ids_distinct_between_run_files():
+    files = require("runs")
+    seen = {}
+    for f in files:
+        tids = {s.get("traceId") for s in spans_of(load(f))}
+        assert len(tids) == 1 and None not in tids, f"{f.name}: expected one traceId, got {tids}"
+        t = tids.pop()
+        assert t not in seen, f"traceId {t} shared by {seen[t]} and {f.name}"
+        seen[t] = f.name
+
+
+def test_ac1_microsoft_principal_id_is_uuid():
+    pk = list_items("microsoft", "value")
+    assert pk
+    vals = [p.get("identity", {}).get("principalId") for p in pk]
+    vals = [v for v in vals if v is not None]
+    assert vals, "no principalId values"
+    for v in vals:
+        assert str(uuid.UUID(v)) == v.lower(), f"principalId not canonical 8-4-4-4-12 UUID: {v}"
+
+
+def test_ac1_databricks_application_id_is_uuid():
+    n = 0
+    for f in jfiles("databricks"):
+        for o in walk(load(f)):
+            if isinstance(o, dict) and "application_id" in o:
+                v = o["application_id"]
+                assert str(uuid.UUID(v)) == v.lower(), f"application_id not canonical UUID: {v}"
+                n += 1
+    assert n >= 1
