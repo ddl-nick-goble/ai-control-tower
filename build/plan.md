@@ -8,7 +8,9 @@ Budget: $1,900. If spend passes $1,100 before T-9 is green, defer T-11 and T-12 
 - Playwright and Chromium are installed in the running workspace with sudo (`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`). This is not in the compute environment, so reinstall after a workspace restart. `packaging` is pinned back to 23.2 for dominodatalab and mlflow.
 - Node 22 + npm 10 installed in the workspace with sudo from NodeSource (not in the compute environment, so reinstall after a restart). A deployed App needs node in its environment, or a committed frontend/dist.
 - MLflow 3.3.2 (< 3.11): T-7 posts spans to ACT `/v1/traces` directly from the agent's tracing hook (handoff fallback).
-- Open: LLM Gateway 2.0 aliases (needed by T-6), Governance API from a service account (T-8), second approver user (AC-9 demo).
+- LLM Gateway: the "LLM Gateway" App at apps.se-demo.domino.tech/apps/llmgateway is Running (probably Gateway 2.0); there is no legacy AI Gateway. BLOCKED on consent: every route redirects to /app-consent until Nick opens the URL once and accepts, and LLM_GATEWAY_URL needs to be set as a Project env var. Aliases are unconfirmed.
+- Model registry reachable through MLflow; model name break_classifier with alias champion.
+- Open: LLM Gateway aliases (needed by T-6, T-7 live), Governance API from a service account (T-8), second approver user (AC-9 demo).
 
 ## Waves
 A task joins a wave once its dependencies are merged and its Touches list does not overlap another task in the same wave.
