@@ -10,11 +10,31 @@ QA_ROOT="$(python3 -c 'import json;p=json.load(open("/mnt/code/build/budget.json
 # 1. Domino plugin at the newest release
 latest=$(git ls-remote --tags "$REPO_URL" 'release-*' 2>/dev/null \
   | sed -n 's#.*refs/tags/release-\([0-9.]*\)$#\1#p' | sort -V | tail -1)
-installed=$(find "$HOME/.claude/plugins" -path '*dominodatalab*' -path '*.claude-plugin*' \
+# Look in both the plugin cache and local-directory marketplaces.
+installed=$(find "$HOME/.claude/plugins" "$HOME/.claude/marketplaces" \
+  \( -path '*dominodatalab*' -o -path '*domino*' \) -path '*.claude-plugin*' \
   -name plugin.json 2>/dev/null | xargs -r -n1 python3 -c \
   'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' 2>/dev/null \
-  | sort -V | tail -1)
-if [ -z "$installed" ]; then
+  | grep -v '^$' | sort -V | tail -1)
+# A marketplace registered as a local directory in settings cannot be re-added or
+# updated from GitHub; report its version instead of trying.
+local_mkt=$(python3 -c '
+import json,os
+for f in ("~/.claude/settings.json","~/.claude/settings.local.json","/etc/claude-code/managed-settings.json"):
+    try: d=json.load(open(os.path.expanduser(f)))
+    except Exception: continue
+    s=(d.get("extraKnownMarketplaces") or {}).get("domino-marketplace",{}).get("source",{})
+    if s.get("source")=="directory": print(s.get("path","")); break
+' 2>/dev/null)
+if [ -n "$local_mkt" ]; then
+  if [ -n "$installed" ]; then
+    echo "PASS plugin $installed installed from local marketplace $local_mkt (not auto-updated)"
+    [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$installed" "$latest" | sort -V | tail -1)" != "$installed" ] \
+      && echo "WARN newer plugin release $latest exists; refresh $local_mkt to update"
+  else
+    echo "FAIL domino-marketplace is a local directory ($local_mkt) but no Domino plugin is installed from it"; fail=1
+  fi
+elif [ -z "$installed" ]; then
   claude plugin marketplace add dominodatalab/domino-ai-plugin \
     && claude plugin install "$PLUGIN" \
     && { echo "PASS plugin installed (${latest:-version unknown})"; restart=1; } \
