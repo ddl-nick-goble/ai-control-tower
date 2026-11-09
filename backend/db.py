@@ -136,6 +136,13 @@ findings = Table(
     Column("status", String, default="open"),
     Column("created_at", String),
     Column("detail", JSON),
+    Column("type", String),
+    Column("tool", String),
+    Column("span_id", String),
+    Column("ts", String),
+    Column("reason", Text),
+    Column("observed_value", String),
+    Column("limit", String),
 )
 
 approvals = Table(
