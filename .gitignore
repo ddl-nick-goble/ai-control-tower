@@ -1,2 +1,11 @@
 .claude/cost-ledger.json
 .worktrees/
+node_modules/
+dist/
+act.db*
+test-results/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.local
