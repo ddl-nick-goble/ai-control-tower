@@ -145,6 +145,8 @@ findings = Table(
     Column("reason", Text),
     Column("observed_value", String),
     Column("limit", String),
+    Index("ux_findings_run_drift", "run_id", "type", unique=True,
+          sqlite_where=text("type = 'scope_drift'"), postgresql_where=text("type = 'scope_drift'")),
 )
 
 approvals = Table(
@@ -212,9 +214,26 @@ def _migrate() -> None:
                               "ON events (run_id, span_id)"))
 
 
+def _ensure_findings_index() -> None:
+    """Unique partial index for one scope_drift finding per run; never crash on legacy duplicates."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_findings_run_drift "
+                              "ON findings (run_id, type) WHERE type = 'scope_drift'"))
+    except Exception:
+        log.warning("could not create ux_findings_run_drift (existing duplicate scope_drift findings?)",
+                    exc_info=True)
+
+
 def init_db() -> None:
-    metadata.create_all(engine)
+    try:
+        metadata.create_all(engine)
+    except Exception as e:
+        if "index" not in str(e).lower():
+            raise
+        log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
     _migrate()
+    _ensure_findings_index()
 
 
 def prewarm(n: int) -> None:
