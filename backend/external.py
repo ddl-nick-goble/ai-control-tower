@@ -61,6 +61,8 @@ def _allow_hosts() -> set:
 
 
 def _always_blocked(ip) -> bool:
+    if ip.version == 6 and ip in _COMPAT96:
+        return True  # deprecated IPv4-compatible ::/96 (includes ::, ::1)
     return ip.is_link_local  # 169.254.0.0/16, fe80::/10
 
 
@@ -69,6 +71,7 @@ def _ip_blocked(ip) -> bool:
 
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_COMPAT96 = ipaddress.ip_network("::/96")  # deprecated IPv4-compatible
 
 
 def _unwrap(ip):
@@ -108,7 +111,7 @@ def resolve_checked(host: str, port: int, deadline: float) -> list:
             ip = ipaddress.ip_address(info[4][0].split("%")[0])
         except ValueError:
             raise bad
-        ips.append(_unwrap(ip))
+        ips.append(ip if ip.version == 6 and ip in _COMPAT96 else _unwrap(ip))
     allowed = host.lower().strip("[]") in _allow_hosts() or any(str(i) in _allow_hosts() for i in ips)
     for ip in ips:
         if _always_blocked(ip) or (not allowed and _ip_blocked(ip)):

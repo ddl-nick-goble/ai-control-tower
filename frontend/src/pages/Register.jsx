@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { registerExternal } from '../api'
 import { clean } from '../format'
 import Passport from '../components/Passport'
+import { Identity } from './Agent'
 
 // No GET /api/tiering/criteria route exists, so the seven names from config/tiering.yaml are listed here.
 const CRITERIA = [
@@ -14,6 +15,17 @@ const CRITERIA = [
   ['reversibility', 'Reversibility', 'How hard is it to undo what it does?'],
   ['regulatory_exposure', 'Regulatory exposure', 'How much regulatory or legal exposure does it carry?'],
 ]
+
+function describeError(err) {
+  const detail = clean(err.message || '')
+  const lead = {
+    422: 'The agent card could not be accepted.',
+    502: 'The agent card could not be fetched from that address.',
+    504: 'The agent card server took too long to respond.',
+  }[err.status] || 'Registration failed.'
+  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '')
+  return d ? `${lead} ${d}` : lead
+}
 
 export default function Register() {
   const [url, setUrl] = React.useState('')
@@ -31,7 +43,7 @@ export default function Register() {
     try {
       setAgent(await registerExternal({ card_url: url.trim(), criteria }))
     } catch (err) {
-      setError(`${err.status ? err.status + ': ' : ''}${clean(err.message)}`)
+      setError(describeError(err))
     } finally { setBusy(false) }
   }
 
@@ -43,7 +55,7 @@ export default function Register() {
         <div className="panel-body">
           <p><label>Agent card URL<br />
             <input type="url" data-testid="card-url" value={url} onChange={(e) => setUrl(e.target.value)}
-                   placeholder="https://agent.example.com/.well-known/agent-card.json" style={{ width: '100%' }} />
+                   className="text-input" placeholder="https://agent.example.com/.well-known/agent-card.json" />
           </label></p>
           <h2>Consequence criteria</h2>
           <p className="muted">Score each from 1 (low) to 5 (high).</p>
@@ -56,7 +68,7 @@ export default function Register() {
           ))}
           <p><label>Data scopes (comma-separated)<br />
             <input type="text" data-testid="data-scopes" value={scopes} onChange={(e) => setScopes(e.target.value)}
-                   placeholder="accounts:read, payments:write" style={{ width: '100%' }} />
+                   className="text-input" placeholder="accounts:read, payments:write" />
           </label></p>
           {error && <div className="alert error" role="alert" data-testid="register-error">{error}</div>}
           <button type="submit" className="btn primary" disabled={!url.trim() || busy}>Register</button>
@@ -65,6 +77,7 @@ export default function Register() {
       {agent && (
         <div>
           <Passport agent={agent} />
+          <Identity agent={agent} />
           <p><Link to={`/agents/${encodeURIComponent(agent.id)}`}>Open the agent page</Link></p>
         </div>
       )}

@@ -29,18 +29,27 @@ function TierCard({ agent }) {
   )
 }
 
-function Identity({ agent }) {
+function wrapId(s) {
+  return String(s).split(/([/:@#?&=._-])/).map((part, i) => (i % 2 ? <React.Fragment key={i}>{part}<wbr /></React.Fragment> : part))
+}
+
+export function Identity({ agent }) {
   const id = agent.identity || {}
-  const noDistinct = !agent.identity || !id.type || id.type === 'none' || id.distinct === false
+  const asserted = id.type === 'a2a-card'
+  const sigText = { signed: 'signed and verified', unsigned: 'unsigned', invalid: 'signature invalid' }[agent.card_signature] || 'unsigned'
+  const noDistinct = !asserted && (!agent.identity || !id.type || id.type === 'none' || id.distinct === false)
   return (
     <Panel title="Identity binding" testid="identity-panel">
+      {asserted && (
+        <div className="alert asserted" data-testid="identity-card-asserted">Identity asserted by the agent card ({sigText})</div>
+      )}
       {noDistinct && (
         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
       )}
       <dl className="kv">
         <dt>Type</dt><dd>{id.type || '-'}</dd>
         <dt>Issuer</dt><dd>{id.issuer || '-'}</dd>
-        <dt>Principal id</dt><dd>{id.principal || id.subject || '-'}</dd>
+        <dt>Principal id</dt><dd className="wrap-id">{wrapId(id.principal || id.subject || '-')}</dd>
       </dl>
     </Panel>
   )
