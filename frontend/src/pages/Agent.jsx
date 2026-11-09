@@ -2,6 +2,7 @@ import React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { clean, fmtTs } from '../format'
+import Passport from '../components/Passport'
 import Markdown from '../components/Markdown'
 import EvidencePack from '../components/EvidencePack'
 import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
@@ -213,6 +214,7 @@ function AgentView({ id }) {
         <h1>{clean(a.name)}</h1>
       </div>
       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
+      {a.origin === 'external' && <Passport agent={a} />}
       <div className="grid">
         <TierCard agent={a} />
         <Identity agent={a} />

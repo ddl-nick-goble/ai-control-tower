@@ -12,8 +12,8 @@ JWS: signatures[] entries are verified over  protected_b64 + "." + b64url(compac
 card without "signatures")  with trusted keys from ACT_TRUSTED_JWKS_PATH (a JWK or {"keys": [...]}),
 matched by kid. ES256 and RS256 only. Library: cryptography (Apache-2.0/BSD).
 
-SSRF: the host is resolved inside the 5 s deadline, every address is vetted (loopback/private/link-local/
-reserved are refused unless allowlisted in ACT_EXTERNAL_ALLOW_HOSTS; port 8899 and link-local are always
+SSRF: the host is resolved inside the 5 s deadline, every address is vetted (anything not globally routable is
+refused unless allowlisted in ACT_EXTERNAL_ALLOW_HOSTS; port 8899 and link-local are always
 refused) and the connection is made to the vetted IP (Host header and SNI keep the original name).
 """
 import base64
@@ -65,8 +65,22 @@ def _always_blocked(ip) -> bool:
 
 
 def _ip_blocked(ip) -> bool:
-    return (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified or ip.is_multicast
-            or ip.is_reserved or ip.is_site_local or (ip.version == 6 and ip in ipaddress.ip_network("fc00::/7")))
+    return not ip.is_global
+
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _unwrap(ip):
+    """Return the IPv4 embedded in IPv4-mapped, NAT64 (64:ff9b::/96) and 6to4 (2002::/16) addresses."""
+    if ip.version == 6:
+        if ip.ipv4_mapped:
+            return ip.ipv4_mapped
+        if ip in _NAT64:
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if ip.sixtofour:
+            return ip.sixtofour
+    return ip
 
 
 def resolve_checked(host: str, port: int, deadline: float) -> list:
@@ -94,9 +108,7 @@ def resolve_checked(host: str, port: int, deadline: float) -> list:
             ip = ipaddress.ip_address(info[4][0].split("%")[0])
         except ValueError:
             raise bad
-        if ip.version == 6 and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        ips.append(ip)
+        ips.append(_unwrap(ip))
     allowed = host.lower().strip("[]") in _allow_hosts() or any(str(i) in _allow_hosts() for i in ips)
     for ip in ips:
         if _always_blocked(ip) or (not allowed and _ip_blocked(ip)):
