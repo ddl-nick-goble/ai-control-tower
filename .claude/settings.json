@@ -1,0 +1,22 @@
+{
+  "agent": "domino-orchestrator",
+  "env": {
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS": "3"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "python3 /mnt/code/.claude/hooks/cost_monitor.py statusline",
+    "refreshInterval": 15
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          { "type": "command", "command": "python3 /mnt/code/.claude/hooks/cost_monitor.py guard" }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "budget_usd": 1900,
+  "warn_at": 0.8,
+  "cost_log": "/mnt/data/ai-control-tower/qa/cost-log.csv"
+}
