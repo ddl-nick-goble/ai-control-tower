@@ -5,6 +5,8 @@ As __main__ (a Domino job): logs to MLflow, registers "break_classifier", alias 
 import os
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
 import joblib
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -40,13 +42,12 @@ def main(output_dir="/tmp/break_classifier"):
     import mlflow
     import pandas as pd
     from mlflow.models import infer_signature
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-    from agents.recon_agent.experiment_setup import domino_tags, setup_experiment
+    from experiment_setup import log_domino_context, setup_experiment
     setup_experiment("break-classifier")
     model, X, y = _fit()
     df = pd.DataFrame(X[:5], columns=FEATURES)
     with mlflow.start_run(run_name="break-classifier-train"):
-        mlflow.set_tags(domino_tags())
+        log_domino_context()
         mlflow.log_metric("train_accuracy", float(model.score(X, y)))
         info = mlflow.sklearn.log_model(model, "model", signature=infer_signature(df, model.predict(df)),
                                         input_example=df, registered_model_name="break_classifier")

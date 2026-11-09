@@ -9,7 +9,7 @@ import requests
 
 from agents.recon_agent import llm, tools
 from agents.recon_agent.act_export import ActTraceBuffer
-from agents.recon_agent.tracing_setup import add_tracing
+from tracing_setup import add_tracing, agent_run
 
 log = logging.getLogger(__name__)
 AGENT_NAME = "recon-agent"
@@ -33,19 +33,23 @@ TOOL_SPECS = [
 ]
 
 
-def classify_break(br: dict) -> str:
+def classify_break(br: dict):
+    """Return (class, source) where source is "local" (predict()) or "endpoint" (Domino sync endpoint)."""
     payload = {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
     url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
     if not url:
+        if os.environ.get("DOMINO_RUN_ID"):
+            log.warning("BREAK_CLASSIFIER_ENDPOINT_URL is unset in a Domino run; using the local classifier")
         from models.break_classifier.predict import predict
-        return predict(payload)["class"]
-    proxy = (os.environ.get("DOMINO_API_PROXY") or "http://localhost:8899").rstrip("/")
-    tok = os.environ.get("BREAK_CLASSIFIER_TOKEN") or requests.get(f"{proxy}/access-token", timeout=5).text.strip()
-    r = requests.post(url, json={"data": payload}, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
+        return predict(payload)["class"], "local"
+    key = os.environ.get("BREAK_CLASSIFIER_ACCESS_KEY")
+    if not key:
+        raise RuntimeError("BREAK_CLASSIFIER_ACCESS_KEY is required when BREAK_CLASSIFIER_ENDPOINT_URL is set")
+    # Domino sync endpoints use HTTP Basic with the endpoint access key as user and password.
+    r = requests.post(url, json={"data": payload}, auth=(key, key), timeout=30)
     r.raise_for_status()
-    res = r.json()
-    res = res.get("result", res)
-    return str(res["class"]) if isinstance(res, dict) and "class" in res else str(res)
+    res = r.json().get("result")
+    return str(res["class"] if isinstance(res, dict) else res), "endpoint"
 
 
 def _dispatch(name, inp, buf, store):
@@ -58,7 +62,7 @@ def _dispatch(name, inp, buf, store):
         for br in breaks:
             with buf.execute_tool("break_classifier", {k: br[k] for k in
                                   ("amount_diff", "days_diff", "missing_side")}) as a:
-                br["classification"] = classify_break(br)
+                br["classification"], a["act.classifier.source"] = classify_break(br)
                 a["gen_ai.tool.call.result"] = br["classification"]
         store["breaks"] = breaks
         return breaks
@@ -101,13 +105,20 @@ def _run(prompt: str, buf: ActTraceBuffer) -> dict:
 
 
 @add_tracing(name="recon_agent", span_type="AGENT")
-def run(prompt: str) -> dict:
-    buf = ActTraceBuffer()
-    agent_id = os.environ.get("RECON_AGENT_ID", "recon-agent")
+def _traced_run(prompt: str, agent_id: str) -> dict:
+    buf = ActTraceBuffer(agent_id)
     try:
-        with buf.invoke_agent(agent_id, AGENT_NAME) as a:
+        with buf.invoke_agent(AGENT_NAME) as a:
             a["gen_ai.agent.description"] = "Ledger reconciliation assistant"
-            result = _run(prompt, buf)
+            return _run(prompt, buf)
     finally:
         buf.flush()
-    return result
+
+
+def run(prompt: str) -> dict:
+    agent_id = os.environ.get("RECON_AGENT_ID", "").strip()
+    if not agent_id:
+        raise RuntimeError("RECON_AGENT_ID is not set: it must equal the Domino agent's native id "
+                           "(see agents/recon_agent/README.md)")
+    with agent_run():
+        return _traced_run(prompt, agent_id)

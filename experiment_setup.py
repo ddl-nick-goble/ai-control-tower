@@ -24,6 +24,13 @@ import mlflow
 DEFAULT_BASE = "act-recon"
 
 
+def experiment_name(base_name: str = DEFAULT_BASE) -> str:
+    """act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME> (for the default base)."""
+    username = os.environ.get('DOMINO_STARTING_USERNAME', 'unknown')
+    project = os.environ.get('DOMINO_PROJECT_NAME', 'unknown')
+    return f"{base_name}-{project}-{username}"
+
+
 def setup_experiment(base_name: str = DEFAULT_BASE) -> str:
     """
     Set up a Domino-compatible MLflow experiment.
@@ -37,16 +44,10 @@ def setup_experiment(base_name: str = DEFAULT_BASE) -> str:
     Returns:
         The full experiment name
     """
-    username = os.environ.get('DOMINO_STARTING_USERNAME', 'unknown')
-    project = os.environ.get('DOMINO_PROJECT_NAME', 'unknown')
-
-    # Create unique experiment name
-    experiment_name = f"{base_name}-{project}-{username}"
-
-    mlflow.set_experiment(experiment_name)
-    print(f"Experiment set: {experiment_name}")
-
-    return experiment_name
+    name = experiment_name(base_name)
+    mlflow.set_experiment(name)
+    print(f"Experiment set: {name}")
+    return name
 
 
 def log_domino_context():

@@ -36,7 +36,8 @@ def _attrs(d):
 
 
 class ActTraceBuffer:
-    def __init__(self, service_name="act-recon-agent"):
+    def __init__(self, agent_id, service_name="act-recon-agent"):
+        self.agent_id = agent_id
         self.service_name = service_name
         self.trace_id = secrets.token_hex(16)
         self.spans = []
@@ -45,7 +46,7 @@ class ActTraceBuffer:
     @contextmanager
     def span(self, name, attributes=None, kind="internal"):
         """Record a span; nested use sets parentSpanId. Yields the attribute dict (mutable)."""
-        attrs = dict(attributes or {})
+        attrs = {"gen_ai.agent.id": self.agent_id, **(attributes or {})}
         sp = {"traceId": self.trace_id, "spanId": secrets.token_hex(8), "name": name,
               "kind": KIND[kind], "startTimeUnixNano": str(time.time_ns())}
         if self._stack:
@@ -65,9 +66,9 @@ class ActTraceBuffer:
             sp["status"] = status
             self.spans.append(sp)
 
-    def invoke_agent(self, agent_id, agent_name, **attrs):
+    def invoke_agent(self, agent_name, **attrs):
         return self.span(f"invoke_agent {agent_name}", {
-            "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.id": agent_id,
+            "gen_ai.operation.name": "invoke_agent",
             "gen_ai.agent.name": agent_name, **attrs})
 
     def execute_tool(self, tool_name, arguments=None, **attrs):
@@ -81,7 +82,8 @@ class ActTraceBuffer:
 
     def payload(self):
         return {"resourceSpans": [{
-            "resource": {"attributes": _attrs({"service.name": self.service_name})},
+            "resource": {"attributes": _attrs({"service.name": self.service_name,
+                                                "gen_ai.agent.id": self.agent_id})},
             "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
         }]}
 
@@ -92,13 +94,26 @@ class ActTraceBuffer:
         if not url or not self.spans:
             return False
         try:
-            tok = requests.get(os.environ.get("ACT_TOKEN_URL", DEFAULT_TOKEN_URL), timeout=5).text.strip()
-            r = requests.post(url, json=self.payload(), timeout=30,
-                              headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
-            ok = r.status_code < 300
-            if not ok:
-                log.warning("ACT export got HTTP %s", r.status_code)
-            self.spans = []
+            tr = requests.get(os.environ.get("ACT_TOKEN_URL", DEFAULT_TOKEN_URL), timeout=5)
+            tok = tr.text.strip() if tr.status_code == 200 else ""
+            if not tok:
+                log.warning("ACT export skipped: no access token (token fetch HTTP %s)", tr.status_code)
+                return False
+            headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+            body = self.payload()
+            r = None
+            for attempt in (1, 2):  # one retry on POST failure
+                try:
+                    r = requests.post(url, json=body, timeout=30, headers=headers)
+                    if r.status_code < 300:
+                        break
+                    log.warning("ACT export got HTTP %s (attempt %d)", r.status_code, attempt)
+                except requests.RequestException as e:
+                    log.warning("ACT export POST failed: %s (attempt %d)", type(e).__name__, attempt)
+                    r = None
+            ok = r is not None and r.status_code < 300
+            if ok:
+                self.spans = []
             return ok
         except Exception as e:  # noqa: BLE001
             log.warning("ACT export failed: %s", type(e).__name__)
