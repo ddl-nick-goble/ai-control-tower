@@ -285,27 +285,100 @@ def test_ac4_evidence_labels_mock_judge(trained_model, monkeypatch, ev_client):
 
 
 # ---------------------------------------------------------------- 5. drift explanation
-def test_ac5_drift_explanation_mock(t4_env, monkeypatch):
+def test_ac5_drift_explanation_mock_is_template_not_model(t4_env, monkeypatch):
+    """Round 2 contract 1: nothing mocked is presented as model output."""
     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
     monkeypatch.delenv("LLM_GATEWAY_URL", raising=False)
-    for m in [m for m in sys.modules if m.split(".")[0] in ("backend", "jobs", "adapters")]:
+    for m in [m for m in sys.modules if m.split(".")[0] in ("backend", "jobs", "adapters", "act_llm_mock")]:
         del sys.modules[m]
     main = _mod("backend.main")
+    calls = []
+    llm = _mod("backend.llm")
+    real = llm.create_message
+    monkeypatch.setattr(llm, "create_message", lambda *a, **k: calls.append(a) or real(*a, **k))
+    mock = _mod("act_llm_mock")
+    for name, fn in list(vars(mock).items()):
+        if callable(fn) and not name.startswith("_") and getattr(fn, "__module__", None) == "act_llm_mock":
+            monkeypatch.setattr(mock, name, (lambda f, n: lambda *a, **k: calls.append(n) or f(*a, **k))(fn, name))
     with TestClient(main.app) as c:
         _mod("jobs.intake").run_intake()
         aid = next(a for a in c.get("/api/agents").json() if a["name"] == "treasury-sweep-agent")["id"]
         assert c.post("/v1/traces", json=DRIFT, headers=HDR).status_code == 200
         deadline = time.monotonic() + 10
         f = None
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and f is None:
             fs = [x for x in c.get(f"/api/agents/{aid}/findings").json() if x["type"] == "scope_drift"]
-            if fs and (fs[0].get("detail") or {}).get("explanation_model"):
-                f = fs[0]
-                break
+            f = fs[0] if fs else None
             time.sleep(0.1)
-        assert f is not None, "no finding with an explanation model within 10s"
-        assert f["explanation"].strip()
-        assert f["detail"]["explanation_model"] == "mock-llm"
+        assert f is not None, "no drift finding"
+        time.sleep(1.5)  # a background explanation fill, if any, would land by now
+        f = next(x for x in c.get(f"/api/agents/{aid}/findings").json() if x["type"] == "scope_drift")
+        text = f["explanation"]
+        assert "transfer_funds" in text and "4750000" in text and "250000" in text, text
+        assert not (f.get("detail") or {}).get("explanation_model")
+        assert calls == [], f"LLM/mock called for the explanation: {calls}"
+
+
+def test_ac5_health_reports_llm_provider(monkeypatch, t4_env):
+    for prov in ("mock", "gateway"):
+        monkeypatch.setenv("ACT_LLM_PROVIDER", prov)
+        for m in [m for m in sys.modules if m.split(".")[0] in ("backend", "jobs", "adapters")]:
+            del sys.modules[m]
+        main = _mod("backend.main")
+        with TestClient(main.app) as c:
+            body = c.get("/api/health").json()
+        assert body.get("llm_provider") == prov, body
+
+
+def test_ac5_mock_spans_tagged_with_provider(trained_model, monkeypatch):
+    posts = []
+
+    class ActH(BaseHTTPRequestHandler):
+        def do_POST(self):
+            posts.append(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    class TokH(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"tok")
+
+        def log_message(self, *a):
+            pass
+    act = HTTPServer(("127.0.0.1", 0), ActH)
+    tok = HTTPServer(("127.0.0.1", 0), TokH)
+    for s in (act, tok):
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ACT_TRACES_URL", f"http://127.0.0.1:{act.server_port}/v1/traces")
+    monkeypatch.setenv("ACT_TOKEN_URL", f"http://127.0.0.1:{tok.server_port}/access-token")
+    monkeypatch.setenv("DOMINO_API_PROXY", "")
+    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+    monkeypatch.setenv("RECON_AGENT_ID", LOCAL_NATIVE)
+    monkeypatch.delenv("BREAK_CLASSIFIER_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("LLM_GATEWAY_URL", raising=False)
+    agent = _mod("agents.recon_agent.agent")
+    try:
+        agent.run("Reconcile the GL and custodian ledgers")
+    finally:
+        act.shutdown()
+        tok.shutdown()
+    assert posts
+    tagged = 0
+    for body in posts:
+        for rs in json.loads(body)["resourceSpans"]:
+            res = {a["key"]: next(iter(a["value"].values())) for a in rs.get("resource", {}).get("attributes", [])}
+            for ss in rs.get("scopeSpans", []):
+                for sp in ss.get("spans", []):
+                    if res.get("act.llm.provider") == "mock" or _attrs(sp).get("act.llm.provider") == "mock":
+                        tagged += 1
+    assert tagged > 0, "no exported span or resource carries act.llm.provider=mock"
 
 
 # ---------------------------------------------------------------- 6. local agents
@@ -429,3 +502,67 @@ def test_ac8_integration_doc_names_every_switch():
     for k in ("ACT_LLM_PROVIDER", "LLM_GATEWAY_URL", "ACT_DOMINO_LOCAL_AGENTS", "RECON_AGENT_ID",
               "ACT_SERVICE_ACCOUNTS", "BREAK_CLASSIFIER_ENDPOINT_URL", "ACT_URL"):
         assert k in t, k
+
+
+# ---------------------------------------------------------------- round 2: local agents file robustness
+@pytest.mark.parametrize("kind", ["missing", "invalid"])
+def test_ac4_bad_local_agents_file_does_not_break_intake(kind, db_env, monkeypatch, tmp_path):
+    if kind == "missing":
+        path = tmp_path / "nope.json"
+    else:
+        path = tmp_path / "bad.json"
+        path.write_text("{ this is not json")
+    monkeypatch.setenv("ACT_DOMINO_LOCAL_AGENTS", str(path))
+    apps_calls = []
+
+    def counting(mp):
+        import requests
+
+        class R:
+            status_code = 200
+            text = "tok"
+            content = b"{}"
+            headers = {"content-type": "application/json"}
+
+            def json(self):
+                return {"items": []}
+
+            def raise_for_status(self):
+                pass
+        f = lambda *a, **k: apps_calls.append(a) or R()  # noqa: E731
+        for n in ("get", "post", "request"):
+            mp.setattr(requests, n, f)
+        mp.setattr(requests.Session, "request", f)
+        mp.setattr(requests.Session, "get", f)
+    monkeypatch.setitem(globals(), "_no_apps_http", counting)
+    out, rows = _fresh_intake(monkeypatch, db_env)
+    names = {r.name for r in rows}
+    assert "treasury-sweep-agent" in names, names
+    assert "recon-agent" not in names
+    assert not [e for e in out["errors"] if "domino" in e.lower()], out["errors"]
+    assert apps_calls, "Domino Apps listing did not run"
+
+
+# ---------------------------------------------------------------- round 2: docs and config
+def test_ac5_doc_does_not_overclaim_labels_and_has_cleanup():
+    t = (ROOT / "docs" / "INTEGRATION.md").read_text()
+    low = t.lower()
+    assert "template text" in low
+    assert "explanation_model` `mock-llm`" not in t, "doc still claims drift explanations carry model mock-llm"
+    assert "act:domino" in t and "local-recon-agent" in t
+    assert any(w in low for w in ("archive", "remove the", "delete the")), "no go-live cleanup of old row"
+    assert "repo root" in low
+
+
+def test_ac6_default_owner_is_neutral_placeholder():
+    raw = (ROOT / "config" / "local_agents.json").read_text()
+    assert "nick_goble" not in raw and "nick" not in raw.lower()
+    assert "ACT_LOCAL_AGENT_OWNER" in raw
+
+
+def test_ac6_owner_env_overrides(db_env, monkeypatch):
+    monkeypatch.setenv("ACT_DOMINO_LOCAL_AGENTS", str(ROOT / "config" / "local_agents.json"))
+    monkeypatch.setenv("ACT_LOCAL_AGENT_OWNER", "ops-team-xyz")
+    _, rows = _fresh_intake(monkeypatch, db_env)
+    r = next(r for r in rows if r.name == "recon-agent")
+    assert "ops-team-xyz" in json.dumps(r.record)
