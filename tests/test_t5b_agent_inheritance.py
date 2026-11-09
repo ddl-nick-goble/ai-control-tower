@@ -210,3 +210,149 @@ def test_ac4_per_agent_event_counts_reflect_all_spans(client):
         runs = body if isinstance(body, list) else body.get("runs", body.get("items", []))
         assert len(runs) >= 2
     assert_verify(client)
+
+
+# ---- round 2: multi-agent traces, ancestor inheritance, run agent, conflicts, replay ----
+import secrets
+
+NA, NB, NC = ("treasury_sweep_agent-Xk3Lq9ZpT2", "kyc_refresh_agent-Rt7Hn4WvB8",
+              "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11")
+
+
+def mk(trace, parent=None, native=None, op="execute_tool", t=0, name=None):
+    attrs = [{"key": "gen_ai.operation.name", "value": {"stringValue": op}}]
+    if native:
+        attrs.append({"key": "gen_ai.agent.id", "value": {"stringValue": native}})
+    if op == "execute_tool":
+        attrs.append({"key": "gen_ai.tool.name", "value": {"stringValue": name or "lookup"}})
+    s = {"traceId": trace, "spanId": secrets.token_hex(8), "name": name or op, "kind": 1,
+         "startTimeUnixNano": str(1794015539000000000 + t * 1000000000),
+         "endTimeUnixNano": str(1794015539000000000 + (t + 1) * 1000000000),
+         "attributes": attrs, "status": {"code": 1}}
+    if parent:
+        s["parentSpanId"] = parent["spanId"]
+    return s
+
+
+def wrap(spans):
+    return {"resourceSpans": [{"resource": {"attributes": []}, "scopeSpans": [{"scope": {}, "spans": spans}]}]}
+
+
+def tree(trace):
+    """root A -> toolA1, toolA2, childB(B) -> toolB1, toolB2"""
+    root = mk(trace, native=NA, op="invoke_agent", t=0)
+    ta1, ta2 = mk(trace, root, t=1), mk(trace, root, t=2)
+    cb = mk(trace, root, native=NB, op="invoke_agent", t=3)
+    tb1, tb2 = mk(trace, cb, t=4), mk(trace, cb, t=5)
+    return root, [ta1, ta2], cb, [tb1, tb2]
+
+
+def link_of(client, span):
+    rows = q(client, "select agent_id, run_id from events where span_id = ?", (span["spanId"],))
+    assert len(rows) == 1, rows
+    return rows[0]["agent_id"]
+
+
+def run_id_of(client, span):
+    return q(client, "select run_id from events where span_id = ?", (span["spanId"],))[0]["run_id"]
+
+
+@pytest.mark.parametrize("order", ["parents_first", "children_first", "shuffled"])
+def test_ac4_ancestor_inheritance_two_agents_in_one_trace(client, order):
+    _intake()
+    a, b = agent_for(client, NA), agent_for(client, NB)
+    root, ta, cb, tb = tree(secrets.token_hex(16))
+    spans = [root, *ta, cb, *tb]
+    if order == "children_first":
+        spans = [*tb, *ta, cb, root]
+    elif order == "shuffled":
+        spans = [tb[0], ta[1], root, tb[1], cb, ta[0]]
+    post(client, wrap(spans))
+    for s in [root, *ta]:
+        assert link_of(client, s) == a, s["name"]
+    for s in [cb, *tb]:
+        assert link_of(client, s) == b, s["name"]
+    assert_verify(client)
+
+
+@pytest.mark.parametrize("order", ["parents_first", "children_first", "shuffled"])
+def test_ac4_run_agent_is_root_spans_agent(client, order):
+    _intake()
+    a = agent_for(client, NA)
+    root, ta, cb, tb = tree(secrets.token_hex(16))
+    spans = {"parents_first": [root, *ta, cb, *tb], "children_first": [*tb, cb, *ta, root],
+             "shuffled": [cb, tb[0], root, ta[0], tb[1], ta[1]]}[order]
+    post(client, wrap(spans))
+    rid = run_id_of(client, root)
+    rows = q(client, "select agent_id from runs where id = ?", (rid,))
+    assert len(rows) == 1 and rows[0]["agent_id"] == a, rows
+    r = client.get(f"/api/runs/{rid}/timeline")
+    assert r.status_code == 200
+    assert r.json()["agent_id"] == a
+
+
+def conflicts(client):
+    return [r for r in q(client, "select action, detail, target from audit_events")
+            if r["action"] == "run_agent_conflict"]
+
+
+def test_ac4_conflicting_root_agent_is_recorded_and_stored_wins(client):
+    _intake()
+    a, c = agent_for(client, NA), agent_for(client, NC)
+    trace = secrets.token_hex(16)
+    root, ta, cb, tb = tree(trace)
+    post(client, wrap([root, *ta, cb, *tb]))
+    rid = run_id_of(client, root)
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    assert not [x for x in conflicts(client) if rid in json.dumps(x)]
+    # later batch: a root-level span claims C; plus an id-less span with no ancestor id, and a span under C
+    claim = mk(trace, native=NC, op="invoke_agent", t=10)
+    own = mk(trace, claim, t=11)               # inherits C from its ancestor
+    orphan = mk(trace, t=12)                   # no id, no parent: falls back to run agent A
+    post(client, wrap([claim, own, orphan]))
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    assert run_id_of(client, claim) == rid
+    cs = [x for x in conflicts(client) if rid in json.dumps(x)]
+    assert cs, "no run_agent_conflict audit event"
+    blob = json.dumps(cs[0]["detail"]) + (cs[0]["target"] or "")
+    assert rid in blob and a in blob and c in blob, blob
+    assert link_of(client, claim) == c
+    assert link_of(client, own) == c
+    assert link_of(client, orphan) == a
+    # earlier spans untouched
+    assert link_of(client, root) == a and link_of(client, cb) == agent_for(client, NB)
+    assert_verify(client)
+
+
+def test_ac4_replayed_unmatched_run_yields_single_shadow_finding_on_first_span(client):
+    trace = secrets.token_hex(16)
+    root = mk(trace, native="ghost-agent-zz9", op="invoke_agent", t=0)
+    kids = [mk(trace, root, t=1), mk(trace, root, t=2)]
+    p = wrap([root, *kids])
+    post(client, p)
+    first_ids = {s["spanId"] for s in [root, *kids]}
+    post(client, json.loads(json.dumps(p)))
+    fs = q(client, "select span_id, run_id from findings where rule = 'shadow_agent'")
+    assert len(fs) == 1, fs
+    assert fs[0]["span_id"] in first_ids
+    stored = {r["span_id"] for r in q(client, "select span_id from events where run_id = ?", (fs[0]["run_id"],))}
+    assert fs[0]["span_id"] in stored
+    assert len(stored) == 3
+    assert_verify(client)
+
+
+def test_ac4_fallback_uses_runs_row_agent_when_stored_events_have_several_agents(client):
+    _intake()
+    a = agent_for(client, NA)
+    trace = secrets.token_hex(16)
+    root, ta, cb, tb = tree(trace)
+    post(client, wrap([root, *ta, cb, *tb]))     # stored events carry both A and B
+    rid = run_id_of(client, root)
+    assert {r["agent_id"] for r in q(client, "select agent_id from events where run_id = ?", (rid,))} \
+        == {a, agent_for(client, NB)}
+    late = [mk(trace, t=20 + i) for i in range(3)]   # no id, no parent: fallback to stored run agent
+    post(client, wrap(late))
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    for s in late:
+        assert link_of(client, s) == a
+    assert_verify(client)
