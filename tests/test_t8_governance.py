@@ -3,6 +3,8 @@ import importlib
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +16,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DOMINO_ID = "dom-agent-001"
 REG = {"X-Domino-User-Id": "registrar", "X-Domino-User": "Registrar"}
 OTHER = {"X-Domino-User-Id": "approver", "X-Domino-User": "Approver"}
+ALICE = {"X-Domino-User-Id": "alice-id", "X-Domino-User": "alice"}
+BOB = {"X-Domino-User-Id": "bob-id", "X-Domino-User": "bob"}
 POLICIES = ["ACT 2026-54 Agentic Policy", "SR 26-2 Model Policy"]
 
 
@@ -36,6 +40,8 @@ class FakeDomino:
 
     def __init__(self):
         self.bundles = {}
+        self.calls = []
+        self.delay = 0.0
 
     def __call__(self, *a, **k):
         args = [x for x in a if isinstance(x, str)]
@@ -44,6 +50,9 @@ class FakeDomino:
         if "8899" in url:
             return _Resp("tok")
         if "/api/governance/v1" in url:
+            self.calls.append((method, url))
+            if self.delay:
+                time.sleep(self.delay)
             if method == "GET":
                 return _Resp({"items": list(self.bundles.values()), "data": list(self.bundles.values()), "bundles": list(self.bundles.values())})
             bid = f"bundle-{len(self.bundles) + 1}"
@@ -85,12 +94,12 @@ def client(db_env, fake):
         yield c
 
 
-def _seed(agent_id, tier="2", registered_by="registrar", status="pending_review"):
+def _seed(agent_id, tier="2", registered_by="registrar", status="pending_review", **extra):
     from backend import db
     with db.engine.begin() as cx:
         cx.execute(db.agents.insert().values(
             id=agent_id, source_platform="aws", native_id=agent_id, name=agent_id, owner="o",
-            tier=tier, status=status, registered_by=registered_by, record={}))
+            tier=tier, status=status, registered_by=registered_by, record={}, **extra))
 
 
 def _domino_agent():
@@ -132,7 +141,7 @@ def test_ac8_governance_module_interface():
 
 def test_ac8_governance_shows_both_policies_same_bundle(client):
     aid = _domino_agent()
-    r = client.get(f"/api/agents/{aid}/governance")
+    r = client.post(f"/api/agents/{aid}/governance", headers=ALICE)
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["bundle_id"]
@@ -141,6 +150,7 @@ def test_ac8_governance_shows_both_policies_same_bundle(client):
     assert any("SR 26-2" in n for n in names)
     # both on the same bundle: stable across calls
     assert client.get(f"/api/agents/{aid}/governance").json()["bundle_id"] == body["bundle_id"]
+    assert client.post(f"/api/agents/{aid}/governance", headers=ALICE).json()["bundle_id"] == body["bundle_id"]
 
 
 def test_ac8_dependency_graph_lists_model_with_registry_version(client):
@@ -199,6 +209,202 @@ def test_ac9_different_user_approves_with_tier_expiry(client, tier, days):
     assert len(ap) == 1 and ap[0].approver == "approver" and ap[0].expires_at
     assert len(_audit("approved")) == 1
     assert client.get("/api/agents/a1").json()["status"] == "approved"
+
+
+def _agents_rows():
+    from backend import db
+    with db.engine.connect() as cx:
+        return cx.execute(db.agents.select()).fetchall()
+
+
+def _approval_rows():
+    from backend import db
+    with db.engine.connect() as cx:
+        return cx.execute(db.approvals.select()).fetchall()
+
+
+def _intake_as(monkeypatch, name):
+    monkeypatch.setenv("DOMINO_STARTING_USERNAME", name)
+    return importlib.import_module("jobs.intake").run_intake()
+
+
+def _creates(fake):
+    return [c for c in fake.calls if c[0] == "POST" and c[1].rstrip("/").endswith("/bundles")]
+
+
+# ---------------- registered_by set by intake ----------------
+
+def test_ac9_inprocess_intake_sets_registered_by(client, monkeypatch):
+    _intake_as(monkeypatch, "alice")
+    rows = _agents_rows()
+    assert rows
+    for r in rows:
+        assert r.registered_by == "alice"
+        assert r.registered_by_username == "alice"
+
+
+def test_ac9_http_intake_sets_registered_by_from_headers(client):
+    import dataclasses
+    ints = importlib.import_module("jobs.intake")
+    raws = []
+    for ad in ints._adapters():
+        raws += [json.loads(json.dumps(dataclasses.asdict(sa), default=str)) for sa in ad.list_agents()]
+    assert raws
+    r = client.post("/api/agents/intake", json={"agents": raws}, headers=ALICE)
+    assert r.status_code == 200, r.text
+    rows = _agents_rows()
+    assert rows
+    for x in rows:
+        assert x.registered_by == "alice-id"
+        assert x.registered_by_username == "alice"
+
+
+def test_ac9_second_intake_does_not_overwrite_registered_by(client, monkeypatch):
+    _intake_as(monkeypatch, "alice")
+    before = {r.id: r.registered_by for r in _agents_rows()}
+    _intake_as(monkeypatch, "bob")
+    after = {r.id: r.registered_by for r in _agents_rows()}
+    assert before and after == before
+    assert set(after.values()) == {"alice"}
+
+
+# ---------------- end to end separation ----------------
+
+def test_ac9_e2e_intake_alice_cannot_approve_bob_can(client, monkeypatch):
+    _intake_as(monkeypatch, "alice")
+    aid = _agents_rows()[0].id
+    r = client.post(f"/api/agents/{aid}/approve", headers=ALICE)
+    assert r.status_code == 403, r.text
+    assert len(_audit("approve_refused")) == 1
+    assert _approval_rows() == []
+    r = client.post(f"/api/agents/{aid}/approve", headers=BOB)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "approved" and body["expires_at"]
+    ap = _approval_rows()
+    assert len(ap) == 1 and ap[0].approver == "bob-id" and ap[0].expires_at
+
+
+# ---------------- identity normalisation ----------------
+
+def test_ac9_registrant_match_ignores_case_and_whitespace(client):
+    _seed("a1", registered_by="Alice-ID")
+    r = client.post("/api/agents/a1/approve", headers={"X-Domino-User-Id": "alice-id ", "X-Domino-User": "someone"})
+    assert r.status_code == 403, r.text
+    assert _approval_rows() == []
+
+
+def test_ac9_registrant_match_on_username_case_insensitive(client):
+    _seed("a1", registered_by="alice-id", registered_by_username="Alice")
+    r = client.post("/api/agents/a1/approve", headers={"X-Domino-User-Id": "other-id", "X-Domino-User": "alice"})
+    assert r.status_code == 403, r.text
+    assert _approval_rows() == []
+
+
+# ---------------- fail closed and status gate ----------------
+
+def test_ac9_null_registered_by_fails_closed_409(client):
+    _seed("a1", registered_by=None)
+    r = client.post("/api/agents/a1/approve", headers=BOB)
+    assert r.status_code == 409, r.text
+    assert _approval_rows() == []
+
+
+@pytest.mark.parametrize("status", ["discovered", "pending_review"])
+def test_ac9_approvable_statuses(client, status):
+    _seed("a1", status=status)
+    assert client.post("/api/agents/a1/approve", headers=OTHER).status_code == 200
+
+
+def test_ac9_already_approved_409_no_new_row_expiry_unchanged(client):
+    _seed("a1")
+    assert client.post("/api/agents/a1/approve", headers=OTHER).status_code == 200
+    first = _approval_rows()
+    assert len(first) == 1
+    r = client.post("/api/agents/a1/approve", headers={"X-Domino-User-Id": "third", "X-Domino-User": "Third"})
+    assert r.status_code == 409, r.text
+    after = _approval_rows()
+    assert len(after) == 1 and after[0].expires_at == first[0].expires_at
+
+
+def test_ac9_shadow_status_409(client):
+    _seed("a1", status="shadow")
+    r = client.post("/api/agents/a1/approve", headers=OTHER)
+    assert r.status_code == 409, r.text
+    assert _approval_rows() == []
+
+
+# ---------------- governance view is read only ----------------
+
+def test_ac8_get_governance_makes_no_writes_and_no_bundle(client, fake):
+    aid = _domino_agent()
+    fake.calls.clear()
+    r = client.get(f"/api/agents/{aid}/governance")
+    assert r.status_code == 200, r.text
+    assert [c for c in fake.calls if c[0] in ("POST", "PATCH", "PUT")] == []
+    assert fake.bundles == {}
+    body = r.json()
+    assert body["bundle_id"] is None
+    names = [p["name"] if isinstance(p, dict) else p for p in body["policies"]]
+    assert any("2026-54" in n for n in names) and any("SR 26-2" in n for n in names)
+
+
+def test_ac8_post_governance_requires_identity(client):
+    aid = _domino_agent()
+    assert client.post(f"/api/agents/{aid}/governance").status_code == 401
+
+
+def test_ac8_post_governance_creates_bundle_idempotently(client, fake):
+    aid = _domino_agent()
+    r1 = client.post(f"/api/agents/{aid}/governance", headers=ALICE)
+    assert r1.status_code == 200, r1.text
+    r2 = client.post(f"/api/agents/{aid}/governance", headers=ALICE)
+    assert r2.status_code == 200, r2.text
+    b = r1.json()
+    assert b["bundle_id"] and r2.json()["bundle_id"] == b["bundle_id"]
+    names = [p["name"] if isinstance(p, dict) else p for p in b["policies"]]
+    assert any("2026-54" in n for n in names) and any("SR 26-2" in n for n in names)
+    assert len(_creates(fake)) == 1
+
+
+# ---------------- slow governance ----------------
+
+def test_ac9_approval_fast_when_governance_slow(db_env, fake, monkeypatch):
+    uvicorn = pytest.importorskip("uvicorn")
+    import httpx
+    for m in [m for m in sys.modules if m.split(".")[0] in ("backend", "jobs", "adapters")]:
+        del sys.modules[m]
+    main = importlib.import_module("backend.main")
+    _intake_as(monkeypatch, "alice")
+    aid = _agents_rows()[0].id
+    srv = uvicorn.Server(uvicorn.Config(main.app, host="127.0.0.1", port=0, log_level="warning"))
+    t = threading.Thread(target=srv.run, daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 10
+        while not srv.started and time.time() < deadline:
+            time.sleep(0.05)
+        assert srv.started
+        port = srv.servers[0].sockets[0].getsockname()[1]
+        fake.delay = 3.0
+        t0 = time.time()
+        r = httpx.post(f"http://127.0.0.1:{port}/api/agents/{aid}/approve", headers=BOB, timeout=30)
+        elapsed = time.time() - t0
+        assert r.status_code == 200, r.text
+        assert elapsed < 1.5, elapsed
+        assert len(_approval_rows()) == 1
+        end = time.time() + 10
+        sync = None
+        while time.time() < end:
+            sync = _approval_rows()[0].governance_sync
+            if sync in ("ok", "failed"):
+                break
+            time.sleep(0.25)
+        assert sync in ("ok", "failed"), sync
+    finally:
+        fake.delay = 0
+        srv.should_exit = True
+        t.join(timeout=15)
 
 
 # ---------------- timeline merge ----------------
