@@ -164,6 +164,15 @@ def _actions(d, aid):
     return _bullets(lines), cites
 
 
+def _alias(v):
+    """A gateway alias (for example sonnet) is a configured name, not a vendor model id: keep it, but only if
+    it is a plain token and not a raw vendor id."""
+    v = str(v or "")
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,40}", v) and not re.search(r"claude|anthropic|\d{6,}", v, re.I):
+        return v
+    return esc(v) or "not recorded"
+
+
 def _validation(d, aid):
     recs = d["validation"]
     if not recs:
@@ -189,8 +198,16 @@ def _validation(d, aid):
         pr = det.get("pass_rate")
         if pr is not None:
             parts.append(f"pass rate {float(pr):.1%}")
-        if det.get("judge_alias") or det.get("judge_version"):
-            parts.append(f"judge {esc(det.get('judge_alias'))} version {esc(det.get('judge_version'))}")
+        if det.get("n_prompts") and det.get("reps"):
+            parts.append(f"{int(det['n_prompts'])} prompts x {int(det['reps'])} repetitions")
+        if det.get("judge_alias") or det.get("judge_model_id") or det.get("judge_version"):
+            alias = _alias(det.get("judge_alias"))
+            parts.append(f"judge alias {alias} (model: frontier model, exact gateway version held in the "
+                         f"validation record)" if det.get("judge_model_id") or det.get("judge_version")
+                         else f"judge alias {alias}")
+        if det.get("experiment"):
+            n = len(det.get("mlflow_run_ids") or [])
+            parts.append(f"MLflow experiment {esc(det['experiment'])}, {n} runs")
         lines.append(", ".join(parts))
     return _bullets(lines), cites
 
