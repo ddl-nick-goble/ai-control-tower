@@ -1,0 +1,1471 @@
+diff --git a/adapters/__init__.py b/adapters/__init__.py
+new file mode 100644
+index 0000000..daab624
+--- /dev/null
++++ b/adapters/__init__.py
+@@ -0,0 +1 @@
++"""Source adapters: one per agent platform."""
+diff --git a/adapters/aws.py b/adapters/aws.py
+new file mode 100644
+index 0000000..eaea262
+--- /dev/null
++++ b/adapters/aws.py
+@@ -0,0 +1,36 @@
++"""AWS Bedrock AgentCore: ListAgentRuntimes + Agent Registry records."""
++from .base import AdapterBase, SourceAgent, http_get_json, live_enabled, load_fixture
++
++
++class AwsAdapter(AdapterBase):
++    platform = "aws"
++
++    def _docs(self):
++        if live_enabled("aws"):
++            return (http_get_json("aws", "/agent-runtimes"),
++                    http_get_json("aws", "/discoverable-registry-records"))
++        return (load_fixture("aws/list-agent-runtimes.json"),
++                load_fixture("aws/list-discoverable-registry-records.json"))
++
++    def list_agents(self):
++        runtimes, registry = self._docs()
++        recs = {r.get("descriptors", {}).get("agent", {}).get("runtimeArn"): r
++                for r in registry.get("registryRecords", [])}
++        out = []
++        for rt in runtimes.get("agentRuntimes", []):
++            md = rt.get("metadata") or {}
++            rec = recs.get(rt.get("agentRuntimeArn")) or {}
++            out.append(SourceAgent(
++                platform="aws", native_id=rt["agentRuntimeId"], name=rt.get("agentRuntimeName") or rt["agentRuntimeId"],
++                description=rt.get("description") or rec.get("description") or "",
++                version=str(rt.get("agentRuntimeVersion") or rec.get("version") or "1"),
++                owner=md.get("owner") or (rt.get("tags") or {}).get("owner"),
++                status=rt.get("status", ""), last_updated=rt.get("lastUpdatedAt"),
++                provider="AWS", tools=list(md.get("tools") or []), data_scopes=list(md.get("data_scopes") or []),
++                systems=list(md.get("systems") or []), value_limits=dict(md.get("value_limits") or {}),
++                criteria=dict(md.get("criteria") or {}), identity=dict(rt.get("identity") or {}),
++                versions=[{"version": str(rt.get("agentRuntimeVersion") or "1"), "created": rt.get("lastUpdatedAt")}],
++                extra={"arn": rt.get("agentRuntimeArn"), "registry_status": rec.get("status"),
++                       "registry_record": rec.get("recordId")},
++                raw={"runtime": rt, "registry": rec}))
++        return out
+diff --git a/adapters/base.py b/adapters/base.py
+new file mode 100644
+index 0000000..21c4f79
+--- /dev/null
++++ b/adapters/base.py
+@@ -0,0 +1,85 @@
++"""Adapter contract and shared helpers.
++
++Replay adapters read fixtures; the real HTTP call is written but only used when
++ACT_LIVE_<PLATFORM>=1 (untested live). The Domino adapter is always live.
++"""
++import json
++import os
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any, Optional
++
++ROOT = Path(__file__).resolve().parent.parent
++
++
++@dataclass
++class SourceAgent:
++    platform: str
++    native_id: str
++    name: str
++    description: str = ""
++    version: str = "1"
++    owner: Optional[str] = None
++    status: str = ""
++    last_updated: Optional[str] = None
++    url: Optional[str] = None
++    provider: Optional[str] = None
++    tools: list = field(default_factory=list)
++    data_scopes: list = field(default_factory=list)
++    systems: list = field(default_factory=list)
++    value_limits: dict = field(default_factory=dict)   # {tool: {"amount": n, "currency": "USD"}}
++    criteria: dict = field(default_factory=dict)        # raw source-side criteria (autonomy, consequence, ...)
++    identity: dict = field(default_factory=dict)        # {"type", "principal", "distinct", ...}
++    versions: list = field(default_factory=list)        # [{"version", "created"}]
++    dependencies: dict = field(default_factory=dict)    # {"models": [...], "mcp_servers": [...]}
++    extra: dict = field(default_factory=dict)
++    raw: Any = None
++
++
++@dataclass
++class SourceRun:
++    native_id: str
++    run_id: str
++    started_at: Optional[str] = None
++    status: Optional[str] = None
++    raw: Any = None
++
++
++class AdapterBase:
++    platform = ""
++
++    def list_agents(self) -> list:
++        raise NotImplementedError
++
++    def get_agent(self, native_id: str) -> SourceAgent:
++        for a in self.list_agents():
++            if a.native_id == native_id:
++                return a
++        raise KeyError(native_id)
++
++    def list_runs(self, native_id: str, since=None) -> list:
++        return []
++
++
++def fixtures_dir() -> Path:
++    return Path(os.environ.get("ACT_FIXTURES_DIR") or ROOT / "fixtures")
++
++
++def load_fixture(rel: str):
++    return json.loads((fixtures_dir() / rel).read_text())
++
++
++def live_enabled(platform: str) -> bool:
++    return os.environ.get(f"ACT_LIVE_{platform.upper()}") == "1"
++
++
++def http_get_json(platform: str, path: str, params=None):
++    """Real call for a hyperscaler API (untested live). Base URL and bearer token come from
++    ACT_<PLATFORM>_URL / ACT_<PLATFORM>_TOKEN."""
++    import requests
++    p = platform.upper()
++    base = os.environ[f"ACT_{p}_URL"].rstrip("/")
++    resp = requests.get(base + path, params=params, timeout=30,
++                        headers={"Authorization": f"Bearer {os.environ.get(f'ACT_{p}_TOKEN', '')}"})
++    resp.raise_for_status()
++    return resp.json()
+diff --git a/adapters/databricks.py b/adapters/databricks.py
+new file mode 100644
+index 0000000..2bf381c
+--- /dev/null
++++ b/adapters/databricks.py
+@@ -0,0 +1,33 @@
++"""Databricks Unity Catalog agent services."""
++from datetime import datetime, timezone
++
++from .base import AdapterBase, SourceAgent, http_get_json, live_enabled, load_fixture
++
++
++def _ms(v):
++    return datetime.fromtimestamp(v / 1000, timezone.utc).isoformat() if isinstance(v, (int, float)) else v
++
++
++class DatabricksAdapter(AdapterBase):
++    platform = "databricks"
++
++    def _doc(self):
++        if live_enabled("databricks"):
++            return http_get_json("databricks", "/api/2.1/unity-catalog/agent-services")
++        return load_fixture("databricks/agent-services.json")
++
++    def list_agents(self):
++        out = []
++        for s in self._doc().get("agent_services", []):
++            props = s.get("properties") or {}
++            out.append(SourceAgent(
++                platform="databricks", native_id=s["agent_service_id"], name=s.get("name") or s["agent_service_id"],
++                description=s.get("comment") or "", version="1",
++                owner=s.get("owner") or props.get("owner"), status="READY", last_updated=_ms(s.get("updated_at")),
++                provider="Databricks", tools=list(props.get("tools") or []),
++                data_scopes=list(props.get("data_scopes") or []), systems=list(props.get("systems") or []),
++                value_limits=dict(props.get("value_limits") or {}), criteria=dict(props.get("criteria") or {}),
++                identity=dict(s.get("identity") or {}),
++                versions=[{"version": "1", "created": _ms(s.get("created_at"))}],
++                extra={"full_name": s.get("full_name"), "endpoint": s.get("endpoint_name")}, raw=s))
++        return out
+diff --git a/adapters/domino.py b/adapters/domino.py
+new file mode 100644
+index 0000000..1528a17
+--- /dev/null
++++ b/adapters/domino.py
+@@ -0,0 +1,211 @@
++"""Live Domino adapter.
++
++Endpoints used (all Public API, bearer auth):
++  GET  /api/apps/v1/apps?configurationType=AISYSTEM   deployed Agents (Apps of type AISYSTEM)
++  GET  /api/apps/v1/apps/{id}/versions                agent versions
++  GET  /api/2.0/mlflow/experiments/get-by-name        MLflow experiment agent_experiment_<app id>
++  POST /api/2.0/mlflow/runs/search                    runs of that experiment
++  GET  /api/audittrail/v1/auditevents                 access events (Audit Trail API)
++There is no separate /api/agents route in this deployment (404); agents are Apps with
++configurationType AISYSTEM. Sub-calls degrade to [] / {} with a log line; the agent listing raises so intake reports it.
++"""
++import logging
++import os
++import time
++from datetime import datetime, timezone
++
++import requests
++
++from .base import AdapterBase, SourceAgent, SourceRun
++
++log = logging.getLogger(__name__)
++LIST_KEYS = ("items", "agents", "apps", "data", "results")
++PAGE = 100
++
++
++def _iso(v):
++    if isinstance(v, (int, float)):
++        return datetime.fromtimestamp(v / 1000, timezone.utc).isoformat()
++    return v
++
++
++class DominoAdapter(AdapterBase):
++    platform = "domino"
++
++    # -- http ---------------------------------------------------------------
++    def _base_headers(self):
++        proxy = os.environ.get("DOMINO_API_PROXY")
++        if proxy:
++            return proxy.rstrip("/"), {}
++        host = os.environ.get("DOMINO_API_HOST")
++        if not host:
++            raise RuntimeError("DOMINO_API_HOST not set")
++        if not getattr(self, "_token", None):  # cached for the life of this adapter (one run)
++            self._token = requests.get("http://localhost:8899/access-token", timeout=5).text.strip()
++        return host.rstrip("/"), {"Authorization": f"Bearer {self._token}"}
++
++    def _call(self, method, path, params=None, body=None, strict=False):
++        """Return parsed JSON or None on failure; with strict=True raise RuntimeError instead."""
++        try:
++            base, headers = self._base_headers()
++            kw = {"headers": headers, "params": params, "timeout": 20}
++            if body is not None:
++                kw["json"] = body
++            def send():
++                if method == "GET":
++                    return requests.get(base + path, **kw)
++                return requests.request(method, base + path, **kw)
++            resp = send()
++            code = getattr(resp, "status_code", 200)
++            if code == 401 and not os.environ.get("DOMINO_API_PROXY"):
++                self._token = None  # cached token may have expired: re-fetch once
++                base, headers = self._base_headers()
++                kw["headers"] = headers
++                resp = send()
++                code = getattr(resp, "status_code", 200)
++            if code >= 400:
++                log.warning("domino %s %s -> HTTP %s", method, path, code)
++                if strict:
++                    raise RuntimeError(f"domino {method} {path} -> HTTP {code}")
++                return None
++            return resp.json()
++        except Exception as e:  # endpoint unavailable: degrade gracefully unless strict
++            if strict:
++                if isinstance(e, RuntimeError):
++                    raise
++                raise RuntimeError(f"domino {method} {path} unavailable: {e}") from e
++            log.warning("domino %s %s unavailable: %s", method, path, e)
++            return None
++
++    @staticmethod
++    def _items(payload):
++        if isinstance(payload, list):
++            return payload
++        if isinstance(payload, dict):
++            for k in LIST_KEYS:
++                if isinstance(payload.get(k), list):
++                    return payload[k]
++        return []
++
++    # -- agents -------------------------------------------------------------
++    @staticmethod
++    def _item_pid(it):
++        proj = it.get("project")
++        return it.get("projectId") or (proj.get("id") if isinstance(proj, dict) else None)
++
++    def _fetch_apps(self):
++        seen, out = set(), []
++        types = ["AISYSTEM"] + (["STANDARD"] if os.environ.get("ACT_DOMINO_INCLUDE_APPS") == "1" else [])
++        cap = int(os.environ.get("ACT_DOMINO_MAX_AGENTS", "25"))
++        pid = None
++        if os.environ.get("ACT_DOMINO_SCOPE") != "all":
++            pid = os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
++            if not pid:
++                raise RuntimeError("domino adapter: no project id (set ACT_DOMINO_PROJECT_ID or DOMINO_PROJECT_ID, "
++                                   "or ACT_DOMINO_SCOPE=all)")
++        for ctype in types:
++            offset = 0
++            while len(out) < cap:
++                params = {"configurationType": ctype, "limit": PAGE, "offset": offset}
++                if pid:
++                    params["projectId"] = pid
++                payload = self._call("GET", "/api/apps/v1/apps", params, strict=True)
++                items = self._items(payload)
++                # Ownership: item["project"]["id"] in the real apps API (top-level projectId also accepted).
++                pids = [self._item_pid(it) for it in items if isinstance(it, dict)]
++                exposes = any(pids)  # page carries project ids: require confirmation per item
++                for it in items:
++                    if not isinstance(it, dict):
++                        continue
++                    ipid = self._item_pid(it)
++                    if pid and ((exposes and not ipid) or (ipid and str(ipid) != str(pid))):
++                        continue
++                    nid = it.get("id") or it.get("agentId") or it.get("appId")
++                    if nid and nid not in seen:
++                        seen.add(nid)
++                        out.append(it)
++                total = ((payload or {}).get("metadata") or {}).get("totalCount") if isinstance(payload, dict) else None
++                offset += PAGE
++                if len(items) < PAGE or total is None or offset >= total:
++                    break
++        return out[:cap]
++
++    def _versions(self, nid):
++        vs = []
++        for v in self._items(self._call("GET", f"/api/apps/v1/apps/{nid}/versions", {"limit": 20})):
++            if isinstance(v, dict) and v.get("versionNumber") is not None:
++                vs.append({"version": str(v["versionNumber"]), "created": _iso(v.get("createdAt")),
++                           "commit": ((v.get("currentInstance") or {}).get("gitCommitId"))})
++        return vs
++
++    def _experiment(self, nid):
++        d = self._call("GET", "/api/2.0/mlflow/experiments/get-by-name",
++                       {"experiment_name": f"agent_experiment_{nid}"})
++        exp = d.get("experiment") if isinstance(d, dict) else None
++        return exp if isinstance(exp, dict) else None
++
++    @staticmethod
++    def _identity(principal):
++        allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
++        principal = principal or "unknown"
++        if principal in allow:
++            return {"type": "domino_service_account", "principal": principal, "distinct": True}
++        return {"type": "domino_app_run_as_publisher", "principal": principal, "distinct": False}
++
++    def _to_agent(self, it):
++        nid = it.get("id") or it.get("agentId") or it.get("appId")
++        cur = it.get("currentVersion") or it.get("latestVersion") or {}
++        inst = cur.get("currentInstance") or {}
++        owner = (it.get("ownerName") or it.get("owner") or (it.get("project") or {}).get("ownerUsername")
++                 or (inst.get("publisher") or {}).get("name"))
++        if isinstance(owner, dict):
++            owner = owner.get("name") or owner.get("userName")
++        versions = self._versions(nid)
++        if not versions and cur.get("versionNumber") is not None:
++            versions = [{"version": str(cur["versionNumber"]), "created": _iso(cur.get("createdAt"))}]
++        exp = self._experiment(nid)
++        publisher = (inst.get("publisher") or {}).get("name") or owner
++        return SourceAgent(
++            platform="domino", native_id=str(nid), name=it.get("name") or str(nid),
++            description=it.get("description") or "",
++            version=versions[0]["version"] if versions else str(cur.get("versionNumber") or "1"),
++            owner=owner, status=str(it.get("status") or inst.get("status") or ""),
++            last_updated=_iso(it.get("updatedAt") or it.get("lastUpdated")), url=it.get("url"),
++            provider="Domino", versions=versions,
++            identity=self._identity(publisher),
++            extra={"project": (it.get("project") or {}).get("name"),
++                   "experiment_id": (exp or {}).get("experiment_id"),
++                   "experiment_name": (exp or {}).get("name"),
++                   "configuration_type": it.get("configurationType")},
++            raw=it)
++
++    def list_agents(self):
++        return [self._to_agent(it) for it in self._fetch_apps()]  # listing errors propagate to intake
++
++    def get_agent(self, native_id):
++        it = self._call("GET", f"/api/apps/v1/apps/{native_id}")
++        if isinstance(it, dict) and (it.get("id") or it.get("name")):
++            return self._to_agent(it)
++        return super().get_agent(native_id)
++
++    # -- runs and access events -----------------------------------------------
++    def list_runs(self, native_id, since=None):
++        exp = self._experiment(native_id)
++        if not exp:
++            return []
++        body = {"experiment_ids": [exp["experiment_id"]], "max_results": 200,
++                "order_by": ["attributes.start_time DESC"]}
++        if since:
++            ms = int(since.timestamp() * 1000) if hasattr(since, "timestamp") else int(since)
++            body["filter"] = f"attributes.start_time > {ms}"
++        d = self._call("POST", "/api/2.0/mlflow/runs/search", body=body)
++        runs = (d or {}).get("runs") or [] if isinstance(d, dict) else []
++        return [SourceRun(native_id=native_id, run_id=r["info"]["run_id"], started_at=_iso(r["info"].get("start_time")),
++                          status=r["info"].get("status"), raw=r) for r in runs if isinstance(r, dict) and "info" in r]
++
++    def access_events(self, native_id, since=None, limit=100):
++        """Audit Trail events touching this agent (client-side filter on entity id)."""
++        start = int(since.timestamp() * 1000) if hasattr(since, "timestamp") else int(since or (time.time() - 86400) * 1000)
++        d = self._call("GET", "/api/audittrail/v1/auditevents", {"startTimestamp": start, "limit": limit})
++        evs = (d or {}).get("events") or [] if isinstance(d, dict) else []
++        return [e for e in evs if native_id in str(e)]
+diff --git a/adapters/google.py b/adapters/google.py
+new file mode 100644
+index 0000000..c41696b
+--- /dev/null
++++ b/adapters/google.py
+@@ -0,0 +1,42 @@
++"""Google Agent Registry: Service + Binding resources."""
++from .base import AdapterBase, SourceAgent, http_get_json, live_enabled, load_fixture
++
++
++class GoogleAdapter(AdapterBase):
++    platform = "google"
++
++    def _docs(self):
++        if live_enabled("google"):
++            return (http_get_json("google", "/services"), http_get_json("google", "/bindings"))
++        return (load_fixture("google/agent-registry-services.json"),
++                load_fixture("google/agent-registry-bindings.json"))
++
++    def list_agents(self):
++        services, bindings = self._docs()
++        by_svc = bindings.get("bindingsByService", {})
++        out = []
++        for s in services.get("services", []):
++            props = s.get("properties") or {}
++            short = s["name"].rsplit("/", 1)[-1]
++            engine, sa = None, None
++            for b in by_svc.get(s["name"], []):
++                eng = (b.get("target") or {}).get("agentEngine")
++                if eng and not engine:
++                    engine = eng.rsplit("/", 1)[-1]
++                sa = sa or (b.get("authProviderBinding") or {}).get("serviceAccount")
++            ident = dict(s.get("identity") or {})
++            if ident.get("type") != "none" and not ident.get("principal") and sa:
++                ident["principal"] = sa
++            iface = (s.get("interfaces") or [{}])[0]
++            out.append(SourceAgent(
++                platform="google", native_id=engine or short, name=s.get("displayName") or short,
++                description=s.get("description") or "", version="1",
++                owner=props.get("owner") or props.get("owner_email"), status="READY",
++                last_updated=s.get("updateTime"), url=iface.get("url"), provider="Google Cloud",
++                tools=list(props.get("tools") or []), data_scopes=list(props.get("data_scopes") or []),
++                systems=list(props.get("systems") or []), value_limits=dict(props.get("value_limits") or {}),
++                criteria=dict(props.get("criteria") or {}), identity=ident,
++                versions=[{"version": "1", "created": s.get("createTime")}],
++                extra={"service": s["name"], "bindings": len(by_svc.get(s["name"], []))},
++                raw={"service": s, "bindings": by_svc.get(s["name"], [])}))
++        return out
+diff --git a/adapters/microsoft.py b/adapters/microsoft.py
+new file mode 100644
+index 0000000..ab31600
+--- /dev/null
++++ b/adapters/microsoft.py
+@@ -0,0 +1,28 @@
++"""Microsoft Agent 365: Graph catalog packages."""
++from .base import AdapterBase, SourceAgent, http_get_json, live_enabled, load_fixture
++
++
++class MicrosoftAdapter(AdapterBase):
++    platform = "microsoft"
++
++    def _doc(self):
++        if live_enabled("microsoft"):
++            return http_get_json("microsoft", "/beta/copilot/admin/catalog/packages")
++        return load_fixture("microsoft/list-packages.json")
++
++    def list_agents(self):
++        out = []
++        for p in self._doc().get("value", []):
++            md = p.get("customMetadata") or {}
++            owner = md.get("owner") or (p.get("owner") or {}).get("userPrincipalName")
++            out.append(SourceAgent(
++                platform="microsoft", native_id=p["id"], name=p.get("agentName") or p.get("displayName") or p["id"],
++                description=p.get("shortDescription") or "", version=str(p.get("version") or "1"),
++                owner=owner, status="BLOCKED" if p.get("isBlocked") else "AVAILABLE",
++                last_updated=p.get("lastModifiedDateTime"), provider=p.get("publisher") or "Microsoft",
++                tools=list(md.get("tools") or []), data_scopes=list(md.get("data_scopes") or []),
++                systems=list(md.get("systems") or []), value_limits=dict(md.get("value_limits") or {}),
++                criteria=dict(md.get("criteria") or {}), identity=dict(p.get("identity") or {}),
++                versions=[{"version": str(p.get("version") or "1"), "created": p.get("createdDateTime")}],
++                extra={"display_name": p.get("displayName"), "hosts": p.get("supportedHosts")}, raw=p))
++        return out
+diff --git a/backend/normalize.py b/backend/normalize.py
+new file mode 100644
+index 0000000..a076f16
+--- /dev/null
++++ b/backend/normalize.py
+@@ -0,0 +1,205 @@
++"""SourceAgent -> Agent Record (A2A Agent Card fields, OASF tags, bank fields); tier inference; upsert."""
++import hashlib
++import os
++from datetime import datetime, timezone
++
++from sqlalchemy import delete, insert, select, update
++
++from . import db
++from .tiering import score_tier
++
++CRITERIA = ("decision_impact", "financial_exposure", "customer_impact", "autonomy",
++            "data_sensitivity", "reversibility", "regulatory_exposure")
++SENSITIVE_DATA = (("pii", "kyc", "sanction"), ("customer", "payment", "wealth", "credit", "loan", "contact"),
++                  ("trade", "treasury", "finance", "gl", "regulatory", "cash", "market", "mrm"))
++MONEY_TOOLS = ("transfer", "wire", "disburse", "payout", "settle")
++# consequence -> floors for (decision_impact, financial_exposure, customer_impact, reversibility, regulatory_exposure)
++CONSEQUENCE = {
++    "moves_money": (5, 5, 3, 5, 4),
++    "blocks_customer_payments": (4, 4, 5, 3, 4),
++    "regulatory_record": (4, 2, 2, 3, 5),
++    "customer_communication": (3, 2, 4, 4, 3),
++    "operational": (2, 2, 1, 2, 2),
++    "internal_report": (2, 1, 1, 1, 2),
++    "internal_draft": (1, 1, 1, 1, 1),
++}
++AUTONOMY = {"autonomous": 5, "supervised": 3, "assistive": 2}
++LEVEL = {"high": 5, "medium": 3, "low": 1}
++
++
++def now_iso() -> str:
++    return datetime.now(timezone.utc).isoformat()
++
++
++def act_id(platform: str, native_id: str) -> str:
++    return f"act:{platform}:{hashlib.sha256(native_id.encode()).hexdigest()[:16]}"
++
++
++def infer_criteria(sa) -> dict:
++    """Infer the seven 2026-54 criteria (1-5) from manifest, permissions and source-side criteria."""
++    c = sa.criteria or {}
++    known = c.get("consequence") in CONSEQUENCE
++    dec, fin, cust, rev, reg = CONSEQUENCE.get(c.get("consequence"), (3, 3, 3, 3, 3))
++    aut = AUTONOMY.get(c.get("autonomy"), 3)
++    if c.get("human_in_loop") is False:
++        aut = max(aut, 4)
++    cust = max(cust, LEVEL.get(c.get("customer_impact"), 1))
++    scopes = " ".join(sa.data_scopes).lower()
++    data = 2
++    for score, words in zip((5, 4, 3), SENSITIVE_DATA):
++        if any(w in scopes for w in words):
++            data = score
++            break
++    if not sa.data_scopes and not known:
++        data = 3
++    if any(m in t.lower() for t in sa.tools for m in MONEY_TOOLS):
++        fin = max(fin, 4)
++    if sa.value_limits:
++        fin = max(fin, 4)
++    return dict(decision_impact=dec, financial_exposure=fin, customer_impact=cust, autonomy=aut,
++                data_sensitivity=data, reversibility=rev, regulatory_exposure=reg)
++
++
++def _limits(vl):
++    out = {}
++    for tool, v in (vl or {}).items():
++        amt = v.get("amount") if isinstance(v, dict) else v
++        if isinstance(amt, (int, float)):
++            out[tool] = amt
++    return out
++
++
++def _identity(i):
++    if not i or i.get("type") in (None, "none"):
++        return {"type": "none", "distinct": False}
++    subject = i.get("subject") or i.get("principal") or i.get("principalId") or i.get("clientId") or "unknown"
++    out = dict(i)
++    out.update(subject=str(subject), distinct=bool(i.get("distinct", True)))
++    return out
++
++
++def manifest_of(sa) -> dict:
++    return {"tools": list(sa.tools), "data_scopes": list(sa.data_scopes), "systems": list(sa.systems),
++            "value_limits": _limits(sa.value_limits), "value_limits_detail": sa.value_limits or {},
++            "permissions": {k: v for k, v in (sa.criteria or {}).items()}}
++
++
++def normalize(sa, tier_override=None) -> dict:
++    """Map a SourceAgent into an Agent Record. Tier fields are filled by inference."""
++    criteria = infer_criteria(sa)
++    res = score_tier(criteria)
++    aid = act_id(sa.platform, sa.native_id)
++    ts = now_iso()
++    versions = [{"version": str(v.get("version")), **{k: x for k, x in v.items() if k != "version" and x is not None}}
++                for v in sa.versions if v.get("version") is not None] or [{"version": sa.version}]
++    domains = sorted({s.split(".")[0] for s in sa.data_scopes})
++    rec = {
++        "id": aid, "name": sa.name, "description": sa.description or sa.name, "version": str(sa.version),
++        "provider": {"organization": sa.provider or sa.platform},
++        "capabilities": {"streaming": False, "pushNotifications": False},
++        "skills": [{"id": t, "name": t, "tags": [sa.platform]} for t in sa.tools],
++        "oasf": {"skills": list(sa.tools), "domains": domains},
++        "source_platform": sa.platform, "source_native_id": sa.native_id, "last_seen": ts,
++        "owner": sa.owner or "unassigned", "tier": res.tier, "tier_reasoning": res.reasoning, "criteria": criteria,
++        "manifest": manifest_of(sa), "identity": _identity(sa.identity),
++        "dependencies": {"models": list(sa.dependencies.get("models", [])),
++                         "mcp_servers": list(sa.dependencies.get("mcp_servers", [])),
++                         "tools": [{"name": t} for t in sa.tools]},
++        "status": "discovered", "versions": versions, "origin": "internal",
++        "source_status": sa.status, "source_updated": sa.last_updated, "source_extra": sa.extra,
++    }
++    if sa.url:
++        rec["url"] = sa.url
++    return rec
++
++
++def default_actor():
++    """In-process caller: the starting Domino user; system:intake only when unknown."""
++    u = os.environ.get("DOMINO_STARTING_USERNAME")
++    return (u, u) if u else ("system:intake", "intake")
++
++
++def from_source(d) -> "SourceAgent":
++    """Build a SourceAgent from a raw dict. Server-owned fields are ignored. Raises ValueError if invalid."""
++    import dataclasses
++    from adapters.base import SourceAgent
++    if not isinstance(d, dict):
++        raise ValueError("agent must be an object")
++    for k in ("native_id", "platform", "name"):
++        if not isinstance(d.get(k), str) or not d[k].strip():
++            raise ValueError(f"missing or invalid source field: {k}")
++    names = {f.name for f in dataclasses.fields(SourceAgent)} - {"id", "tier", "registered_by"}
++    kw = {k: v for k, v in d.items() if k in names and k != "status"}
++    for k, t in (("tools", list), ("data_scopes", list), ("systems", list), ("versions", list),
++                 ("value_limits", dict), ("criteria", dict), ("identity", dict), ("dependencies", dict),
++                 ("extra", dict)):
++        if k in kw and not isinstance(kw[k], t):
++            raise ValueError(f"invalid source field: {k}")
++    if any(not isinstance(v, dict) for v in kw.get("versions", [])):
++        raise ValueError("invalid source field: versions")
++    if any(not isinstance(v, str) for k in ("tools", "data_scopes", "systems") for v in kw.get(k, [])):
++        raise ValueError("invalid source field: tools/data_scopes/systems")
++    deps = kw.get("dependencies") or {}
++    for k in ("models", "mcp_servers", "tools"):
++        v = deps.get(k, [])
++        if not isinstance(v, list) or any(not isinstance(x, dict) for x in v):
++            raise ValueError(f"invalid source field: dependencies.{k} must be a list of objects")
++    if d.get("status") is not None:
++        kw["status"] = str(d["status"])
++    return SourceAgent(**kw)
++
++
++def _audit(conn, action, target, detail, actor=None):
++    actor = actor or default_actor()
++    conn.execute(insert(db.audit_events).values(
++        actor_user_id=actor[0], actor_username=actor[1], action=action, target=target, ts=now_iso(), detail=detail))
++
++
++def apply_record(conn, rec: dict, actor=None) -> str:
++    """Upsert a normalized record. Returns 'created' | 'updated' | 'retiered'. Re-tiers on manifest change."""
++    aid, ts = rec["id"], rec["last_seen"]
++    row = conn.execute(select(db.agents).where(db.agents.c.id == aid)).first()
++    if row is None:
++        conn.execute(insert(db.agents).values(
++            id=aid, source_platform=rec["source_platform"], native_id=rec["source_native_id"], name=rec["name"],
++            owner=rec["owner"], tier=str(rec["tier"]), tier_reasoning=rec["tier_reasoning"], criteria=rec["criteria"],
++            status=rec["status"], last_seen=ts, record=rec))
++        conn.execute(insert(db.manifests).values(agent_id=aid, version=rec["version"], content=rec["manifest"], created_at=ts))
++        result = "created"
++    else:
++        old = dict(row.record or {})
++        keep = {k: old[k] for k in ("tier", "tier_reasoning", "criteria", "status") if k in old}
++        changed = (old.get("manifest") or {}) != rec["manifest"]
++        new = {**rec, **keep}
++        tier, reasoning, criteria = row.tier, row.tier_reasoning, row.criteria
++        result = "updated"
++        if changed or tier is None:
++            _audit(conn, "manifest-change", aid, {"before": old.get("manifest"), "after": rec["manifest"]}, actor)
++            conn.execute(insert(db.manifests).values(agent_id=aid, version=rec["version"], content=rec["manifest"], created_at=ts))
++            tier, reasoning, criteria = str(rec["tier"]), rec["tier_reasoning"], rec["criteria"]
++            _audit(conn, "retier", aid, {"from": row.tier, "to": tier, "reason": "manifest or permissions changed",
++                                         "reasoning": reasoning}, actor)
++            if str(row.tier) != tier:
++                result = "retiered"
++            new.update(tier=int(tier), tier_reasoning=reasoning, criteria=criteria)
++        status = row.status if row.status not in (None, "shadow") else rec["status"]
++        new["status"] = status
++        conn.execute(update(db.agents).where(db.agents.c.id == aid).values(
++            name=rec["name"], owner=rec["owner"], tier=tier, tier_reasoning=reasoning, criteria=criteria,
++            status=status, last_seen=ts, record=new))
++    # identity and dependencies: replace (idempotent, no duplicates)
++    ident = rec["identity"]
++    conn.execute(delete(db.identities).where(db.identities.c.agent_id == aid))
++    conn.execute(insert(db.identities).values(agent_id=aid, kind=ident["type"], principal=ident.get("subject"),
++                                              scopes=rec["manifest"].get("data_scopes"), record=ident))
++    conn.execute(delete(db.dependencies).where(db.dependencies.c.agent_id == aid))
++    for kind, key in (("model", "models"), ("mcp_server", "mcp_servers")):
++        for d in rec["dependencies"].get(key, []):
++            conn.execute(insert(db.dependencies).values(agent_id=aid, kind=kind, name=d.get("name"),
++                                                        target=d.get("registry_version"), record=d))
++    have = {r.version for r in conn.execute(select(db.agent_versions.c.version).where(db.agent_versions.c.agent_id == aid))}
++    for v in rec["versions"]:
++        if v["version"] not in have:
++            conn.execute(insert(db.agent_versions).values(agent_id=aid, version=v["version"],
++                                                          created_at=v.get("created"), record=v))
++    return result
+diff --git a/backend/routes/agents.py b/backend/routes/agents.py
+new file mode 100644
+index 0000000..e5a9996
+--- /dev/null
++++ b/backend/routes/agents.py
+@@ -0,0 +1,89 @@
++"""Fleet inventory, agent record, tier scoring, and intake upsert."""
++from fastapi import APIRouter, Body, Depends, HTTPException
++from sqlalchemy import func, select
++
++from .. import db
++from ..domino_identity import User, require_user
++from ..normalize import _audit, apply_record, from_source, normalize
++from ..tiering import TieringInputRejected, score_tier
++
++router = APIRouter()
++
++
++def _tier(v):
++    try:
++        return int(v)
++    except (TypeError, ValueError):
++        return None
++
++
++@router.get("/api/agents")
++def list_agents(source: str | None = None, tier: int | None = None, include_shadow: bool = False):
++    q = select(db.agents)
++    if source:
++        q = q.where(db.agents.c.source_platform == source)
++    if tier is not None:
++        q = q.where(db.agents.c.tier == str(tier))
++    if not include_shadow:
++        q = q.where(db.agents.c.status != "shadow")
++    with db.engine.connect() as cx:
++        rows = cx.execute(q.order_by(db.agents.c.source_platform, db.agents.c.name)).all()
++        open_f = dict(cx.execute(select(db.findings.c.agent_id, func.count()).where(db.findings.c.status == "open")
++                                 .group_by(db.findings.c.agent_id)).all())
++    return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
++             "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
++             "open_findings": int(open_f.get(r.id, 0))} for r in rows]
++
++
++@router.get("/api/agents/{agent_id}")
++def get_agent(agent_id: str):
++    with db.engine.connect() as cx:
++        r = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++    if r is None or not r.record:
++        raise HTTPException(404, "agent not found")
++    rec = dict(r.record)
++    rec.update(id=r.id, name=r.name, owner=r.owner or rec.get("owner"), status=r.status, last_seen=r.last_seen,
++               tier=_tier(r.tier), tier_reasoning=r.tier_reasoning, criteria=r.criteria or rec.get("criteria"))
++    return rec
++
++
++@router.post("/api/agents/{agent_id}/tier")
++def set_tier(agent_id: str, body: dict = Body(...), user: User = Depends(require_user)):
++    criteria = body.get("criteria") if isinstance(body, dict) else None
++    if not isinstance(criteria, dict):
++        raise HTTPException(422, "body must be {\"criteria\": {...}}")
++    try:
++        res = score_tier(criteria)
++    except (TieringInputRejected, ValueError) as e:
++        raise HTTPException(422, str(e))
++    with db.engine.begin() as cx:
++        r = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++        if r is None:
++            raise HTTPException(404, "agent not found")
++        rec = dict(r.record or {})
++        rec.update(tier=res.tier, tier_reasoning=res.reasoning, criteria=criteria)
++        cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
++            tier=str(res.tier), tier_reasoning=res.reasoning, criteria=criteria, record=rec))
++        _audit(cx, "retier" if str(res.tier) != str(r.tier) else "tier_score", agent_id,
++               {"from": r.tier, "to": res.tier, "score": res.score, "reasoning": res.reasoning, "manual": True},
++               actor=(user.user_id, user.username))
++    return {"id": agent_id, "tier": res.tier, "score": res.score, "reasoning": res.reasoning}
++
++
++@router.post("/api/agents/intake")
++def post_intake(body=Body(...), user: User = Depends(require_user)):
++    """Upsert raw source agents; id, tier, criteria and origin are computed here, never taken from the client."""
++    raws = None
++    if isinstance(body, dict):
++        raws = body.get("agents") if body.get("agents") is not None else body.get("records")
++    if not isinstance(raws, list):
++        raise HTTPException(422, "body must be {\"agents\": [source agents]}")
++    try:
++        recs = [normalize(from_source(r)) for r in raws]
++    except (ValueError, TypeError, AttributeError) as e:
++        raise HTTPException(422, str(e))
++    counts = {"created": 0, "updated": 0, "retiered": 0}
++    with db.engine.begin() as cx:
++        for rec in recs:
++            counts[apply_record(cx, rec, actor=(user.user_id, user.username))] += 1
++    return counts
+diff --git a/jobs/__init__.py b/jobs/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/jobs/intake.py b/jobs/intake.py
+new file mode 100644
+index 0000000..785f0a5
+--- /dev/null
++++ b/jobs/intake.py
+@@ -0,0 +1,108 @@
++"""Intake job: run all five adapters, upsert the inventory, post fixture runs to trace ingest.
++
++Run as a Domino job (`python jobs/intake.py`). With ACT_URL set it calls the ACT backend over HTTP
++(bearer token from the in-run token endpoint); otherwise it writes to the DB in-process.
++Set ACT_INTAKE_INPROCESS=1 to force in-process.
++"""
++import dataclasses
++import json
++import logging
++import os
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++log = logging.getLogger("intake")
++# weekend-drift.json is the AC-12 scenario (a Saturday transfer over limit): posted by that scenario, not by intake.
++SKIP_RUNS = {"weekend-drift.json"}
++
++
++def _adapters():
++    from adapters.aws import AwsAdapter
++    from adapters.databricks import DatabricksAdapter
++    from adapters.domino import DominoAdapter
++    from adapters.google import GoogleAdapter
++    from adapters.microsoft import MicrosoftAdapter
++    return [AwsAdapter(), GoogleAdapter(), MicrosoftAdapter(), DatabricksAdapter(), DominoAdapter()]
++
++
++def _run_files():
++    from adapters.base import fixtures_dir
++    d = fixtures_dir() / "runs"
++    skip = SKIP_RUNS | set(filter(None, os.environ.get("ACT_INTAKE_SKIP_RUNS", "").split(",")))
++    return sorted(p for p in d.glob("*.json") if p.name not in skip) if d.is_dir() else []
++
++
++def _http():
++    import requests
++    base = os.environ["ACT_URL"].rstrip("/")
++    token = requests.get("http://localhost:8899/access-token", timeout=5).text.strip()
++    return requests, base, {"Authorization": f"Bearer {token}"}
++
++
++def run_intake() -> dict:
++    from backend.normalize import normalize
++    records, raws, errors = [], [], []
++    for ad in _adapters():
++        try:
++            sas = ad.list_agents()
++            for sa in sas:
++                try:
++                    records.append(normalize(sa))
++                except Exception as e:
++                    log.exception("normalize failed for %s/%s", ad.platform, getattr(sa, "native_id", "?"))
++                    errors.append(f"{ad.platform}/{getattr(sa, 'native_id', '?')}: {e}")
++            raws += [json.loads(json.dumps(dataclasses.asdict(sa), default=str)) for sa in sas]
++        except Exception as e:
++            log.exception("adapter %s failed", ad.platform)
++            errors.append(f"{ad.platform}: {e}")
++    inproc = os.environ.get("ACT_INTAKE_INPROCESS") == "1" or not os.environ.get("ACT_URL")
++    runs_posted = 0
++    if inproc:
++        from backend import db
++        from backend.normalize import apply_record
++        db.init_db()
++        counts = {"created": 0, "updated": 0, "retiered": 0}
++        for rec in records:
++            try:
++                with db.engine.begin() as cx:  # one transaction per record: a bad one rolls back alone
++                    counts[apply_record(cx, rec)] += 1
++            except Exception as e:
++                log.exception("apply failed for %s", rec.get("id"))
++                errors.append(f"{rec.get('name') or rec.get('id')}: {e}")
++        from backend.otlp import parse_request
++        from backend.routes.traces import ingest
++        for p in _run_files():
++            try:
++                ingest(parse_request(p.read_bytes(), "application/json"))
++                runs_posted += 1
++            except Exception as e:
++                log.exception("run file %s failed", p.name)
++                errors.append(f"{p.name}: {e}")
++    else:
++        requests, base, headers = _http()
++        r = requests.post(f"{base}/api/agents/intake", json={"agents": raws}, headers=headers, timeout=60)
++        r.raise_for_status()
++        counts = r.json()
++        for p in _run_files():
++            rr = requests.post(f"{base}/v1/traces", data=p.read_bytes(), timeout=60,
++                               headers={**headers, "Content-Type": "application/json"})
++            if rr.status_code < 300:
++                runs_posted += 1
++            else:
++                errors.append(f"{p.name}: HTTP {rr.status_code}")
++    return {"agents": len(records), **counts, "runs_posted": runs_posted, "errors": errors}
++
++
++def main() -> int:
++    out = run_intake()
++    print(json.dumps(out, indent=2))
++    return 1 if out["errors"] else 0
++
++
++if __name__ == "__main__":
++    logging.basicConfig(level=logging.INFO)
++    sys.exit(main())
+diff --git a/tests/test_t4_intake.py b/tests/test_t4_intake.py
+new file mode 100644
+index 0000000..45f60e9
+--- /dev/null
++++ b/tests/test_t4_intake.py
+@@ -0,0 +1,564 @@
++"""T-4 tests: adapters, normalize, intake job, inventory API, tiering API (AC-1, AC-2, AC-3)."""
++import hashlib
++import importlib
++import json
++import shutil
++import sys
++from pathlib import Path
++
++import jsonschema
++import pytest
++from fastapi.testclient import TestClient
++
++ROOT = Path(__file__).resolve().parent.parent
++SCHEMA = json.loads((ROOT / "schemas" / "agent-record.json").read_text())
++HDR = {"X-Domino-User-Id": "u1", "X-Domino-User": "tester"}
++DOMINO_ID = "dom-agent-001"
++
++
++class _Resp:
++    def __init__(self, payload, status=200):
++        self._p, self.status_code = payload, status
++        self.text = payload if isinstance(payload, str) else json.dumps(payload)
++        self.content = self.text.encode()
++        self.headers = {"content-type": "application/json"}
++
++    def json(self):
++        return self._p
++
++    def raise_for_status(self):
++        pass
++
++
++STATE = {}
++OTHER_ID = "dom-agent-other"
++
++
++def _item(nid, name, pub, owner):
++    return {"id": nid, "agentId": nid, "appId": nid, "name": name,
++            "ownerName": owner, "owner": owner, "status": "Running",
++            "description": "stub", "versions": [], "lastUpdated": "2026-11-05T00:00:00Z",
++            "currentVersion": {"versionNumber": 1, "currentInstance": {"publisher": {"name": pub}}}}
++
++
++def _fake_http(url, *a, **k):
++    url = str(url)
++    if "8899" in url:
++        return _Resp("tok")
++    if url.endswith("/api/apps/v1/apps"):
++        params = dict(k.get("params") or {})
++        STATE.setdefault("calls", []).append(params)
++        if STATE.get("apps_status"):
++            return _Resp({"error": "boom"}, STATE["apps_status"])
++        pub, owner = STATE.get("publisher", "dom-owner"), STATE.get("owner", "dom-owner")
++        mine, other = _item(DOMINO_ID, "domino-deployed-agent", pub, owner), _item(OTHER_ID, "other-project-agent", "someone", "someone")
++        pid = params.get("projectId")
++        items = [mine, other] if pid is None else ([mine] if pid == STATE["project"] else [other])
++        return _Resp({"items": items})
++    return _Resp({"items": []})
++
++
++@pytest.fixture
++def env(db_env, monkeypatch, tmp_path):
++    STATE.clear()
++    STATE["project"] = "proj-123"
++    monkeypatch.setenv("DOMINO_API_HOST", "http://domino.invalid")
++    monkeypatch.setenv("DOMINO_PROJECT_ID", "proj-123")
++    for k in ("ACT_DOMINO_PROJECT_ID", "ACT_DOMINO_SCOPE", "ACT_SERVICE_ACCOUNTS", "DOMINO_STARTING_USERNAME"):
++        monkeypatch.delenv(k, raising=False)
++    for p in ("AWS", "GOOGLE", "MICROSOFT", "DATABRICKS"):
++        monkeypatch.delenv(f"ACT_LIVE_{p}", raising=False)
++    import requests
++    monkeypatch.setattr(requests, "get", _fake_http)
++    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: _fake_http(u, **k))
++    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: _fake_http(u, **k))
++    monkeypatch.setattr(requests.Session, "get", lambda self, u, *a, **k: _fake_http(u, **k))
++    return tmp_path
++
++
++@pytest.fixture
++def client(env):
++    for m in [m for m in sys.modules if m in ("backend", "jobs", "adapters") or m.split(".")[0] in ("backend", "jobs", "adapters")]:
++        del sys.modules[m]
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        yield c
++
++
++def _intake():
++    return importlib.import_module("jobs.intake").run_intake()
++
++
++def _rows(table):
++    from backend import db
++    with db.engine.connect() as cx:
++        return cx.execute(db.sa_select(table) if hasattr(db, "sa_select") else table.select()).fetchall()
++
++
++def _fleet(client, **q):
++    r = client.get("/api/agents", params=q)
++    assert r.status_code == 200
++    return r.json()
++
++
++def _by_name(client, name):
++    return next(a for a in _fleet(client) if a["name"] == name)
++
++
++def test_ac1_adapters_exist_with_interface():
++    for mod in ("base", "aws", "google", "microsoft", "databricks", "domino"):
++        importlib.import_module(f"adapters.{mod}")
++    base = importlib.import_module("adapters.base")
++    assert hasattr(base, "SourceAgent") and hasattr(base, "SourceRun")
++    for mod in ("aws", "google", "microsoft", "databricks", "domino"):
++        m = importlib.import_module(f"adapters.{mod}")
++        cls = [v for k, v in vars(m).items() if k.endswith("Adapter") and isinstance(v, type) and k != "AdapterBase"][0]
++        for n in ("list_agents", "get_agent", "list_runs"):
++            assert callable(getattr(cls, n, None)), (mod, n)
++
++
++@pytest.mark.parametrize("plat,count", [("aws", 3), ("google", 3), ("microsoft", 3), ("databricks", 2)])
++def test_ac1_replay_adapter_no_network_when_flag_unset(plat, count, env, monkeypatch):
++    import requests
++    import httpx
++
++    def boom(*a, **k):
++        raise AssertionError("network used")
++    monkeypatch.setattr(requests, "get", boom)
++    monkeypatch.setattr(requests, "post", boom)
++    monkeypatch.setattr(requests, "request", boom)
++    monkeypatch.setattr(requests.Session, "request", lambda *a, **k: boom())
++    monkeypatch.setattr(httpx, "get", boom)
++    monkeypatch.setattr(httpx.Client, "request", lambda *a, **k: boom())
++    mod = importlib.import_module(f"adapters.{plat}")
++    cls = [v for k, v in vars(mod).items() if k.endswith("Adapter") and isinstance(v, type)][0]
++    ad = cls()
++    agents = ad.list_agents()
++    assert len(agents) == count
++    first = agents[0]
++    nid = getattr(first, "native_id")
++    assert getattr(ad.get_agent(nid), "native_id") == nid
++
++
++def test_ac1_intake_lists_all_five_sources(client):
++    _intake()
++    fleet = _fleet(client)
++    assert len(fleet) == 12
++    counts = {}
++    for a in fleet:
++        counts[a["source_platform"]] = counts.get(a["source_platform"], 0) + 1
++        assert a["id"] == f"act:{a['source_platform']}:" + hashlib.sha256(a["native_id"].encode()).hexdigest()[:16]
++        assert a["owner"] and a["last_seen"] and a["name"]
++        for k in ("tier", "status", "open_findings"):
++            assert k in a
++        assert isinstance(a["open_findings"], int)
++    assert counts == {"aws": 3, "google": 3, "microsoft": 3, "databricks": 2, "domino": 1}
++    assert any(a["native_id"] == DOMINO_ID for a in fleet)
++
++
++def test_ac1_second_run_creates_no_duplicates(client):
++    from backend import db
++    _intake()
++    first = {a["id"]: a for a in _fleet(client)}
++    counts1 = {t.name: len(_rows(t)) for t in (db.agents, db.manifests, db.identities)}
++    _intake()
++    second = {a["id"]: a for a in _fleet(client)}
++    assert set(first) == set(second) and len(second) == 12
++    for i in first:
++        assert second[i]["last_seen"] >= first[i]["last_seen"]
++    assert {t.name: len(_rows(t)) for t in (db.agents, db.manifests, db.identities)} == counts1
++
++
++def test_ac1_fleet_filters_and_shadow(client):
++    from backend import db
++    _intake()
++    assert {a["source_platform"] for a in _fleet(client, source="aws")} == {"aws"}
++    assert len(_fleet(client, source="aws")) == 3
++    t1 = _fleet(client, tier=1)
++    assert t1 and all(a["tier"] == 1 for a in t1)
++    with db.engine.begin() as cx:
++        cx.execute(db.agents.insert().values(id="act:shadow:abc123", source_platform="shadow", native_id="abc123",
++                                             name="shadow-x", owner=None, status="shadow", record={}))
++    assert all(a["status"] != "shadow" for a in _fleet(client))
++    assert len(_fleet(client)) == 12
++    inc = _fleet(client, include_shadow="true")
++    assert len(inc) == 13 and any(a["id"] == "act:shadow:abc123" for a in inc)
++
++
++def test_ac2_records_validate_against_schema(client):
++    _intake()
++    validator = jsonschema.Draft202012Validator(SCHEMA)
++    for a in _fleet(client):
++        r = client.get(f"/api/agents/{a['id']}")
++        assert r.status_code == 200
++        rec = r.json()
++        errs = list(validator.iter_errors(rec))
++        assert not errs, (a["id"], errs[:3])
++        assert rec["id"] == a["id"]
++
++
++def test_ac2_unknown_id_404(client):
++    assert client.get("/api/agents/act:aws:doesnotexist0000").status_code == 404
++
++
++def test_ac2_no_identity_agents_yield_distinct_false(client):
++    _intake()
++    none = []
++    for a in _fleet(client):
++        rec = client.get(f"/api/agents/{a['id']}").json()
++        if rec["identity"].get("type") == "none":
++            assert rec["identity"] == {"type": "none", "distinct": False}
++            none.append(a["source_platform"])
++    assert sorted(none) == ["aws", "databricks", "google", "microsoft"]
++
++
++def test_ac3_treasury_sweep_is_tier1_with_reasoning(client):
++    _intake()
++    a = _by_name(client, "treasury-sweep-agent")
++    assert a["tier"] == 1
++    rec = client.get(f"/api/agents/{a['id']}").json()
++    assert rec["tier"] == 1
++    from backend import db
++    row = [r for r in _rows(db.agents) if r._mapping["id"] == a["id"]][0]._mapping
++    assert row["tier_reasoning"] and row["criteria"]
++
++
++def test_ac3_tier_endpoint_valid_and_audited(client):
++    from backend import db
++    _intake()
++    a = _by_name(client, "trade-break-triage")
++    body = {"criteria": {k: 5 for k in ("decision_impact", "financial_exposure", "customer_impact", "autonomy",
++                                         "data_sensitivity", "reversibility", "regulatory_exposure")}}
++    before = len(_rows(db.audit_events))
++    r = client.post(f"/api/agents/{a['id']}/tier", json=body, headers=HDR)
++    assert r.status_code == 200, r.text
++    j = r.json()
++    assert j["tier"] == 1 and j["reasoning"]
++    assert len(_rows(db.audit_events)) > before
++
++
++def test_ac3_tier_endpoint_rejects_backtest_422(client):
++    _intake()
++    a = _by_name(client, "trade-break-triage")
++    body = {"criteria": {k: 3 for k in ("decision_impact", "financial_exposure", "customer_impact", "autonomy",
++                                         "data_sensitivity", "reversibility", "regulatory_exposure")}}
++    body["criteria"]["backtest_sharpe"] = 2.1
++    r = client.post(f"/api/agents/{a['id']}/tier", json=body, headers=HDR)
++    assert r.status_code == 422
++    assert "no_benchmark_rule" in json.dumps(r.json()["detail"])
++
++
++def test_ac3_tier_endpoint_requires_identity(client):
++    _intake()
++    a = _by_name(client, "trade-break-triage")
++    assert client.post(f"/api/agents/{a['id']}/tier", json={"criteria": {}}).status_code == 401
++
++
++def test_ac3_changed_tools_and_permissions_retier_with_audit(client, env, monkeypatch):
++    from backend import db
++    fx = env / "fixtures"
++    shutil.copytree(ROOT / "fixtures", fx)
++    monkeypatch.setenv("ACT_FIXTURES_DIR", str(fx))
++    _intake()
++    a = _by_name(client, "trade-break-triage")
++    before = client.get(f"/api/agents/{a['id']}").json()
++    path = fx / "aws" / "list-agent-runtimes.json"
++    d = json.loads(path.read_text())
++    for rt in d["agentRuntimes"]:
++        if rt["agentRuntimeName"] == "trade-break-triage":
++            m = rt["metadata"]
++            m["tools"].append("transfer_funds")
++            m["value_limits"] = {"transfer_funds": {"amount": 5000000, "currency": "USD"}}
++            m["criteria"] = {"autonomy": "autonomous", "consequence": "moves_money",
++                             "human_in_loop": False, "customer_impact": "high"}
++    path.write_text(json.dumps(d))
++    _intake()
++    after = client.get(f"/api/agents/{a['id']}").json()
++    assert after["manifest"] != before["manifest"]
++    assert after["tier"] < before["tier"]
++    ev = [r._mapping for r in _rows(db.audit_events) if r._mapping["action"] == "retier" and r._mapping["target"] == a["id"]]
++    assert ev, "expected a retier audit event"
++    mrows = [r._mapping for r in _rows(db.manifests) if r._mapping["agent_id"] == a["id"]]
++    assert len(mrows) >= 1
++    assert any(r["content"] == after["manifest"] for r in mrows)
++    assert any("transfer_funds" in json.dumps(r["content"]) for r in mrows)
++
++
++# ---------------------------------------------------------------- round 2 contracts
++
++def _domino_agents():
++    return importlib.import_module("adapters.domino").DominoAdapter().list_agents()
++
++
++def _apps_calls():
++    return STATE.get("calls", [])
++
++
++def test_ac1_domino_default_scope_is_current_project(env):
++    ags = _domino_agents()
++    assert [a.native_id for a in ags] == [DOMINO_ID]
++    assert _apps_calls() and all(c.get("projectId") == "proj-123" for c in _apps_calls())
++
++
++def test_ac1_domino_act_project_id_overrides(env, monkeypatch):
++    monkeypatch.setenv("ACT_DOMINO_PROJECT_ID", "proj-other")
++    ags = _domino_agents()
++    assert [a.native_id for a in ags] == [OTHER_ID]
++    assert all(c.get("projectId") == "proj-other" for c in _apps_calls())
++
++
++def test_ac1_domino_scope_all_sends_no_project_filter(env, monkeypatch):
++    monkeypatch.setenv("ACT_DOMINO_SCOPE", "all")
++    ags = _domino_agents()
++    assert {a.native_id for a in ags} == {DOMINO_ID, OTHER_ID}
++    assert _apps_calls() and all("projectId" not in c for c in _apps_calls())
++
++
++def test_ac1_domino_identity_distinct_for_service_account(env, monkeypatch):
++    monkeypatch.setenv("ACT_SERVICE_ACCOUNTS", "svc-act-recon, other-svc")
++    STATE.update(publisher="svc-act-recon", owner="svc-act-recon")
++    ident = _domino_agents()[0].identity
++    assert ident["distinct"] is True
++    assert ident["type"] == "domino_service_account"
++    assert ident["principal"] == "svc-act-recon"
++
++
++def test_ac1_domino_identity_not_distinct_for_human_publisher(env, monkeypatch):
++    monkeypatch.setenv("ACT_SERVICE_ACCOUNTS", "svc-act-recon")
++    STATE.update(publisher="alice", owner="alice")
++    ident = _domino_agents()[0].identity
++    assert ident["distinct"] is False
++    assert ident["principal"] == "alice"
++    assert ident["type"] != "domino_service_account"
++
++
++def test_ac1_domino_service_account_flows_to_record(client, monkeypatch):
++    monkeypatch.setenv("ACT_SERVICE_ACCOUNTS", "svc-act-recon")
++    STATE.update(publisher="svc-act-recon", owner="svc-act-recon")
++    _intake()
++    a = _by_name(client, "domino-deployed-agent")
++    rec = client.get(f"/api/agents/{a['id']}").json()
++    assert rec["identity"]["distinct"] is True
++    assert rec["identity"]["type"] == "domino_service_account"
++    assert rec["identity"]["principal"] == "svc-act-recon"
++
++
++# -- POST /api/agents/intake takes raw source agents and normalizes server-side
++
++def _raw_aws(name):
++    import dataclasses
++    mod = importlib.import_module("adapters.aws")
++    cls = [v for k, v in vars(mod).items() if k.endswith("Adapter") and isinstance(v, type)][0]
++    sa = next(x for x in cls().list_agents() if x.name == name)
++    return json.loads(json.dumps(dataclasses.asdict(sa), default=str))
++
++
++def _post_raw(client, raws, headers=HDR):
++    # body key is not fixed by the contract text: send the same list under both plausible keys
++    return client.post("/api/agents/intake", json={"agents": raws, "records": raws}, headers=headers)
++
++
++def test_ac1_intake_route_recomputes_id_and_tier_server_side(client):
++    raw = _raw_aws("treasury-sweep-agent")
++    raw["tier"] = 4
++    raw["id"] = "act:aws:forged"
++    r = _post_raw(client, [raw])
++    assert r.status_code == 200, r.text
++    expected = "act:aws:" + hashlib.sha256(raw["native_id"].encode()).hexdigest()[:16]
++    ids = {a["id"] for a in _fleet(client)}
++    assert expected in ids and "act:aws:forged" not in ids
++    rec = client.get(f"/api/agents/{expected}").json()
++    assert rec["id"] == expected
++    assert rec["tier"] != 4 and rec["tier"] == 1
++
++
++@pytest.mark.parametrize("drop", ["native_id", "platform"])
++def test_ac1_intake_route_missing_source_fields_422(client, drop):
++    raw = _raw_aws("treasury-sweep-agent")
++    del raw[drop]
++    assert _post_raw(client, [raw]).status_code == 422
++
++
++def test_ac1_intake_route_anonymous_401(client):
++    assert _post_raw(client, [_raw_aws("treasury-sweep-agent")], headers={}).status_code == 401
++
++
++# -- audit actor and retier on every manifest change
++
++def _audit_after(since_id):
++    from backend import db
++    return [r._mapping for r in _rows(db.audit_events) if r._mapping["id"] > since_id]
++
++
++def _max_audit_id():
++    from backend import db
++    return max([r._mapping["id"] for r in _rows(db.audit_events)] or [0])
++
++
++def _actors(ev):
++    return {ev["actor_user_id"], ev["actor_username"]}
++
++
++def _edit_aws(fx, name, fn):
++    path = fx / "aws" / "list-agent-runtimes.json"
++    d = json.loads(path.read_text())
++    for rt in d["agentRuntimes"]:
++        if rt["agentRuntimeName"] == name:
++            fn(rt["metadata"])
++    path.write_text(json.dumps(d))
++
++
++@pytest.fixture
++def fx(env, monkeypatch):
++    d = env / "fixtures"
++    shutil.copytree(ROOT / "fixtures", d)
++    monkeypatch.setenv("ACT_FIXTURES_DIR", str(d))
++    return d
++
++
++def test_ac3_retier_when_tier_unchanged_has_from_to_and_actor(client, fx, monkeypatch):
++    from backend import db
++    monkeypatch.setenv("DOMINO_STARTING_USERNAME", "job-runner")
++    _intake()
++    a = _by_name(client, "treasury-sweep-agent")
++    mark = _max_audit_id()
++    _edit_aws(fx, "treasury-sweep-agent", lambda m: m["tools"].append("lookup_note"))
++    _intake()
++    after = client.get(f"/api/agents/{a['id']}").json()
++    assert "lookup_note" in json.dumps(after["manifest"])
++    assert after["tier"] == 1
++    ev = [e for e in _audit_after(mark) if e["action"] == "retier" and e["target"] == a["id"]]
++    assert len(ev) == 1, ev
++    e = ev[0]
++    assert "job-runner" in _actors(e)
++    assert "system:intake" not in _actors(e)
++    assert set(("from", "to")) <= set(e["detail"])
++    assert str(e["detail"]["from"]) == "1" and str(e["detail"]["to"]) == "1"
++
++
++def test_ac3_inprocess_audit_events_record_caller_not_system(client, fx, monkeypatch):
++    monkeypatch.setenv("DOMINO_STARTING_USERNAME", "job-runner")
++    _intake()
++    a = _by_name(client, "trade-break-triage")
++    mark = _max_audit_id()
++
++    def esc(m):
++        m["tools"].append("transfer_funds")
++        m["value_limits"] = {"transfer_funds": {"amount": 5000000, "currency": "USD"}}
++        m["criteria"] = {"autonomy": "autonomous", "consequence": "moves_money",
++                         "human_in_loop": False, "customer_impact": "high"}
++    _edit_aws(fx, "trade-break-triage", esc)
++    _intake()
++    evs = [e for e in _audit_after(mark) if e["target"] == a["id"]]
++    assert any(e["action"] == "retier" for e in evs)
++    for e in evs:
++        assert "job-runner" in _actors(e), e
++        assert "system:intake" not in _actors(e)
++    retier = next(e for e in evs if e["action"] == "retier")
++    assert str(retier["detail"]["to"]) != str(retier["detail"]["from"])
++
++
++def test_ac3_http_intake_route_audit_actor_is_caller(client, fx):
++    raw = _raw_aws("treasury-sweep-agent")
++    assert _post_raw(client, [raw]).status_code == 200
++    mark = _max_audit_id()
++    raw2 = json.loads(json.dumps(raw))
++    raw2["tools"] = list(raw2["tools"]) + ["lookup_note"]
++    assert _post_raw(client, [raw2], headers={"X-Domino-User-Id": "u-http", "X-Domino-User": "http-user"}).status_code == 200
++    evs = _audit_after(mark)
++    ret = [e for e in evs if e["action"] == "retier"]
++    assert len(ret) == 1, evs
++    assert set(("from", "to")) <= set(ret[0]["detail"])
++    for e in evs:
++        assert "u-http" in _actors(e), e
++        assert "system:intake" not in _actors(e)
++
++
++# -- adapter failure is surfaced
++
++def test_ac1_domino_api_500_reported_in_intake_errors(client):
++    STATE["apps_status"] = 500
++    out = _intake()
++    assert out["errors"], out
++    assert any("domino" in str(e).lower() for e in out["errors"])
++
++
++def test_ac1_intake_main_exits_nonzero_when_adapter_fails(client, monkeypatch):
++    import runpy
++    STATE["apps_status"] = 500
++    monkeypatch.setenv("ACT_INTAKE_INPROCESS", "1")
++    mod = importlib.import_module("jobs.intake")
++    if hasattr(mod, "main"):
++        rc = mod.main()
++    else:  # no main(): execute the script entry point
++        with pytest.raises(SystemExit) as ei:
++            runpy.run_path(str(ROOT / "jobs" / "intake.py"), run_name="__main__")
++        rc = ei.value.code
++    assert rc not in (None, 0)
++
++
++# ---------------------------------------------------------------- round 3 contracts
++
++def test_ac1_domino_fails_closed_without_project_id(env, monkeypatch):
++    monkeypatch.delenv("DOMINO_PROJECT_ID", raising=False)
++    monkeypatch.delenv("ACT_DOMINO_PROJECT_ID", raising=False)
++    monkeypatch.delenv("ACT_DOMINO_SCOPE", raising=False)
++    with pytest.raises(Exception):
++        _domino_agents()
++    assert _apps_calls() == []
++
++
++def test_ac1_domino_fails_closed_run_intake_reports_error(client, monkeypatch):
++    monkeypatch.delenv("DOMINO_PROJECT_ID", raising=False)
++    monkeypatch.delenv("ACT_DOMINO_PROJECT_ID", raising=False)
++    out = _intake()
++    assert any("domino" in str(e).lower() for e in out["errors"]), out
++    assert _apps_calls() == []
++
++
++def test_ac1_domino_drops_items_with_unconfirmed_project(env, monkeypatch):
++    import requests
++    mine = _item("dom-confirmed", "confirmed", "p", "o")
++    mine["projectId"] = "proj-123"
++    unknown = _item("dom-unknown", "unknown-project", "p", "o")
++    unknown.pop("projectId", None)
++    unknown.pop("project", None)
++    base = _fake_http
++
++    def fake(url, *a, **k):
++        if str(url).endswith("/api/apps/v1/apps"):
++            STATE.setdefault("calls", []).append(dict(k.get("params") or {}))
++            return _Resp({"items": [mine, unknown]})
++        return base(url, *a, **k)
++    monkeypatch.setattr(requests, "get", fake)
++    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: fake(u, **k))
++    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: fake(u, **k))
++    monkeypatch.setattr(requests.Session, "get", lambda self, u, *a, **k: fake(u, **k))
++    ids = [a.native_id for a in _domino_agents()]
++    assert ids == ["dom-confirmed"], ids
++
++
++@pytest.mark.parametrize("key,bad", [("models", ["not-a-dict"]), ("mcp_servers", [42])])
++def test_ac1_intake_route_malformed_dependencies_422(client, key, bad):
++    from backend import db
++    raw = _raw_aws("treasury-sweep-agent")
++    raw["dependencies"] = {key: bad}
++    before = len(_rows(db.agents))
++    r = _post_raw(client, [raw])
++    assert r.status_code == 422, r.text
++    assert len(_rows(db.agents)) == before
++
++
++def test_ac1_inprocess_bad_record_does_not_block_valid_ones(client, monkeypatch):
++    import dataclasses
++    from backend import db
++    aws = importlib.import_module("adapters.aws")
++    good = aws.AwsAdapter().list_agents()[0]
++    bad = dataclasses.replace(aws.AwsAdapter().list_agents()[1], dependencies={"models": ["x"]})
++    monkeypatch.setattr(aws.AwsAdapter, "list_agents", lambda self: [good, bad])
++    monkeypatch.setenv("ACT_INTAKE_INPROCESS", "1")
++    out = _intake()  # must not raise
++    assert out["errors"], out
++    names = {r._mapping["name"] for r in _rows(db.agents)}
++    assert good.name in names
++    assert bad.name not in names

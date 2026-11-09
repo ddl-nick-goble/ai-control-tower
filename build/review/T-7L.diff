@@ -1,0 +1,102 @@
+diff --git a/agents/recon_agent/README.md b/agents/recon_agent/README.md
+index 938cbfe..41513a8 100644
+--- a/agents/recon_agent/README.md
++++ b/agents/recon_agent/README.md
+@@ -14,3 +14,16 @@ breaks are classified by the registered `break_classifier` model.
+ | `BREAK_CLASSIFIER_ACCESS_KEY` | Endpoint access key, sent as HTTP Basic user and password (`endpoint` source). The platform bearer token is never sent to the endpoint. |
+ 
+ Experiment: `act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME>` (root `experiment_setup.py`, `tracing_setup.py`).
++
++## break_classifier endpoint (live)
++
++Published as Domino sync endpoint `break-classifier` from registry model `break_classifier` version 2
++(alias `champion`), model ID `6af239a468f40b2f5611dd6c`, hardware tier `small-model-api`.
++
++| Variable | Value |
++|---|---|
++| `BREAK_CLASSIFIER_ENDPOINT_URL` | `https://se-demo.domino.tech/models/6af239a468f40b2f5611dd6c/latest/model` |
++| `BREAK_CLASSIFIER_ACCESS_KEY` | Project environment variable (secret, not recorded here). It is the endpoint access key named `BREAK_CLASSIFIER_ACCESS_KEY (agent-created)` under the endpoint's Settings > Invocation. |
++
++The registry endpoint answers `{"result": ["<class>"]}`; `classify_break` unwraps the list.
++
+diff --git a/agents/recon_agent/act_export.py b/agents/recon_agent/act_export.py
+index 1f2410e..83ac55f 100644
+--- a/agents/recon_agent/act_export.py
++++ b/agents/recon_agent/act_export.py
+@@ -102,15 +102,22 @@ class ActTraceBuffer:
+             headers = {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+             body = self.payload()
+             r = None
+-            for attempt in (1, 2):  # one retry on POST failure
++            for attempt in (1, 2):  # one retry, only on 5xx or network errors
++                retry = False
+                 try:
+                     r = requests.post(url, json=body, timeout=30, headers=headers)
+                     if r.status_code < 300:
+                         break
+                     log.warning("ACT export got HTTP %s (attempt %d)", r.status_code, attempt)
++                    retry = r.status_code >= 500
+                 except requests.RequestException as e:
+                     log.warning("ACT export POST failed: %s (attempt %d)", type(e).__name__, attempt)
+                     r = None
++                    retry = True
++                if not retry:
++                    break
++                if attempt == 1:
++                    time.sleep(1)
+             ok = r is not None and r.status_code < 300
+             if ok:
+                 self.spans = []
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+index d6171ed..dd08c16 100644
+--- a/agents/recon_agent/agent.py
++++ b/agents/recon_agent/agent.py
+@@ -4,9 +4,14 @@ Proposals only; ACT receives the OTel spans as evidence."""
+ import json
+ import logging
+ import os
++import sys
+ 
+ import requests
+ 
++_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
++if _ROOT not in sys.path:
++    sys.path.insert(0, _ROOT)
++
+ from agents.recon_agent import llm, tools
+ from agents.recon_agent.act_export import ActTraceBuffer
+ from tracing_setup import add_tracing, agent_run
+@@ -49,6 +54,8 @@ def classify_break(br: dict):
+     r = requests.post(url, json={"data": payload}, auth=(key, key), timeout=30)
+     r.raise_for_status()
+     res = r.json().get("result")
++    if isinstance(res, (list, tuple)):  # registry (MLflow pyfunc) endpoints return {"result": ["<class>"]}
++        res = res[0] if res else None
+     return str(res["class"] if isinstance(res, dict) else res), "endpoint"
+ 
+ 
+diff --git a/tracing_setup.py b/tracing_setup.py
+index c8b208b..be64fb5 100644
+--- a/tracing_setup.py
++++ b/tracing_setup.py
+@@ -39,7 +39,9 @@ def add_tracing(name, **kw):
+         def inner(*a, **k):
+             started["v"] = True
+             try:
+-                return fn(*a, **k)
++                started["result"] = fn(*a, **k)
++                started["done"] = True
++                return started["result"]
+             except Exception as e:  # noqa: BLE001
+                 started["err"] = e
+                 raise
+@@ -52,6 +54,9 @@ def add_tracing(name, **kw):
+             try:
+                 return traced(*a, **k)
+             except Exception as e:  # noqa: BLE001
++                if started.get("done"):  # fn finished; the tracer failed afterwards
++                    log.warning("tracing failed after completion (%s); returning result", type(e).__name__)
++                    return started["result"]
+                 if started.get("v"):
+                     raise
+                 log.warning("tracing failed (%s); running untraced", type(e).__name__)
