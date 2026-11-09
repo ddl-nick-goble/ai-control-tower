@@ -51,11 +51,18 @@ class DominoAdapter(AdapterBase):
             kw = {"headers": headers, "params": params, "timeout": 20}
             if body is not None:
                 kw["json"] = body
-            if method == "GET":
-                resp = requests.get(base + path, **kw)
-            else:
-                resp = requests.request(method, base + path, **kw)
+            def send():
+                if method == "GET":
+                    return requests.get(base + path, **kw)
+                return requests.request(method, base + path, **kw)
+            resp = send()
             code = getattr(resp, "status_code", 200)
+            if code == 401 and not os.environ.get("DOMINO_API_PROXY"):
+                self._token = None  # cached token may have expired: re-fetch once
+                base, headers = self._base_headers()
+                kw["headers"] = headers
+                resp = send()
+                code = getattr(resp, "status_code", 200)
             if code >= 400:
                 log.warning("domino %s %s -> HTTP %s", method, path, code)
                 if strict:
@@ -81,6 +88,11 @@ class DominoAdapter(AdapterBase):
         return []
 
     # -- agents -------------------------------------------------------------
+    @staticmethod
+    def _item_pid(it):
+        proj = it.get("project")
+        return it.get("projectId") or (proj.get("id") if isinstance(proj, dict) else None)
+
     def _fetch_apps(self):
         seen, out = set(), []
         types = ["AISYSTEM"] + (["STANDARD"] if os.environ.get("ACT_DOMINO_INCLUDE_APPS") == "1" else [])
@@ -88,6 +100,9 @@ class DominoAdapter(AdapterBase):
         pid = None
         if os.environ.get("ACT_DOMINO_SCOPE") != "all":
             pid = os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
+            if not pid:
+                raise RuntimeError("domino adapter: no project id (set ACT_DOMINO_PROJECT_ID or DOMINO_PROJECT_ID, "
+                                   "or ACT_DOMINO_SCOPE=all)")
         for ctype in types:
             offset = 0
             while len(out) < cap:
@@ -96,11 +111,14 @@ class DominoAdapter(AdapterBase):
                     params["projectId"] = pid
                 payload = self._call("GET", "/api/apps/v1/apps", params, strict=True)
                 items = self._items(payload)
+                # Ownership: item["project"]["id"] in the real apps API (top-level projectId also accepted).
+                pids = [self._item_pid(it) for it in items if isinstance(it, dict)]
+                exposes = any(pids)  # page carries project ids: require confirmation per item
                 for it in items:
                     if not isinstance(it, dict):
                         continue
-                    ipid = it.get("projectId") or (it.get("project") or {}).get("id")
-                    if pid and ipid and str(ipid) != str(pid):  # API may ignore the filter
+                    ipid = self._item_pid(it)
+                    if pid and ((exposes and not ipid) or (ipid and str(ipid) != str(pid))):
                         continue
                     nid = it.get("id") or it.get("agentId") or it.get("appId")
                     if nid and nid not in seen:

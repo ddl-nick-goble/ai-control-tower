@@ -49,7 +49,12 @@ def run_intake() -> dict:
     for ad in _adapters():
         try:
             sas = ad.list_agents()
-            records += [normalize(sa) for sa in sas]
+            for sa in sas:
+                try:
+                    records.append(normalize(sa))
+                except Exception as e:
+                    log.exception("normalize failed for %s/%s", ad.platform, getattr(sa, "native_id", "?"))
+                    errors.append(f"{ad.platform}/{getattr(sa, 'native_id', '?')}: {e}")
             raws += [json.loads(json.dumps(dataclasses.asdict(sa), default=str)) for sa in sas]
         except Exception as e:
             log.exception("adapter %s failed", ad.platform)
@@ -61,9 +66,13 @@ def run_intake() -> dict:
         from backend.normalize import apply_record
         db.init_db()
         counts = {"created": 0, "updated": 0, "retiered": 0}
-        with db.engine.begin() as cx:
-            for rec in records:
-                counts[apply_record(cx, rec)] += 1
+        for rec in records:
+            try:
+                with db.engine.begin() as cx:  # one transaction per record: a bad one rolls back alone
+                    counts[apply_record(cx, rec)] += 1
+            except Exception as e:
+                log.exception("apply failed for %s", rec.get("id"))
+                errors.append(f"{rec.get('name') or rec.get('id')}: {e}")
         from backend.otlp import parse_request
         from backend.routes.traces import ingest
         for p in _run_files():

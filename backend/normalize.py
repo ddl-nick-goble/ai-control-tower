@@ -139,6 +139,11 @@ def from_source(d) -> "SourceAgent":
         raise ValueError("invalid source field: versions")
     if any(not isinstance(v, str) for k in ("tools", "data_scopes", "systems") for v in kw.get(k, [])):
         raise ValueError("invalid source field: tools/data_scopes/systems")
+    deps = kw.get("dependencies") or {}
+    for k in ("models", "mcp_servers", "tools"):
+        v = deps.get(k, [])
+        if not isinstance(v, list) or any(not isinstance(x, dict) for x in v):
+            raise ValueError(f"invalid source field: dependencies.{k} must be a list of objects")
     if d.get("status") is not None:
         kw["status"] = str(d["status"])
     return SourceAgent(**kw)
