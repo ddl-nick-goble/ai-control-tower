@@ -30,7 +30,7 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 
 | Id | ACs | Depends on | Touches | Builder | QA | Branch | Test baseline | Status |
 |----|-----|-----------|---------|---------|----|--------|---------------|--------|
-| T-1 | enables all (health, DB init, anon write rejected) | — | app.sh, requirements.txt, package.json, vite.config.js, backend/db.py, backend/domino_identity.py, backend/main.py, frontend/ scaffold, .gitignore, .env.example | domino-deploy (sonnet) | test-author, code-reviewer | task/T-1 | 7cb6d7e | building |
+| T-1 | enables all (health, DB init, anon write rejected) | — | app.sh, requirements.txt, package.json, vite.config.js, backend/db.py, backend/domino_identity.py, backend/main.py, frontend/ scaffold, .gitignore, .env.example | domino-deploy (sonnet) | test-author, code-reviewer | task/T-1 | a14d50d | building (round 2) |
 | T-2 | AC-2, AC-3 (scorer) | — | schemas/, config/, backend/tiering.py, docs/BORROWED.md | builder | test-author, code-reviewer | task/T-2 | 4a50153 | building (round 2) |
 | T-3 | AC-1, AC-12 (data) | T-2 | fixtures/ | builder | test-author, code-reviewer | task/T-3 | — | pending |
 | T-5 | AC-4, AC-5 (backend) | T-1, T-2 | backend/otlp.py, backend/normalize_span.py, backend/chain.py, backend/routes/traces.py, backend/routes/runs.py | builder | test-author, code-reviewer | task/T-5 | — | pending |
