@@ -16,7 +16,7 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
 
 ## In progress
 - **T-12** merged (b8aefb6). Post-merge on main: 424 backend passed, 33/33 e2e passed (QA dir wave6-main). Wave 6 complete.
-- **T-14** (mocks + local hosting): tests being written in .worktrees/T-14 (branch task/T-14).
+- **T-14** (mocks + local hosting): test baseline 3f30c18; builder running in .worktrees/T-14 (branch task/T-14).
 
 ## Next
 - **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
