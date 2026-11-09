@@ -505,3 +505,125 @@ def test_ac10_prompts_do_not_claim_no_missing_entries():
 def test_ac10_prompts_cover_adversarial_categories():
     adv = [r for r in _rows() if r.get("category") in ("out_of_scope", "injection", "unknown_ref")]
     assert len(adv) >= 3, "need >=3 prompts with category out_of_scope/injection/unknown_ref"
+
+
+# ---- round 3: abort gate counts invalid judge replies, no double count, route consistency ----
+def _bad_judge(prompt, response, expected):
+    return {"valid": False, "score": 0.0, "model": RAW_MODEL, "raw": "garbage"}
+
+
+def test_ac10_all_unparseable_judge_replies_is_all_invalid(monkeypatch):
+    res, _, _ = _run(monkeypatch, judge=_bad_judge)
+    assert res["invalid_count"] == 100
+    assert res["error_count"] == 0
+
+
+def test_ac10_invalid_with_non_numeric_score_counts_once(monkeypatch):
+    seen = {"n": 0}
+
+    def judge(prompt, response, expected):
+        if prompt == "prompt 0" and seen["n"] < 2:
+            seen["n"] += 1
+            return {"valid": False, "score": "n/a", "model": RAW_MODEL}
+        return {"score": 0.5, "model": RAW_MODEL}
+
+    # prompt 0 of rep 1 is invalid on both tries (original + retry); count it once
+    res, _, _ = _run(monkeypatch, judge=judge)
+    assert res["invalid_count"] == 1
+
+
+def test_ac10_invalid_false_and_na_score_always_counts_once_per_call(monkeypatch):
+    def judge(prompt, response, expected):
+        return {"valid": False, "score": "n/a", "model": RAW_MODEL}
+
+    res, _, _ = _run(monkeypatch, judge=judge)
+    assert res["invalid_count"] == 100
+
+
+def _main_judge_with_bad_fraction(monkeypatch, every):
+    """Agent marks every `every`-th call BAD; the gateway judge returns prose for BAD answers."""
+    n = {"i": 0}
+
+    def agent_run(prompt, *a, **k):
+        n["i"] += 1
+        return {"output": "BAD" if n["i"] % every == 0 else "fine"}
+
+    posts = _main_env(monkeypatch, agent_run)
+    from agents.recon_agent import llm
+
+    def create(model_alias, messages, tools=None, system=None, **kw):
+        user = json.dumps(messages)
+        text = "I cannot rate this." if "BAD" in user else '{"score": 0.9}'
+        return {"content": [{"type": "text", "text": text}], "model": RAW_MODEL}
+
+    monkeypatch.setattr(llm, "create_message", create)
+    return posts
+
+
+def test_ac10_main_aborts_when_judge_unparseable_for_every_call(monkeypatch):
+    posts = _main_env(monkeypatch, lambda p, *a, **k: {"output": "ok"})
+    from agents.recon_agent import llm
+    monkeypatch.setattr(llm, "create_message", lambda *a, **k: {
+        "content": [{"type": "text", "text": "no json here"}], "model": RAW_MODEL})
+    v = importlib.import_module("jobs.validate")
+    assert v.main() != 0
+    assert posts == []
+
+
+def test_ac10_main_aborts_with_25_percent_invalid_and_no_errors(monkeypatch):
+    posts = _main_judge_with_bad_fraction(monkeypatch, 4)
+    v = importlib.import_module("jobs.validate")
+    assert v.main() != 0
+    assert posts == []
+
+
+def test_ac10_main_posts_with_10_percent_invalid(monkeypatch):
+    posts = _main_judge_with_bad_fraction(monkeypatch, 10)
+    v = importlib.import_module("jobs.validate")
+    assert v.main() == 0
+    assert posts
+    body = posts[0][1].get("json") or {}
+    assert body.get("invalid_count", 0) > 0 and body.get("error_count") == 0
+
+
+def test_ac10_main_aborts_when_errors_plus_invalid_exceed_threshold(monkeypatch):
+    """15% errors + 10% invalid: each under 20% alone, combined over."""
+    n = {"i": 0}
+
+    def agent_run(prompt, *a, **k):
+        n["i"] += 1
+        if n["i"] % 20 in (1, 2, 3):
+            raise RuntimeError("flake")
+        return {"output": "BAD" if n["i"] % 10 == 5 else "fine"}
+
+    posts = _main_env(monkeypatch, agent_run)
+    from agents.recon_agent import llm
+    monkeypatch.setattr(llm, "create_message", lambda model_alias, messages, **kw: {
+        "content": [{"type": "text", "text": "prose" if "BAD" in json.dumps(messages) else '{"score": 0.9}'}],
+        "model": RAW_MODEL})
+    v = importlib.import_module("jobs.validate")
+    assert v.main() != 0
+    assert posts == []
+
+
+@pytest.mark.parametrize("over", [
+    {"scores": [0.825] * 99},                       # n_prompts*reps = 100
+    {"scores": [0.825] * 101},
+    {"scores": [0.825] * 100, "mean": 0.5},         # mean differs from mean(scores)
+    {"scores": [0.5] * 100, "mean": 0.825},
+    {"n_prompts": 1001, "reps": 5},
+    {"n_prompts": 20, "reps": 51},
+])
+def test_ac10_route_consistency_rejects(client, over):
+    aid = _agent(client)
+    assert _post(client, aid, _dist()).status_code in (200, 201)
+    r = _raw_post(client, aid, _dist(**over))
+    assert r.status_code == 422, (over.keys(), r.status_code, r.text)
+
+
+def test_ac10_route_accepts_consistent_scores(client):
+    aid = _agent(client)
+    r = _raw_post(client, aid, _dist(scores=[0.825] * 100))
+    assert r.status_code in (200, 201), r.text
+    r = _raw_post(client, aid, _dist(scores=[0.825] * 100, mean=0.825 + 5e-7))
+    assert r.status_code in (200, 201), r.text
