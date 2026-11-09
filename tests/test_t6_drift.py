@@ -358,3 +358,92 @@ def test_ac6_reads_latest_manifest_row_not_stale_agent_record(client, db_env):
     con.close()
     assert _post(client, [_span(0, "C", {}, "a6" * 16)]).status_code == 200
     assert _findings(client, aid) == []
+
+
+# ---- Round 3: amount parsing hardening (AC-6; a crafted amount must never suppress a finding) ----
+BARE = {"transfer_funds": 250000}
+MANIFESTS = {"usd": LIM, "bare": BARE}
+
+
+def _agent(db_env, kind):
+    return _seed(db_env, 1, tools=("A", "B", "transfer_funds"), limits=MANIFESTS[kind])
+
+
+def _tf_violations(client, aid):
+    fs = _findings(client, aid)
+    return fs, [v for f in fs for v in _violations(f) if v["tool"] == "transfer_funds"]
+
+
+def _run_amount(client, db_env, kind, amount, extra=None):
+    aid = _agent(db_env, kind)
+    args = {"amount": amount}
+    args.update(extra or {})
+    assert _post(client, [_span(0, "transfer_funds", args, "d" * 32)]).status_code == 200
+    return (aid,) + _tf_violations(client, aid)[::-1]
+
+
+def _assert_unverifiable(client, db_env, kind, raw, note=None):
+    aid, vs, fs = _run_amount(client, db_env, kind, raw)
+    assert len(fs) == 1, f"{raw!r} must produce a finding"
+    assert len(vs) == 1 and vs[0]["reason"] == "value_unverifiable", vs
+    assert vs[0]["raw_value"] == raw
+    if note:
+        assert note in vs[0]["note"].lower()
+
+
+@pytest.mark.parametrize("kind", ["usd", "bare"])
+def test_ac6_comma_grouping_valid_exceeds(client, db_env, kind):
+    aid, vs, fs = _run_amount(client, db_env, kind, "5,000,000")
+    assert len(fs) == 1 and fs[0]["reason"] == "value_limit_exceeded"
+    assert fs[0]["observed_value"] == 5000000 and fs[0]["limit"] == 250000
+
+
+@pytest.mark.parametrize("kind", ["usd", "bare"])
+@pytest.mark.parametrize("raw", ["9.999,99", "5,00", "1,5", "12,34,567"])
+def test_ac6_invalid_comma_forms_unverifiable(client, db_env, kind, raw):
+    _assert_unverifiable(client, db_env, kind, raw)
+
+
+@pytest.mark.parametrize("kind", ["usd", "bare"])
+@pytest.mark.parametrize("raw", ["5 mil", "5 mln", "5 bln", "5k", "5M"])
+def test_ac6_magnitude_words_unverifiable(client, db_env, kind, raw):
+    _assert_unverifiable(client, db_env, kind, raw)
+
+
+@pytest.mark.parametrize("raw", ["€240,000", "£240,000"])
+def test_ac6_foreign_symbol_vs_usd_limit_unverifiable(client, db_env, raw):
+    _assert_unverifiable(client, db_env, "usd", raw, note="currency")
+
+
+def test_ac6_dollar_symbol_vs_usd_limit_no_finding(client, db_env):
+    aid, vs, fs = _run_amount(client, db_env, "usd", "$240,000")
+    assert fs == []
+
+
+def test_ac6_euro_symbol_vs_bare_limit_compared_numerically(client, db_env):
+    # a bare numeric limit carries no currency, so only the number is compared
+    aid, vs, fs = _run_amount(client, db_env, "bare", "€240,000")
+    assert vs == [] and fs == []
+
+
+def test_ac6_iso_code_same_currency_exceeds(client, db_env):
+    aid, vs, fs = _run_amount(client, db_env, "usd", "USD 300000")
+    assert len(fs) == 1 and fs[0]["reason"] == "value_limit_exceeded"
+    assert fs[0]["observed_value"] == 300000
+
+
+def test_ac6_iso_code_other_currency_vs_usd_limit_unverifiable(client, db_env):
+    _assert_unverifiable(client, db_env, "usd", "EUR 100", note="currency")
+
+
+@pytest.mark.parametrize("kind", ["usd", "bare"])
+def test_ac6_non_iso_code_unverifiable(client, db_env, kind):
+    _assert_unverifiable(client, db_env, kind, "XYZ 100")
+
+
+@pytest.mark.parametrize("kind", ["usd", "bare"])
+def test_ac6_long_raw_value_truncated(client, db_env, kind):
+    raw = "9" * 4999 + "x"
+    aid, vs, fs = _run_amount(client, db_env, kind, raw)
+    assert len(fs) == 1 and len(vs) == 1
+    assert isinstance(vs[0]["raw_value"], str) and len(vs[0]["raw_value"]) <= 200
