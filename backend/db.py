@@ -3,7 +3,7 @@ import logging
 import os
 from pathlib import Path
 
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer,
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
                         MetaData, String, Table, Text, create_engine, event, inspect, text)
 from sqlalchemy.pool import QueuePool
 
@@ -119,10 +119,12 @@ events = Table(
     Column("agent_id", String, index=True),
     Column("ts", String),
     Column("kind", String),
+    Column("span_id", String),  # nullable; unique with run_id for idempotent ingest
     Column("raw_span", JSON),
     Column("event", JSON),
     Column("prev_hash", String),
     Column("hash", String, unique=True),
+    Index("ux_events_run_span", "run_id", "span_id", unique=True),
 )
 
 findings = Table(
@@ -136,6 +138,13 @@ findings = Table(
     Column("status", String, default="open"),
     Column("created_at", String),
     Column("detail", JSON),
+    Column("type", String),
+    Column("tool", String),
+    Column("span_id", String),
+    Column("ts", String),
+    Column("reason", Text),
+    Column("observed_value", String),
+    Column("limit", String),
 )
 
 approvals = Table(
@@ -198,6 +207,9 @@ def _migrate() -> None:
                     continue
                 ctype = col.type.compile(engine.dialect)
                 conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ctype}'))
+        if insp.has_table("events"):
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_events_run_span "
+                              "ON events (run_id, span_id)"))
 
 
 def init_db() -> None:
