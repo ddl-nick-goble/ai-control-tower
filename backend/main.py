@@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, routes
+from . import db, llm, routes
 from .domino_identity import get_user
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +19,7 @@ DIST = ROOT / "frontend" / "dist"
 
 @asynccontextmanager
 async def lifespan(_app):
+    llm.warn_if_mock()
     db.init_db()
     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
     yield
@@ -40,7 +41,8 @@ async def write_guard(request, call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok",
+            "llm_provider": "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"}
 
 
 for _m in pkgutil.iter_modules(routes.__path__):

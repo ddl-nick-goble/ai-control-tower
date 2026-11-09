@@ -172,6 +172,11 @@ function Findings({ findings }) {
               <span className="muted">{fmtTs(f.ts)}</span>
             </div>
             <Markdown text={clean(f.explanation)} />
+            {f.explanation && (!(f.detail && f.detail.explanation_model) || f.detail.explanation_model === 'mock-llm') && (
+              <span className="muted" data-testid="finding-explanation-source">
+                {f.detail && f.detail.explanation_model ? 'mock text (not a model)' : 'template text (no model)'}
+              </span>
+            )}
             {f.run_id && <Link data-testid="finding-timeline-link" to={`/runs/${encodeURIComponent(f.run_id)}`}>View run timeline</Link>}
           </li>
         ))}

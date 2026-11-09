@@ -5,6 +5,7 @@ ACT detects and records only; it never blocks anything in the agent's runtime.
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -247,12 +248,16 @@ def find_violations(events, manifest: dict) -> list[dict]:
 def fallback_explanation(v: dict, agent_name: str, tier: int) -> str:
     who = f"Agent {agent_name} (Tier {tier})"
     if v["reason"] == "value_limit_exceeded":
-        return (f"{who} called {v['tool']} with value {v['observed_value']}, above its approved "
-                f"limit of {v['limit']}.")
+        return (f"{who}: {v['tool']} amount {v['observed_value']} exceeds the manifest limit "
+                f"{v['limit']} (approved limit exceeded).")
     if v["reason"] == "value_unverifiable":
         return (f"{who} called {v['tool']} with a value that could not be verified against its "
                 f"approved limit of {v['limit']} ({v.get('note', 'unverifiable')}).")
     return f"{who} called {v['tool']}, which is not in its approved manifest."
+
+
+def _mock_provider() -> bool:
+    return (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock"
 
 
 def _llm_explanation(v: dict, agent_name: str, tier: int):
@@ -313,7 +318,7 @@ def detect_run(run_id: str) -> int | None:
                     observed_value=None if first["observed_value"] is None else str(first["observed_value"]),
                     limit=None if first["limit"] is None else str(first["limit"]))
         detail = {"violations": viol, "tier": tier}
-        need_llm = True
+        need_llm = not _mock_provider()  # mock: the template stands, never passed off as model output
         if cur is None:
             detail.update(explanation=fb, explanation_model=None)
             conn.execute(insert(db.findings).values(**vals, message=fb, status="open",

@@ -38,15 +38,15 @@ TOOL_SPECS = [
 ]
 
 
-def classify_break(br: dict):
-    """Return (class, source) where source is "local" (predict()) or "endpoint" (Domino sync endpoint)."""
-    payload = {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
-    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
-    if not url:
-        if os.environ.get("DOMINO_RUN_ID"):
-            log.warning("BREAK_CLASSIFIER_ENDPOINT_URL is unset in a Domino run; using the local classifier")
-        from models.break_classifier.predict import predict
-        return predict(payload)["class"], "local"
+UNCLASSIFIED = "unclassified"
+_registry_cache = {}
+
+
+def _payload(br):
+    return {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
+
+
+def _from_endpoint(url, payload):
     key = os.environ.get("BREAK_CLASSIFIER_ACCESS_KEY")
     if not key:
         raise RuntimeError("BREAK_CLASSIFIER_ACCESS_KEY is required when BREAK_CLASSIFIER_ENDPOINT_URL is set")
@@ -56,7 +56,45 @@ def classify_break(br: dict):
     res = r.json().get("result")
     if isinstance(res, (list, tuple)):  # registry (MLflow pyfunc) endpoints return {"result": ["<class>"]}
         res = res[0] if res else None
-    return str(res["class"] if isinstance(res, dict) else res), "endpoint"
+    return str(res["class"] if isinstance(res, dict) else res)
+
+
+def _from_registry(payload):
+    """Best effort: MLflow registry models:/break_classifier@champion with a short timeout."""
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+    if "m" not in _registry_cache:
+        import mlflow.pyfunc
+        _registry_cache["m"] = mlflow.pyfunc.load_model("models:/break_classifier@champion")
+    import pandas as pd
+    out = _registry_cache["m"].predict(pd.DataFrame([payload]))
+    out = list(out)[0] if hasattr(out, "__len__") else out
+    return str(out["class"] if isinstance(out, dict) else out)
+
+
+def classify_break(br: dict, notes=None):
+    """Return (class, source). Order: endpoint (URL+key) -> BREAK_CLASSIFIER_MODEL_PATH -> MLflow registry
+    models:/break_classifier@champion -> ("unclassified", "unavailable"). Never raises: a classifier
+    failure must not hide the break; reasons are appended to `notes`."""
+    payload = _payload(br)
+    notes = notes if notes is not None else []
+    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
+    if url:
+        try:
+            return _from_endpoint(url, payload), "endpoint"
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"endpoint failed ({type(e).__name__}: {str(e)[:120]})")
+    if os.environ.get("BREAK_CLASSIFIER_MODEL_PATH"):
+        try:
+            from models.break_classifier.predict import predict
+            return predict(payload)["class"], "local"
+        except Exception as e:  # noqa: BLE001
+            notes.append(f"model path failed ({type(e).__name__}: {str(e)[:120]})")
+    try:
+        return _from_registry(payload), "registry"
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"registry models:/break_classifier@champion failed ({type(e).__name__}: {str(e)[:120]})")
+    return UNCLASSIFIED, "unavailable"
 
 
 def _dispatch(name, inp, buf, store):
@@ -69,8 +107,16 @@ def _dispatch(name, inp, buf, store):
         for br in breaks:
             with buf.execute_tool("break_classifier", {k: br[k] for k in
                                   ("amount_diff", "days_diff", "missing_side")}) as a:
-                br["classification"], a["act.classifier.source"] = classify_break(br)
+                notes = []
+                br["classification"], a["act.classifier.source"] = classify_break(br, notes)
                 a["gen_ai.tool.call.result"] = br["classification"]
+                if notes:
+                    a["act.classifier.error"] = "; ".join(notes)[:500]
+                    store.setdefault("warnings", [])
+                    for n in notes:
+                        w = f"break classifier unavailable: {n}"
+                        if w not in store["warnings"]:
+                            store["warnings"].append(w)
         store["breaks"] = breaks
         return breaks
     if name == "propose_adjustment":
@@ -108,7 +154,10 @@ def _run(prompt: str, buf: ActTraceBuffer) -> dict:
             results.append({"type": "tool_result", "tool_use_id": u["id"],
                             "content": json.dumps(out, default=str), "is_error": err})
         messages.append({"role": "user", "content": results})
-    return {"summary": text, "breaks": store.get("breaks", []), "proposals": proposals}
+    warnings = store.get("warnings", [])
+    if warnings:  # surfaced in the output; breaks are reported regardless
+        text = (text.rstrip() + "\nWarning: " + "\nWarning: ".join(warnings)).strip()
+    return {"summary": text, "breaks": store.get("breaks", []), "proposals": proposals, "warnings": warnings}
 
 
 @add_tracing(name="recon_agent", span_type="AGENT")

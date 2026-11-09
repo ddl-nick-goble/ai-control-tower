@@ -109,7 +109,10 @@ def _recon_step(messages):
         return use("fetch_ledger", {"name": "custodian_ledger"})
     if "compare_entries" not in names:
         return use("compare_entries", {"ledger_a": "gl_ledger", "ledger_b": "custodian_ledger"})
-    breaks = next((r for b, r in calls if b["name"] == "compare_entries" and isinstance(r, list)), [])
+    cmp_res = next((r for b, r in calls if b["name"] == "compare_entries"), None)
+    if isinstance(cmp_res, dict) and cmp_res.get("error"):  # a tool failure is reported, never "no breaks"
+        return _resp([{"type": "text", "text": f"compare_entries failed: {cmp_res['error']}"}], "end_turn")
+    breaks = cmp_res if isinstance(cmp_res, list) else []
     breaks = [b for b in breaks if isinstance(b, dict) and b.get("ref")]
     top = max(breaks, key=_size) if breaks else None
     if top and "propose_adjustment" not in names:

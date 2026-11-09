@@ -82,8 +82,10 @@ class ActTraceBuffer:
 
     def payload(self):
         return {"resourceSpans": [{
-            "resource": {"attributes": _attrs({"service.name": self.service_name,
-                                                "gen_ai.agent.id": self.agent_id})},
+            "resource": {"attributes": _attrs({
+                "service.name": self.service_name, "gen_ai.agent.id": self.agent_id,
+                "act.llm.provider": ("mock" if (os.environ.get("ACT_LLM_PROVIDER") or "").strip().lower() == "mock"
+                                     else None)})},
             "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
         }]}
 

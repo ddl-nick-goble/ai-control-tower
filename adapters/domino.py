@@ -15,6 +15,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -201,8 +202,16 @@ class DominoAdapter(AdapterBase):
         path = (os.environ.get("ACT_DOMINO_LOCAL_AGENTS") or "").strip()
         if not path:
             return []
+        try:
+            entries = self._expand(json.loads(Path(path).read_text())).get("agents", [])
+            if not isinstance(entries, list) or not all(isinstance(e, dict) and e.get("native_id") and e.get("name")
+                                                        for e in entries):
+                raise ValueError("'agents' must be a list of entries with native_id and name")
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("ACT_DOMINO_LOCAL_AGENTS=%s ignored, no local agents added: %s", path, e)
+            return []
         out = []
-        for e in self._expand(json.loads(open(path).read())).get("agents", []):
+        for e in entries:
             principal = e.get("principal") or e.get("owner")
             allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
             ident = (self._identity(principal) if principal in allow else
