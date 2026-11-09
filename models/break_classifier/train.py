@@ -54,6 +54,10 @@ def _wrapper_cls():
 
         def predict(self, context, model_input, params=None):
             import pandas as pd
+            if isinstance(model_input, dict):  # harness passes {"data": {...}} as a dict of scalars
+                model_input = model_input.get("data", model_input)
+                model_input = [model_input] if isinstance(model_input, dict) and not any(
+                    isinstance(v, (list, tuple)) for v in model_input.values()) else model_input
             df = pd.DataFrame(model_input)
             x = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce").fillna(0.0)
             return self.model.predict(x.to_numpy(dtype="float64"))
