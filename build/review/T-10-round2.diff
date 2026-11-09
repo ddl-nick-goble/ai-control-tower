@@ -1,0 +1,616 @@
+diff --git a/backend/evidence.py b/backend/evidence.py
+index 86371fd..857b0cb 100644
+--- a/backend/evidence.py
++++ b/backend/evidence.py
+@@ -16,7 +16,10 @@ from .normalize import _audit
+ 
+ log = logging.getLogger(__name__)
+ SCHEMA = json.loads((Path(__file__).resolve().parent.parent / "schemas" / "evidence-pack.json").read_text())
+-MODEL_RE = re.compile(r"[\w.:/-]*(?:claude|anthropic|sonnet|haiku|opus)[\w.:/-]*", re.I)
++# Whole tokens only: the vendor word must be a complete component of a dotted/dashed/slashed id.
++MODEL_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[.:/_-])*(?:claude|anthropic|sonnet|haiku|opus)"
++                      r"(?:[.:/_-][A-Za-z0-9]+)*(?![A-Za-z0-9])", re.I)
++_MD_META = re.compile(r"[\\!\[\]()`*#|&]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])")
+ TITLES = [("identity_ownership", "Identity and ownership"), ("tier_criteria", "Tier and criteria"),
+           ("permitted_actions", "Permitted actions"), ("validation", "Validation"),
+           ("monitoring_findings", "Monitoring and findings"), ("approvals_overrides", "Approvals and overrides"),
+@@ -34,6 +37,12 @@ def clean(v):
+     return re.sub(r"\s+", " ", MODEL_RE.sub("frontier model", str(v))).strip()
+ 
+ 
++def esc(v):
++    """clean() plus Markdown escaping, so agent- or trace-controlled text stays inert text."""
++    s = _MD_META.sub(lambda m: "\\" + m.group(0), clean(v))
++    return s.replace("<", "&lt;").replace(">", "&gt;")
++
++
+ def fmt_ts(ts):
+     if not ts:
+         return "-"
+@@ -66,7 +75,7 @@ def _c(source, ref):
+ 
+ 
+ def _bullets(items):
+-    return "\n".join(f"- {i}" for i in items)
++    return "\n".join(i if i.startswith("  - ") else f"- {i}" for i in items)
+ 
+ 
+ def _load(agent_id):
+@@ -78,40 +87,61 @@ def _load(agent_id):
+         d = dict(agent=a, identities=q(db.identities), manifests=q(db.manifests), findings=q(db.findings),
+                  approvals=q(db.approvals), overrides=q(db.overrides), validation=q(db.validation_records),
+                  deps=q(db.dependencies), runs=q(db.runs, db.runs.c.started_at))
+-        d["event_counts"] = cx.execute(select(db.events.c.run_id, func.count()).where(
+-            db.events.c.agent_id == agent_id).group_by(db.events.c.run_id)).all()
+         d["audit"] = cx.execute(select(db.audit_events).where(db.audit_events.c.target == agent_id)
+                                 .order_by(db.audit_events.c.id.desc()).limit(1)).all()
+     return d
+ 
+ 
++def agent_runs(agent_id):
++    """All runs of an agent, newest first: run rows plus run ids seen only in events; span_count = events."""
++    with db.engine.connect() as cx:
++        rows = cx.execute(select(db.runs).where(db.runs.c.agent_id == agent_id)).all()
++        ev = cx.execute(select(db.events.c.run_id, func.count(), func.min(db.events.c.ts), func.max(db.events.c.ts))
++                        .where(db.events.c.agent_id == agent_id).group_by(db.events.c.run_id)).all()
++    counts = {r: (n, lo, hi) for r, n, lo, hi in ev if r}
++    out = [{"run_id": r.id, "started_at": r.started_at, "ended_at": r.ended_at,
++            "span_count": counts.pop(r.id, (0,))[0]} for r in rows]
++    out += [{"run_id": r, "started_at": lo, "ended_at": hi, "span_count": n} for r, (n, lo, hi) in counts.items()]
++    out.sort(key=lambda x: (_instant(x["started_at"]), x["run_id"]), reverse=True)
++    return out
++
++
++def _instant(ts):
++    try:
++        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
++        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
++    except ValueError:
++        return 0.0
++
++
+ def _identity(d, aid):
+     a = d["agent"]
+     rec = a.record or {}
+     ident = rec.get("identity") or {}
+-    lines = [f"Agent: {clean(a.name)} ({clean(aid)})", f"Source platform: {clean(a.source_platform)}",
+-             f"Owner: {clean(a.owner) or '-'}", f"Registered by: {clean(a.registered_by_username) or 'not registered'}",
+-             f"Status: {clean(a.status)}", f"Last seen: {fmt_ts(a.last_seen)} UTC",
+-             f"Identity binding: {clean(ident.get('type')) or 'none'}"
+-             + (f", issuer {clean(ident.get('issuer'))}" if ident.get("issuer") else "")]
++    lines = [f"Agent: {esc(a.name)} ({esc(aid)})", f"Source platform: {esc(a.source_platform)}",
++             f"Owner: {esc(a.owner) or '-'}", f"Registered by: {esc(a.registered_by_username) or 'not registered'}",
++             f"Status: {esc(a.status)}", f"Last seen: {fmt_ts(a.last_seen)} UTC",
++             f"Identity binding: {esc(ident.get('type')) or 'none'}"
++             + (f", issuer {esc(ident.get('issuer'))}" if ident.get("issuer") else "")]
+     cites = [_c("agents", aid)]
+     for i in d["identities"]:
+-        lines.append(f"Principal: {clean(i.principal) or '-'} (kind {clean(i.kind) or '-'}, "
+-                     f"scopes {clean(', '.join(map(str, i.scopes or []))) or 'none'})")
++        lines.append(f"Principal: {esc(i.principal) or '-'} (kind {esc(i.kind) or '-'}, "
++                     f"scopes {esc(', '.join(map(str, i.scopes or []))) or 'none'})")
+         cites.append(_c("identities", i.id))
+     if not d["identities"]:
+         lines.append("No distinct identity recorded: the agent acts under a shared or borrowed credential.")
+-    models = [clean(x.name) for x in d["deps"] if x.kind == "model"]
++    models = [x for x in d["deps"] if x.kind == "model"]
+     if models:
+-        lines.append("Models (gateway alias or neutral label): " + ", ".join(models))
++        lines.append("Models (gateway alias or neutral label): " + ", ".join(esc(x.name) for x in models))
++        cites += [_c("dependencies", x.id) for x in models]
+     return _bullets(lines), cites
+ 
+ 
+ def _tier(d, aid):
+     a = d["agent"]
+     crit = a.criteria or {}
+-    lines = [f"Tier: {clean(a.tier)}", f"Reasoning: {clean(a.tier_reasoning) or 'none recorded'}"]
+-    lines += [f"Criterion {clean(k).replace('_', ' ')}: {clean(v)}" for k, v in crit.items()]
++    lines = [f"Tier: {esc(a.tier)}", f"Reasoning: {esc(a.tier_reasoning) or 'none recorded'}"]
++    lines += [f"Criterion {esc(k).replace('_', ' ')}: {esc(v)}" for k, v in crit.items()]
+     return _bullets(lines), [_c("agents", aid)]
+ 
+ 
+@@ -122,13 +152,13 @@ def _actions(d, aid):
+     m = d["manifests"][-1]
+     c = m.content or {}
+     lim = c.get("value_limits_detail") or c.get("value_limits") or {}
+-    lines = [f"Manifest version: {clean(m.version) or '-'}",
+-             "Tools: " + (", ".join(clean(t) for t in c.get("tools") or []) or "none"),
+-             "Data scopes: " + (", ".join(clean(t) for t in c.get("data_scopes") or []) or "none"),
+-             "Systems: " + (", ".join(clean(t) for t in c.get("systems") or []) or "none"),
++    lines = [f"Manifest version: {esc(m.version) or '-'}",
++             "Tools: " + (", ".join(esc(t) for t in c.get("tools") or []) or "none"),
++             "Data scopes: " + (", ".join(esc(t) for t in c.get("data_scopes") or []) or "none"),
++             "Systems: " + (", ".join(esc(t) for t in c.get("systems") or []) or "none"),
+              "Value limits: " + ("; ".join(
+-                 f"{clean(k)} {clean(v.get('amount') if isinstance(v, dict) else v)}"
+-                 f"{' ' + clean(v.get('currency')) if isinstance(v, dict) and v.get('currency') else ''}"
++                 f"{esc(k)} {esc(v.get('amount') if isinstance(v, dict) else v)}"
++                 f"{' ' + esc(v.get('currency')) if isinstance(v, dict) and v.get('currency') else ''}"
+                  for k, v in lim.items()) or "none")]
+     cites += [_c("manifests", x.id) for x in d["manifests"]]
+     return _bullets(lines), cites
+@@ -143,7 +173,7 @@ def _validation(d, aid):
+     for r in recs:
+         det = r.detail or {}
+         scores = [float(x) for x in det.get("scores") or [] if isinstance(x, (int, float))]
+-        parts = [f"{clean(r.kind)} on {fmt_ts(r.created_at)} UTC, result {clean(r.result)}"]
++        parts = [f"{esc(r.kind)} on {fmt_ts(r.created_at)} UTC, result {esc(r.result)}"]
+         mean = det.get("mean", statistics.fmean(scores) if scores else None)
+         if mean is not None:
+             parts.append(f"mean {float(mean):.3f}")
+@@ -160,11 +190,27 @@ def _validation(d, aid):
+         if pr is not None:
+             parts.append(f"pass rate {float(pr):.1%}")
+         if det.get("judge_alias") or det.get("judge_version"):
+-            parts.append(f"judge {clean(det.get('judge_alias'))} version {clean(det.get('judge_version'))}")
++            parts.append(f"judge {esc(det.get('judge_alias'))} version {esc(det.get('judge_version'))}")
+         lines.append(", ".join(parts))
+     return _bullets(lines), cites
+ 
+ 
++def _violation(v):
++    """One violation line: observed/limit only when recorded; both for value_limit_exceeded."""
++    reason = v.get("reason")
++    obs = v.get("observed_value", v.get("observed"))
++    lim = v.get("limit")
++    parts = [f"tool {esc(v.get('tool'))}", f"reason {esc(reason)}"]
++    have = lambda x: x is not None and x != ""  # noqa: E731
++    if have(obs) or reason == "value_limit_exceeded":
++        parts.append(f"observed {esc(obs) if have(obs) else 'not recorded'}")
++    if have(lim) or reason == "value_limit_exceeded":
++        parts.append(f"limit {esc(lim) if have(lim) else 'not recorded'}")
++    if v.get("note"):
++        parts.append(f"note {esc(v.get('note'))}")
++    return "Violation: " + ", ".join(parts)
++
++
+ def _monitoring(d, aid):
+     fs = d["findings"]
+     cites = [_c("findings", f.id) for f in fs]
+@@ -172,21 +218,16 @@ def _monitoring(d, aid):
+     for f in sorted(fs, key=lambda f: (f.status != "open", -f.id)):
+         det = f.detail or {}
+         run = f.run_id
+-        lines.append(f"**Finding {f.id}** ({'open' if f.status == 'open' else 'closed'}): type {clean(f.type or f.rule)}, "
+-                     f"severity {clean(f.severity)}, tool {clean(f.tool) or '-'}, span {clean(f.span_id) or '-'}, "
++        lines.append(f"**Finding {f.id}** ({'open' if f.status == 'open' else 'closed'}): type {esc(f.type or f.rule)}, "
++                     f"severity {esc(f.severity)}, tool {esc(f.tool) or '-'}, span {esc(f.span_id) or '-'}, "
+                      f"time {fmt_ts(f.ts)} UTC")
+-        viols = det.get("violations") or []
+-        if viols:
+-            for v in viols:
+-                lines.append(f"  - Violation: tool {clean(v.get('tool'))}, reason {clean(v.get('reason'))}, "
+-                             f"observed {clean(v.get('observed_value', v.get('observed')))} vs limit "
+-                             f"{clean(v.get('limit'))}")
+-        else:
+-            lines.append(f"  - Violation: tool {clean(f.tool)}, reason {clean(f.reason)}, observed "
+-                         f"{clean(f.observed_value)} vs limit {clean(f.limit)}")
+-        lines.append(f"  - Explanation: {clean(det.get('explanation') or f.message) or 'none'}")
++        viols = det.get("violations") or [dict(tool=f.tool, reason=f.reason, observed_value=f.observed_value,
++                                               limit=f.limit)]
++        for v in viols:
++            lines.append("  - " + _violation(v))
++        lines.append(f"  - Explanation: {esc(det.get('explanation') or f.message) or 'none'}")
+         if run:
+-            lines.append(f"  - Timeline: runs/{clean(run)}/timeline (events:{clean(run)})")
++            lines.append(f"  - Timeline: runs/{esc(run)}/timeline")
+             cites.append(_c("events", run))
+     if not fs:
+         lines.append("No findings recorded for this agent.")
+@@ -206,12 +247,12 @@ def _dedupe(cites):
+ def _approvals(d, aid):
+     lines, cites = [], []
+     for a in d["approvals"]:
+-        lines.append(f"Approval by {clean(a.approver)}: decision {clean(a.decision)}, date {fmt_ts(a.created_at)} UTC, "
+-                     f"expires {fmt_ts(a.expires_at)} UTC" + (f", note {clean(a.note)}" if a.note else ""))
++        lines.append(f"Approval by {esc(a.approver)}: decision {esc(a.decision)}, date {fmt_ts(a.created_at)} UTC, "
++                     f"expires {fmt_ts(a.expires_at)} UTC" + (f", note {esc(a.note)}" if a.note else ""))
+         cites.append(_c("approvals", a.id))
+     for o in d["overrides"]:
+-        lines.append(f"Override by {clean(o.actor_username)} on {fmt_ts(o.ts)} UTC (run {clean(o.run_id) or '-'}): "
+-                     f"reason {clean(o.reason)}")
++        lines.append(f"Override by {esc(o.actor_username)} on {fmt_ts(o.ts)} UTC (run {esc(o.run_id) or '-'}): "
++                     f"reason {esc(o.reason)}")
+         cites.append(_c("overrides", o.id))
+     if not lines:
+         return "No approval or override has been recorded.", [_c("agents", aid)]
+@@ -220,19 +261,20 @@ def _approvals(d, aid):
+ 
+ def _records(d, aid, paths=None):
+     v = chain.verify()
+-    counts = d["event_counts"]
+-    total = sum(n for _, n in counts)
++    runs = agent_runs(aid)
++    total = sum(r["span_count"] for r in runs)
+     lines = [f"Hash chain: {'verified intact' if v['ok'] else 'BROKEN'} over {v['events']} events (whole ledger)",
+-             f"Events for this agent: {total} across {len(counts)} runs",
++             f"Events for this agent: {total} events across {len(runs)} runs",
+              "Retention: records are kept in an append-only SHA-256 hash chain; WORM storage is out of scope for this POC."]
+-    cites = [_c("events", r) for r, _ in counts if r]
++    cites = [_c("events", r["run_id"]) for r in runs]
+     if d["audit"]:
+         cites.append(_c("audit_events", d["audit"][0].id))
+     cites.append(_c("agents", aid))
+     if paths:
+-        lines.append(f"Files (under the evidence directory in the project dataset): {paths['markdown']} and {paths['pdf']}")
+-        lines.append("Bundle: " + (f"attached to Domino Governance bundle {paths['bundle']}" if paths.get("bundle")
+-                                   else "no Governance bundle for this agent; saved to the project dataset"))
++        lines.append(f"Files: {esc(paths['markdown'])} and {esc(paths['pdf'])}, saved in the project dataset at "
++                     f"{esc(paths['location'])}")
++        lines.append("Governance: this pack is recorded against bundle " + esc(paths["bundle"]) if paths.get("bundle")
++                     else "Governance: no Governance bundle for this agent; the pack is recorded in the project dataset only")
+     return _bullets(lines), _dedupe(cites)
+ 
+ 
+@@ -251,13 +293,13 @@ def build_pack(agent_id: str, generated_by: str = "", paths: dict | None = None)
+ 
+ 
+ def render_markdown(pack: dict) -> str:
+-    out = [f"# Evidence pack for {pack['agent_name']}", "",
+-           f"- Agent: {pack['agent_name']} ({pack['agent_id']})",
++    out = [f"# Evidence pack for {esc(pack['agent_name'])}", "",
++           f"- Agent: {esc(pack['agent_name'])} ({esc(pack['agent_id'])})",
+            f"- Generated at: {fmt_ts(pack['generated_at'])} UTC",
+-           f"- Generated by: {pack['generated_by']}", ""]
++           f"- Generated by: {esc(pack['generated_by'])}", ""]
+     for s in pack["sections"]:
+-        out += [f"## {s['title']}", "", s["content"], "",
+-                "Sources: " + ", ".join(f"`{c['ref']}`" for c in s["citations"]), ""]
++        refs = [re.sub(r"[`\s]+", " ", clean(c["ref"])) for c in s["citations"]]
++        out += [f"## {s['title']}", "", s["content"], "", "Sources: " + ", ".join(f"`{r}`" for r in refs), ""]
+     return "\n".join(out)
+ 
+ 
+@@ -266,12 +308,16 @@ CSS = ("body{font-family:sans-serif;font-size:10pt;line-height:1.4}h1{font-size:
+        "li{margin:2pt 0}@page{margin:18mm}")
+ 
+ 
++def _refuse_fetch(url, *a, **k):
++    raise ValueError(f"evidence pack PDF rendering never fetches resources: {url}")
++
++
+ def _pdf_weasy(md: str, dest: Path):
+     from markdown_it import MarkdownIt
+     from weasyprint import HTML
+-    body = MarkdownIt("commonmark", {"html": False}).render(md)
+-    HTML(string=f"<html><head><meta charset='utf-8'><style>{CSS}</style></head><body>{body}</body></html>"
+-         ).write_pdf(str(dest))
++    body = MarkdownIt("commonmark", {"html": False}).disable(["image", "link", "autolink"]).render(md)
++    HTML(string=f"<html><head><meta charset='utf-8'><style>{CSS}</style></head><body>{body}</body></html>",
++         url_fetcher=_refuse_fetch).write_pdf(str(dest))
+ 
+ 
+ def _pdf_reportlab(md: str, dest: Path):
+@@ -288,6 +334,7 @@ def _pdf_reportlab(md: str, dest: Path):
+         m = re.match(r"^(#{1,2})\s+(.*)", line)
+         t = html.escape(m.group(2) if m else line.lstrip())
+         t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t).replace("`", "")
++        t = re.sub(r"\\([\\!\[\]()*_#|&])", r"\1", t)
+         if m:
+             flow.append(Paragraph(t, st["Heading1" if len(m.group(1)) == 1 else "Heading2"]))
+         else:
+@@ -307,6 +354,15 @@ def render_pdf(md: str, dest: Path) -> str:
+         return "reportlab"
+ 
+ 
++class RenderError(Exception):
++    pass
++
++
++def _dataset_location(folder_name: str) -> str:
++    project = os.environ.get("DOMINO_PROJECT_NAME")
++    return f"{project + '/' if project else ''}act/evidence/{folder_name}/"
++
++
+ def generate(agent_id: str, user_id: str, username: str) -> dict:
+     d = _load(agent_id)  # 404 early
+     bundle_id = d["agent"].bundle_id or None
+@@ -315,11 +371,21 @@ def generate(agent_id: str, user_id: str, username: str) -> dict:
+     folder.mkdir(parents=True, exist_ok=True)
+     stem = f"evidence-pack-{safe_id(agent_id)}-{now.strftime('%Y%m%dT%H%M%S%fZ')}"
+     md_path, pdf_path = folder / f"{stem}.md", folder / f"{stem}.pdf"
++    md_tmp, pdf_tmp = folder / f"{stem}.md.tmp", folder / f"{stem}.pdf.tmp"
++    # The pack is written before the attach attempt, so it records the target bundle, never an outcome.
+     pack = build_pack(agent_id, username, {"markdown": f"{folder.name}/{md_path.name}", "pdf": f"{folder.name}/{pdf_path.name}",
+-                                   "bundle": bundle_id})
++                                           "bundle": bundle_id, "location": _dataset_location(folder.name)})
+     md = render_markdown(pack)
+-    md_path.write_text(md, encoding="utf-8")
+-    renderer = render_pdf(md, pdf_path)
++    try:
++        md_tmp.write_text(md, encoding="utf-8")
++        renderer = render_pdf(md, pdf_tmp)
++        os.replace(pdf_tmp, pdf_path)
++        os.replace(md_tmp, md_path)
++    except Exception as e:
++        log.exception("evidence pack rendering failed")
++        for p in (md_tmp, pdf_tmp, md_path, pdf_path):
++            p.unlink(missing_ok=True)
++        raise RenderError(f"evidence pack PDF rendering failed: {clean(str(e))[:300]}") from e
+     with db.engine.begin() as cx:
+         pack_id = cx.execute(db.evidence_packs.insert().values(
+             agent_id=agent_id, created_at=pack["generated_at"], created_by=username, path=str(md_path),
+@@ -330,21 +396,19 @@ def generate(agent_id: str, user_id: str, username: str) -> dict:
+     governance_note = None
+     if bundle_id:
+         summary = (f"ACT evidence pack {pack_id} for {pack['agent_name']} generated {fmt_ts(pack['generated_at'])} UTC "
+-                   f"by {pack['generated_by']}: seven sections in 2026-54 order. Files: {md_path.name}, {pdf_path.name}.")
++                   f"by {pack['generated_by']}: seven sections in 2026-54 order. Files are saved in the project "
++                   f"dataset at {_dataset_location(folder.name)}: {md_path.name}, {pdf_path.name}.")
++        detail = {"pack_id": pack_id, "bundle_id": bundle_id, "location": _dataset_location(folder.name)}
+         try:
+             governance.attach_evidence(bundle_id, "evidence_pack", {
+                 "summary": summary, "path": str(folder), "citation": f"evidence_packs:{pack_id} at {folder}"})
+-            governance_note = "attached"
++            governance_note, action = "attached", "evidence_pack_attached"
+         except Exception as e:
+-            log.warning("policy evidence submit failed (%s); trying a Report attachment", e)
+-            try:  # best effort: a bundle attachment pointing at the dataset file
+-                governance.attach_evidence(bundle_id, "report", {
+-                    "name": f"ACT evidence pack {pack_id}", "summary": summary,
+-                    "identifier": {"source": "dataset", "filename": f"{folder.name}/{pdf_path.name}",
+-                                   "pack_id": pack_id}})
+-                governance_note = "attached as report"
+-            except Exception as e2:
+-                log.exception("attaching evidence pack to governance bundle failed")
+-                governance_note = f"attach failed: {clean(str(e2))[:200]}"
++            log.exception("policy evidence submit failed")
++            governance_note, action = f"attach_failed: {clean(str(e))[:200]}", "evidence_pack_attach_failed"
++            detail["error"] = clean(str(e))[:200]
++        detail["outcome"] = governance_note
++        with db.engine.begin() as cx:
++            _audit(cx, action, agent_id, detail, actor=(user_id, username))
+     return {"markdown_path": str(md_path), "pdf_path": str(pdf_path), "bundle_id": bundle_id, "pack_id": pack_id,
+             "markdown": md, "governance": governance_note, "pdf_renderer": renderer}
+diff --git a/backend/routes/evidence.py b/backend/routes/evidence.py
+index 2bcc971..ddea29e 100644
+--- a/backend/routes/evidence.py
++++ b/backend/routes/evidence.py
+@@ -15,6 +15,8 @@ def create_pack(agent_id: str, user: User = Depends(require_user)):
+         return evidence.generate(agent_id, user.user_id, user.username)
+     except evidence.AgentNotFound:
+         raise HTTPException(404, "agent not found")
++    except evidence.RenderError as e:
++        raise HTTPException(500, str(e))
+ 
+ 
+ def _item(r):
+diff --git a/backend/routes/runs.py b/backend/routes/runs.py
+index 07ac628..399b18f 100644
+--- a/backend/routes/runs.py
++++ b/backend/routes/runs.py
+@@ -5,7 +5,7 @@ from datetime import datetime, timezone
+ from fastapi import APIRouter, Body, Depends, HTTPException
+ from sqlalchemy import select
+ 
+-from .. import db
++from .. import db, evidence
+ from ..domino_identity import User, require_user
+ from ..normalize import _audit, now_iso
+ from ..normalize_span import redact
+@@ -65,3 +65,11 @@ def timeline(run_id: str):
+     return {"run_id": run_id, "agent_id": agent_id,
+             "started_at": run.started_at if run else None, "ended_at": run.ended_at if run else None,
+             "events": events}
++
++
++@router.get("/api/agents/{agent_id}/runs")
++def agent_runs(agent_id: str):
++    with db.engine.connect() as cx:
++        if cx.execute(select(db.agents.c.id).where(db.agents.c.id == agent_id)).first() is None:
++            raise HTTPException(404, "agent not found")
++    return evidence.agent_runs(agent_id)
+diff --git a/frontend/src/components/EvidencePack.jsx b/frontend/src/components/EvidencePack.jsx
+index a59a533..8071323 100644
+--- a/frontend/src/components/EvidencePack.jsx
++++ b/frontend/src/components/EvidencePack.jsx
+@@ -1,11 +1,9 @@
+ import React from 'react'
+ import { clean } from '../format'
+ import Markdown from './Markdown'
++import { Panel } from './ui'
+ 
+-// The safe Markdown renderer treats _x_ as emphasis: put snake_case identifiers in code spans.
+-const codeify = (t) => t.replace(/`[^`]*`|\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b/g, (m) => (m.startsWith('`') ? m : `\`${m}\``))
+-
+-// Split the pack Markdown into real headings (h2 title, h3 sections) plus safe Markdown bodies.
++// Split the pack Markdown into the title (h3) and the seven sections (h3), each with a safe Markdown body.
+ function Preview({ markdown }) {
+   const parts = []
+   let cur = null
+@@ -17,15 +15,26 @@ function Preview({ markdown }) {
+   return (
+     <div data-testid="evidence-pack-preview" className="evidence-preview">
+       {parts.map((p, i) => (
+-        <section key={i}>
+-          {p.level === 1 ? <h2>{clean(p.title)}</h2> : <h3>{clean(p.title)}</h3>}
+-          <Markdown text={codeify(p.body.map(clean).join('\n'))} />
++        <section key={i} style={{ marginTop: i ? 16 : 0 }}>
++          <h3 style={p.level === 1 ? { fontSize: 18 } : undefined}>{clean(unescapeText(p.title))}</h3>
++          <Markdown text={p.body.join('\n')} />
+         </section>
+       ))}
+     </div>
+   )
+ }
+ 
++// Headings are plain text here (not run through the Markdown renderer): undo the pack's escaping.
++const unescapeText = (t) => t.replace(/\\([\\!\[\]()`*_#|&])/g, '$1').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
++
++function bundleNote(res) {
++  const g = String(res.governance || '')
++  if (!res.bundle_id) return 'No Governance bundle for this agent. Files are saved in the project dataset.'
++  const where = `Recorded against Governance bundle ${clean(res.bundle_id)}.`
++  if (g === 'attached') return `${where} Attached to the bundle as policy evidence.`
++  return `${where} Attaching to the bundle failed; files are saved in the project dataset.`
++}
++
+ export default function EvidencePack({ id }) {
+   const [busy, setBusy] = React.useState(false)
+   const [err, setErr] = React.useState(null)
+@@ -45,25 +54,21 @@ export default function EvidencePack({ id }) {
+   }
+   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
+   return (
+-    <div id="evidence-pack" style={{ display: 'contents' }}>
+-      <button className="btn primary" data-testid="evidence-pack-generate" onClick={generate} disabled={busy}>
+-        {busy ? 'Generating...' : 'Generate evidence pack'}
+-      </button>
+-      {err && <div className="alert error" role="alert" style={{ flexBasis: '100%' }}>{clean(err)}</div>}
++    <Panel title="Evidence pack" testid="evidence-pack-card"
++           aside={<button className="btn primary" data-testid="evidence-pack-generate" onClick={generate} disabled={busy}>
++             {busy ? 'Generating...' : 'Generate evidence pack'}</button>}>
++      {!res && !err && <p className="muted">Generate a dated pack in OCC 2026-54 order from ACT's own records.</p>}
++      {err && <div className="alert error" role="alert">{clean(err)}</div>}
+       {res && (
+-        <div className="panel" data-testid="evidence-pack-result" style={{ flexBasis: '100%', marginTop: 12 }}>
+-          <h2>Evidence pack</h2>
++        <div data-testid="evidence-pack-result">
+           <p>
+             <a data-testid="evidence-pack-md-link" href={`${base}/markdown`} download>Download Markdown</a>{' · '}
+             <a data-testid="evidence-pack-pdf-link" href={`${base}/pdf`} download>Download PDF</a>
+           </p>
+-          <p data-testid="evidence-pack-bundle" className="muted">
+-            {res.bundle_id ? `Attached to Governance bundle ${clean(res.bundle_id)}` : 'Saved to project dataset (no Governance bundle for this agent)'}
+-            {res.governance && res.governance.startsWith('attach failed') ? ' (attachment failed; pack saved to the project dataset)' : ''}
+-          </p>
++          <p data-testid="evidence-pack-bundle" className="muted">{bundleNote(res)}</p>
+           <Preview markdown={res.markdown} />
+         </div>
+       )}
+-    </div>
++    </Panel>
+   )
+ }
+diff --git a/frontend/src/components/Markdown.jsx b/frontend/src/components/Markdown.jsx
+index 152aec2..39f7f27 100644
+--- a/frontend/src/components/Markdown.jsx
++++ b/frontend/src/components/Markdown.jsx
+@@ -1,14 +1,17 @@
+ import React from 'react'
+ 
+-// Minimal safe markdown renderer (no raw HTML): paragraphs, lists, headings, bold, italic, code, links.
++// Minimal safe markdown renderer (no raw HTML): paragraphs, nested lists, headings, bold, italic, code, links,
++// backslash escapes and the &lt; &gt; entities the evidence pack uses for untrusted text.
+ function inline(text, key) {
+   const out = []
+-  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\[[^\]]+\]\(https?:[^)\s]+\))/g
++  const re = /(\\[\\!\[\]()`*_#|&<>]|&(?:lt|gt|amp);|\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|(?<![A-Za-z0-9])_[^_\s][^_]*_(?![A-Za-z0-9])|\[[^\]]+\]\(https?:[^)\s]+\))/g
+   let last = 0, m, i = 0
+   while ((m = re.exec(text))) {
+     if (m.index > last) out.push(text.slice(last, m.index))
+     const t = m[0]
+-    if (t.startsWith('**')) out.push(<strong key={`${key}-${i}`}>{t.slice(2, -2)}</strong>)
++    if (t.startsWith('\\')) out.push(t.slice(1))
++    else if (t.startsWith('&')) out.push({ '&lt;': '<', '&gt;': '>', '&amp;': '&' }[t])
++    else if (t.startsWith('**')) out.push(<strong key={`${key}-${i}`}>{t.slice(2, -2)}</strong>)
+     else if (t.startsWith('`')) out.push(<code key={`${key}-${i}`}>{t.slice(1, -1)}</code>)
+     else if (t.startsWith('[')) {
+       const mm = /\[([^\]]+)\]\(([^)]+)\)/.exec(t)
+@@ -21,6 +24,30 @@ function inline(text, key) {
+   return out
+ }
+ 
++// Flat items with indents -> nested tree.
++function tree(items) {
++  const root = { children: [] }
++  const stack = [{ indent: -1, node: root }]
++  for (const it of items) {
++    const node = { text: it.text, ordered: it.ordered, children: [] }
++    while (stack.length > 1 && stack[stack.length - 1].indent >= it.indent) stack.pop()
++    stack[stack.length - 1].node.children.push(node)
++    stack.push({ indent: it.indent, node })
++  }
++  return root.children
++}
++
++function List({ nodes, k }) {
++  const Tag = nodes[0].ordered ? 'ol' : 'ul'
++  return (
++    <Tag>
++      {nodes.map((n, j) => (
++        <li key={j}>{inline(n.text, `${k}-${j}`)}{n.children.length > 0 && <List nodes={n.children} k={`${k}-${j}`} />}</li>
++      ))}
++    </Tag>
++  )
++}
++
+ export default function Markdown({ text }) {
+   if (!text) return null
+   const lines = String(text).split(/\r?\n/)
+@@ -35,8 +62,8 @@ export default function Markdown({ text }) {
+     else if ((m = /^\s*([-*]|\d+\.)\s+(.*)/.exec(line))) {
+       flushPara()
+       const ordered = /\d/.test(m[1])
+-      if (!list || list.ordered !== ordered) { flushList(); list = { t: 'l', ordered, items: [] } }
+-      list.items.push(m[2])
++      if (!list) list = { t: 'l', items: [] }
++      list.items.push({ indent: /^\s*/.exec(line)[0].length, ordered, text: m[2] })
+     } else { flushList(); para.push(line.trim()) }
+   }
+   flushPara(); flushList()
+@@ -45,8 +72,7 @@ export default function Markdown({ text }) {
+       {blocks.map((b, i) => {
+         if (b.t === 'p') return <p key={i}>{inline(b.v, i)}</p>
+         if (b.t === 'h') return <h4 key={i}>{inline(b.v, i)}</h4>
+-        const Tag = b.ordered ? 'ol' : 'ul'
+-        return <Tag key={i}>{b.items.map((it, j) => <li key={j}>{inline(it, `${i}-${j}`)}</li>)}</Tag>
++        return <List key={i} nodes={tree(b.items)} k={String(i)} />
+       })}
+     </div>
+   )
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index 07c1b30..6710d87 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -170,14 +170,24 @@ function Findings({ findings }) {
+   )
+ }
+ 
+-function Runs({ findings }) {
+-  // No runs-by-agent endpoint yet: list the runs referenced by this agent's findings.
+-  const ids = [...new Set(findings.map((f) => f.run_id).filter(Boolean))]
++function Runs({ id }) {
++  const runs = useAsync(() => fetch(`api/agents/${encodeURIComponent(id)}/runs`).then((r) => {
++    if (!r.ok) throw new Error(`${r.status}: could not load runs`)
++    return r.json()
++  }), [id])
++  const list = runs.data || []
+   return (
+     <Panel title="Runs">
+-      {!ids.length && <p className="muted">No runs with findings.</p>}
++      {runs.error && <ErrorBox error={runs.error} />}
++      {runs.loading && !runs.data && <Loading what="runs" />}
++      {runs.data && !list.length && <p className="muted">No runs recorded.</p>}
+       <ul className="plain">
+-        {ids.map((r) => <li key={r} data-testid="run-item"><Link to={`/runs/${encodeURIComponent(r)}`}>{r}</Link></li>)}
++        {list.map((r) => (
++          <li key={r.run_id} data-testid="run-item">
++            <Link to={`/runs/${encodeURIComponent(r.run_id)}`}>{clean(r.run_id)}</Link>{' '}
++            <span className="muted">{fmtTs(r.started_at)} · {r.span_count} {r.span_count === 1 ? 'span' : 'spans'}</span>
++          </li>
++        ))}
+       </ul>
+     </Panel>
+   )
+@@ -201,8 +211,6 @@ function AgentView({ id }) {
+       <p><Link to="/">Fleet</Link> / {clean(a.name)}</p>
+       <div className="page-head" style={{ flexWrap: 'wrap' }}>
+         <h1>{clean(a.name)}</h1>
+-        {/* SLOT: "Generate evidence pack" button (added by a later task) */}
+-        <div id="evidence-pack-slot" data-slot="evidence-pack" style={{ display: 'contents' }}><EvidencePack id={id} /></div>
+       </div>
+       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
+       <div className="grid">
+@@ -214,7 +222,8 @@ function AgentView({ id }) {
+         <Approvals id={id} gov={gov.data} onChanged={() => setRev((r) => r + 1)} />
+       </div>
+       {fnd.error ? <ErrorBox error={fnd.error} /> : <Findings findings={fnd.data || []} />}
+-      <Runs findings={fnd.data || []} />
++      <div id="evidence-pack-slot" data-slot="evidence-pack"><EvidencePack id={id} /></div>
++      <Runs id={id} />
+     </div>
+   )
+ }
