@@ -234,3 +234,127 @@ def test_ac12_weekend_drift_single_open_finding_with_timeline(client):
     assert g["run_id"] == f["run_id"] and g["timeline_url"] == f"runs/{f['run_id']}/timeline"
     a = next(x for x in client.get("/api/agents").json() if x["id"] == aid)
     assert a["open_findings"] == 1
+
+
+# ---- Round 2: hardening against crafted inputs (AC-6) ----
+LIM = {"transfer_funds": {"amount": 250000, "currency": "USD"}}
+
+
+def _limited(db_env):
+    return _seed(db_env, 1, tools=("A", "B", "transfer_funds"), limits=LIM)
+
+
+def _violations(f):
+    return f["detail"]["violations"]
+
+
+@pytest.mark.parametrize("raw", ["1e999", "Infinity", "inf"])
+def test_ac6_nonfinite_amount_is_unverifiable(client, db_env, raw):
+    aid = _limited(db_env)
+    trace = "7" * 32
+    r = _post(client, [_span(0, "transfer_funds", {"amount": raw, "currency": "USD"}, trace)])
+    assert r.status_code == 200
+    fs = _findings(client, aid)
+    assert len(fs) == 1 and fs[0]["type"] == "scope_drift"
+    f = fs[0]
+    assert f["span_id"] == f"{1:016x}"
+    vs = [v for v in _violations(f) if v["tool"] == "transfer_funds"]
+    assert len(vs) == 1
+    assert vs[0]["reason"] == "value_unverifiable"
+    assert vs[0]["raw_value"] == raw
+
+
+@pytest.mark.parametrize("raw", ["5,000,000", "$5,000,000", "USD 5000000"])
+def test_ac6_formatted_amount_is_normalised(client, db_env, raw):
+    aid = _limited(db_env)
+    _post(client, [_span(0, "transfer_funds", {"amount": raw}, "8" * 32)])
+    fs = _findings(client, aid)
+    assert len(fs) == 1
+    assert fs[0]["reason"] == "value_limit_exceeded"
+    assert fs[0]["observed_value"] == 5000000
+    assert fs[0]["limit"] == 250000
+
+
+@pytest.mark.parametrize("raw", ["lots", {}])
+def test_ac6_unparseable_amount_is_unverifiable(client, db_env, raw):
+    aid = _limited(db_env)
+    _post(client, [_span(0, "transfer_funds", {"amount": raw}, "9" * 32)])
+    fs = _findings(client, aid)
+    assert len(fs) == 1
+    vs = [v for v in _violations(fs[0]) if v["tool"] == "transfer_funds"]
+    assert len(vs) == 1 and vs[0]["reason"] == "value_unverifiable"
+    assert vs[0]["raw_value"] == raw
+
+
+def test_ac6_missing_amount_key_no_value_violation(client, db_env):
+    aid = _limited(db_env)
+    assert _post(client, [_span(0, "transfer_funds", {"currency": "USD"}, "a1" * 16)]).status_code == 200
+    assert _findings(client, aid) == []
+
+
+def test_ac6_currency_mismatch_is_unverifiable(client, db_env):
+    aid = _limited(db_env)
+    _post(client, [_span(0, "transfer_funds", {"amount": 100, "currency": "EUR"}, "a2" * 16)])
+    fs = _findings(client, aid)
+    assert len(fs) == 1
+    vs = [v for v in _violations(fs[0]) if v["tool"] == "transfer_funds"]
+    assert len(vs) == 1 and vs[0]["reason"] == "value_unverifiable"
+    assert "currency" in vs[0]["note"].lower()
+
+
+def test_ac6_same_currency_below_limit_no_finding(client, db_env):
+    aid = _limited(db_env)
+    _post(client, [_span(0, "transfer_funds", {"amount": 100, "currency": "USD"}, "a3" * 16)])
+    assert _findings(client, aid) == []
+
+
+def _base_finding(**kw):
+    f = {"type": "scope_drift", "severity": "high", "agent_id": "x", "run_id": "r", "span_id": "s",
+         "tool": "transfer_funds", "ts": "2026-11-07T02:14:00Z"}
+    f.update(kw)
+    return f
+
+
+def test_ac6_schema_accepts_value_unverifiable_without_value_fields():
+    jsonschema.validate(_base_finding(reason="value_unverifiable"), FINDING_SCHEMA,
+                        format_checker=jsonschema.FormatChecker())
+
+
+def test_ac6_schema_value_limit_exceeded_still_requires_value_and_limit():
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(_base_finding(reason="value_limit_exceeded"), FINDING_SCHEMA)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(_base_finding(reason="value_limit_exceeded", observed_value=5), FINDING_SCHEMA)
+    jsonschema.validate(_base_finding(reason="value_limit_exceeded", observed_value=5, limit=1), FINDING_SCHEMA)
+
+
+def test_ac6_unverifiable_finding_from_api_validates_schema(client, db_env):
+    aid = _limited(db_env)
+    _post(client, [_span(0, "transfer_funds", {"amount": "1e999"}, "a4" * 16)])
+    fs = _findings(client, aid)
+    assert len(fs) == 1
+    jsonschema.validate(fs[0], FINDING_SCHEMA, format_checker=jsonschema.FormatChecker())
+
+
+def test_ac6_mixed_violations_single_finding(client, db_env):
+    aid = _limited(db_env)
+    trace = "a5" * 16
+    _post(client, [_span(0, "list_credentials", {}, trace),
+                   _span(1, "transfer_funds", {"amount": "1e999"}, trace)])
+    fs = _findings(client, aid)
+    assert len(fs) == 1
+    viol = {v["tool"]: v["reason"] for v in _violations(fs[0])}
+    assert viol == {"list_credentials": "tool_not_in_manifest", "transfer_funds": "value_unverifiable"}
+
+
+def test_ac6_reads_latest_manifest_row_not_stale_agent_record(client, db_env):
+    aid = _seed(db_env, 1)
+    manifest = {"tools": ["A", "B", "C"], "data_scopes": [], "systems": [],
+                "value_limits": {}, "value_limits_detail": {}, "permissions": {}}
+    con = sqlite3.connect(str(db_env))
+    con.execute("insert into manifests (agent_id, version, content, created_at) values (?,?,?,?)",
+                (aid, "2", json.dumps(manifest), "2026-11-02T00:00:00Z"))
+    con.commit()
+    con.close()
+    assert _post(client, [_span(0, "C", {}, "a6" * 16)]).status_code == 200
+    assert _findings(client, aid) == []
