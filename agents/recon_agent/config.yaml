@@ -1,0 +1,8 @@
+# Logged as MLflow params by DominoAgentContext(agent_config_path=...).
+# Model names are LLM Gateway 2.0 aliases.
+models:
+  primary: sonnet
+  fast: haiku
+agents:
+  default:
+    max_tokens: 1024

@@ -25,3 +25,7 @@ def db_mod(db_env):
     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
         del sys.modules[m]
     return importlib.import_module("backend.db")
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: needs a live deployment; skipped unless its env var is set")
