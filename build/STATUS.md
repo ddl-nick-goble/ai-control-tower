@@ -15,7 +15,7 @@ T-1, T-2, T-3, T-4, T-5, T-5b (ingest fix), T-6, T-7, T-7L (classifier v1/v2 + e
 Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (live-only).
 
 ## In progress
-- **T-12** merged (b8aefb6). Post-merge backend run and end-of-wave e2e run (QA dir wave6-main) were in progress at 19:xx.
+- **T-12** merged (b8aefb6). Post-merge on main: 424 backend passed, 33/33 e2e passed (QA dir wave6-main). Wave 6 complete.
 - **T-14** (mocks + local hosting): tests being written in .worktrees/T-14 (branch task/T-14).
 
 ## Next
