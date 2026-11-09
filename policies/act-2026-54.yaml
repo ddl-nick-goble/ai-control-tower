@@ -1,0 +1,131 @@
+# ACT 2026-54: agentic governance policy (stages mirror OCC 2026-54 order).
+# Evidence ids are stable externalIds; ACT writes answers by these ids.
+name: ACT 2026-54 Agentic Governance
+description: Governance policy for AI agents registered in Agent Control Tower, mirroring OCC 2026-54.
+enforceSequentialOrder: false
+stages:
+  - name: Identity and ownership
+    evidenceSet:
+      - id: Local.act-identity
+        name: Agent identity
+        description: Who the agent is and who owns it.
+        definition:
+          - artifactType: input
+            details: {type: textinput, label: "Agent name and id"}
+          - artifactType: input
+            details: {type: textinput, label: "Accountable owner"}
+          - artifactType: input
+            details: {type: textinput, label: "Agent identity (service principal or Domino user)"}
+          - artifactType: input
+            details: {type: textarea, label: "Business purpose", height: 4}
+  - name: Tier and criteria
+    evidenceSet:
+      - id: Local.act-tier
+        name: Risk tier
+        description: Tier assigned by ACT and the reasoning behind it.
+        definition:
+          - artifactType: input
+            details:
+              type: radio
+              label: "Assigned tier"
+              options: [Tier 1, Tier 2, Tier 3]
+          - artifactType: input
+            details: {type: textarea, label: "Tier reasoning", height: 8}
+      - id: Local.act-manifest
+        name: Agent manifest
+        description: Declared tools, data, models and permissions.
+        definition:
+          - artifactType: input
+            details: {type: textarea, label: "Manifest summary (tools, data, models)", height: 8}
+          - artifactType: metadata
+            details: {type: file, label: "Manifest file", description: "Manifest as registered in ACT."}
+  - name: Permitted actions
+    evidenceSet:
+      - id: Local.act-actions
+        name: Permitted and prohibited actions
+        description: What the agent may do, and what needs a human.
+        definition:
+          - artifactType: input
+            details: {type: textarea, label: "Permitted actions", height: 6}
+          - artifactType: input
+            details: {type: textarea, label: "Prohibited actions and human-in-the-loop points", height: 6}
+          - artifactType: input
+            details:
+              type: radio
+              label: "Does the agent take actions with external side effects?"
+              options: ["Yes", "No"]
+  - name: Validation
+    evidenceSet:
+      - id: Local.act-validation
+        name: Validation record
+        description: Independent validation of the agent.
+        definition:
+          - artifactType: input
+            details:
+              type: radio
+              label: "Validation outcome"
+              options: [Pass, Pass with conditions, Fail]
+          - artifactType: input
+            details: {type: textarea, label: "Validation summary", height: 8}
+          - artifactType: metadata
+            details: {type: file, label: "Validation report"}
+    approvals:
+      - name: Validation sign-off
+        approvers:
+          - model-gov-org
+        evidence:
+          id: Local.act-validation-signoff
+          name: Validation sign-off
+          description: Validator confirms the validation record.
+          definition:
+            - artifactType: input
+              details:
+                type: radio
+                label: "Validation accepted?"
+                options: ["Yes", "No"]
+  - name: Monitoring and findings
+    evidenceSet:
+      - id: Local.act-monitoring
+        name: Monitoring and drift
+        description: Drift findings and open issues.
+        definition:
+          - artifactType: input
+            details: {type: textarea, label: "Drift findings summary", height: 6}
+          - artifactType: input
+            details: {type: textarea, label: "Open findings and remediation plan", height: 6}
+          - artifactType: input
+            details: {type: date, label: "Next monitoring review date", format: ISO8601}
+  - name: Approvals and overrides
+    evidenceSet:
+      - id: Local.act-overrides
+        name: Overrides and exceptions
+        description: Any override of a gate, with reason.
+        definition:
+          - artifactType: input
+            details: {type: textarea, label: "Overrides granted and rationale", height: 6}
+    approvals:
+      - name: Approval to operate
+        approvers:
+          - model-gov-org
+        evidence:
+          id: Local.act-approval
+          name: Approval to operate
+          description: Final approver decision. The approver must differ from the builder.
+          definition:
+            - artifactType: input
+              details:
+                type: radio
+                label: "Decision"
+                options: [Approved, Approved with conditions, Rejected]
+            - artifactType: input
+              details: {type: textarea, label: "Conditions or comments", height: 4}
+  - name: Records and retention
+    evidenceSet:
+      - id: Local.act-records
+        name: Evidence pack and retention
+        description: Evidence pack files and retention period.
+        definition:
+          - artifactType: input
+            details: {type: textinput, label: "Evidence pack location"}
+          - artifactType: input
+            details: {type: select, label: "Retention period", options: [{label: "3 years", value: "3y"}, {label: "5 years", value: "5y"}, {label: "7 years", value: "7y"}]}

@@ -1,0 +1,62 @@
+# SR 26-2: slim model-risk template for the model an agent calls.
+name: SR 26-2 Model Risk (slim)
+description: Slim model-risk template for the model called by an ACT-governed agent.
+stages:
+  - name: Model identification
+    evidenceSet:
+      - id: Local.sr-model-id
+        name: Model identification
+        description: Which model, provider and version.
+        definition:
+          - artifactType: input
+            details: {type: textinput, label: "Model name and version"}
+          - artifactType: input
+            details: {type: textinput, label: "Provider or endpoint"}
+          - artifactType: input
+            details: {type: textinput, label: "Model owner"}
+  - name: Intended use
+    evidenceSet:
+      - id: Local.sr-use
+        name: Intended use and limits
+        description: Intended use of the model inside the agent.
+        definition:
+          - artifactType: input
+            details: {type: textarea, label: "Intended use", height: 5}
+          - artifactType: input
+            details: {type: textarea, label: "Known limitations", height: 5}
+  - name: Validation
+    evidenceSet:
+      - id: Local.sr-validation
+        name: Model validation
+        description: Evaluation of the model for this use.
+        definition:
+          - artifactType: input
+            details:
+              type: radio
+              label: "Validation outcome"
+              options: [Pass, Pass with conditions, Fail]
+          - artifactType: input
+            details: {type: textarea, label: "Validation summary", height: 6}
+  - name: Monitoring
+    evidenceSet:
+      - id: Local.sr-monitoring
+        name: Model monitoring
+        description: Ongoing performance and drift monitoring.
+        definition:
+          - artifactType: input
+            details: {type: textarea, label: "Monitoring plan and latest results", height: 6}
+  - name: Approval
+    approvals:
+      - name: Model risk approval
+        approvers:
+          - model-gov-org
+        evidence:
+          id: Local.sr-approval
+          name: Model risk approval
+          description: Model risk decision.
+          definition:
+            - artifactType: input
+              details:
+                type: radio
+                label: "Decision"
+                options: [Approved, Approved with conditions, Rejected]
