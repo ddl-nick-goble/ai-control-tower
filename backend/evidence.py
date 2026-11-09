@@ -201,10 +201,11 @@ def _validation(d, aid):
         if det.get("n_prompts") and det.get("reps"):
             parts.append(f"{int(det['n_prompts'])} prompts x {int(det['reps'])} repetitions")
         if det.get("judge_alias") or det.get("judge_model_id") or det.get("judge_version"):
-            alias = _alias(det.get("judge_alias"))
-            parts.append(f"judge alias {alias} (model: frontier model, exact gateway version held in the "
-                         f"validation record)" if det.get("judge_model_id") or det.get("judge_version")
-                         else f"judge alias {alias}")
+            parts.append(f"judge: frontier model via the LLM gateway; alias and version on file in "
+                         f"validation_records:{r.id}")
+        if det.get("error_count") is not None or det.get("invalid_count") is not None:
+            parts.append(f"{int(det.get('error_count') or 0)} errors and {int(det.get('invalid_count') or 0)} "
+                         f"invalid judge replies")
         if det.get("experiment"):
             n = len(det.get("mlflow_run_ids") or [])
             parts.append(f"MLflow experiment {esc(det['experiment'])}, {n} runs")
