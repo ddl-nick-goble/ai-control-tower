@@ -128,6 +128,7 @@ events = Table(
     Column("prev_hash", String),
     Column("hash", String, unique=True),
     Index("ux_events_run_span", "run_id", "span_id", unique=True),
+    Index("ix_events_run_agent", "run_id", "agent_id"),
 )
 
 findings = Table(
@@ -228,6 +229,8 @@ def _migrate() -> None:
         if insp.has_table("events"):
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_events_run_span "
                               "ON events (run_id, span_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_events_run_agent "
+                              "ON events (run_id, agent_id)"))
 
 
 def _ensure_findings_index() -> None:

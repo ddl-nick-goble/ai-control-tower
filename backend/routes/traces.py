@@ -64,24 +64,50 @@ def ingest(spans: list[dict]) -> dict:
             select(db.events.c.run_id, db.events.c.span_id).where(
                 db.events.c.run_id.in_({p[3]["run_id"] for p in prepared}),
                 db.events.c.span_id.is_not(None)))}
+        # Resolve each run's agent: explicit carrier span, then service.name match in this
+        # request, then what is already stored for the run.
+        run_ids = {p[3]["run_id"] for p in prepared}
+        run_agent: dict[str, str] = {}
+        for tier in (True, False):
+            for sp, native, explicit, ev in prepared:
+                rid = ev["run_id"]
+                if rid in run_agent or not native or explicit != tier:
+                    continue
+                act_id = amap.get(native)
+                if act_id:
+                    run_agent[rid] = act_id
+                elif explicit:
+                    run_agent[rid] = shadow_id(native)
+        for sp, native, explicit, ev in prepared:
+            # a span carrying its own unmatched agent id keeps its shadow placeholder
+            if native and explicit and not amap.get(native) and native not in shadow:
+                shadow[native] = {"id": shadow_id(native), "ev": ev}
+        stored: dict[str, str] = {}
+        for r in conn.execute(select(db.runs.c.id, db.runs.c.agent_id).where(db.runs.c.id.in_(run_ids))):
+            if r.agent_id and r.agent_id != "unknown":
+                stored[r.id] = r.agent_id
+        for r in conn.execute(select(db.events.c.run_id, db.events.c.agent_id).where(
+                db.events.c.run_id.in_(run_ids), db.events.c.agent_id.is_not(None),
+                db.events.c.agent_id != "unknown").distinct()):
+            stored.setdefault(r.run_id, r.agent_id)
+        to_relink = [rid for rid in run_ids if rid in run_agent and stored.get(rid) is None]
+        for rid in run_ids:
+            if rid not in run_agent and rid in stored:
+                run_agent[rid] = stored[rid]
         for sp, native, explicit, ev in prepared:
             key = (ev["run_id"], sp.get("span_id") or None)
             if key[1] is not None:
                 if key in seen:
                     continue
                 seen.add(key)
-            act_id = amap.get(native) if native else None
-            if act_id:
+            act_id = amap.get(native) or (shadow_id(native) if native and explicit else None) \
+                or run_agent.get(ev["run_id"])
+            if act_id and amap.get(native) == act_id:
                 matched_spans += 1
-            elif native and explicit:
-                act_id = shadow_id(native)
-                if native not in shadow:
-                    shadow[native] = {"id": act_id, "ev": ev}
             ev["agent_id"] = act_id or "unknown"
             items.append({"run_id": ev["run_id"], "agent_id": ev["agent_id"], "ts": ev["ts"],
                           "kind": ev["kind"], "span_id": key[1], "raw_span": sp, "event": ev})
             r = runs.setdefault(ev["run_id"], {"agent_id": act_id, "start": ev["ts"], "end": ev["ts"], "n": 0})
-            r["agent_id"] = r["agent_id"] or act_id
             r["start"] = min(r["start"], ev["ts"])
             end = sp.get("end_ns") and iso(sp["end_ns"])
             r["end"] = max(r["end"], end or ev["ts"])
@@ -93,6 +119,16 @@ def ingest(spans: list[dict]) -> dict:
                     id=pid, source_platform="shadow", native_id=native, name=native,
                     status="shadow", last_seen=sh["ev"]["ts"]))
         # agents rows must exist before runs/events reference them
+        if to_relink:
+            # link column only; canonical JSON, hash and prev_hash stay untouched
+            for rid in to_relink:
+                conn.execute(update(db.events).where(
+                    db.events.c.run_id == rid,
+                    (db.events.c.agent_id == "unknown") | db.events.c.agent_id.is_(None)
+                ).values(agent_id=run_agent[rid]))
+                conn.execute(update(db.runs).where(
+                    db.runs.c.id == rid, (db.runs.c.agent_id.is_(None)) | (db.runs.c.agent_id == "unknown")
+                ).values(agent_id=run_agent[rid]))
         chain.append_events(conn, items)
         for rid, r in runs.items():
             cur = conn.execute(select(db.runs).where(db.runs.c.id == rid)).first()
@@ -104,7 +140,7 @@ def ingest(spans: list[dict]) -> dict:
                 rec = dict(cur.record or {})
                 rec["span_count"] = rec.get("span_count", 0) + r["n"]
                 conn.execute(update(db.runs).where(db.runs.c.id == rid).values(
-                    agent_id=cur.agent_id or r["agent_id"],
+                    agent_id=(cur.agent_id if cur.agent_id and cur.agent_id != "unknown" else r["agent_id"]),
                     started_at=min(cur.started_at or r["start"], r["start"]),
                     ended_at=max(cur.ended_at or r["end"], r["end"]), record=rec))
         for native, sh in shadow.items():
