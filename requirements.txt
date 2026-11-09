@@ -11,3 +11,7 @@ requests
 scikit-learn
 joblib
 mlflow
+weasyprint>=62
+markdown-it-py>=3
+reportlab>=4
+jsonschema>=4
