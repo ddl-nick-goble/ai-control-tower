@@ -27,26 +27,26 @@ def _second_run_doc():
         return d
     spans = [
         span(1, "invoke_agent anthropic.claude-sonnet-4", 0, [
-            ("gen_ai.operation.name", "invoke_agent"), ("gen_ai.agent.id", "treasury_sweep_agent-Xk3Lq9ZpT2"),
-            ("gen_ai.agent.name", "treasury-sweep-agent"),
+            ("gen_ai.operation.name", "invoke_agent"), ("gen_ai.agent.id", RECON_NATIVE),
+            ("gen_ai.agent.name", "recon-agent"),
             ("gen_ai.provider.name", "aws.bedrock"),
-            ("gen_ai.input.messages", json.dumps([{"role": "user", "content": "Sweep surplus balances."}])),
-            ("gen_ai.output.messages", json.dumps([{"role": "assistant", "content": "Sweep submitted."}]))]),
+            ("gen_ai.input.messages", json.dumps([{"role": "user", "content": "Reconcile the ledger."}])),
+            ("gen_ai.output.messages", json.dumps([{"role": "assistant", "content": "Adjustment proposed."}]))]),
         span(2, "chat anthropic.claude-sonnet-4", 1, [
             ("gen_ai.operation.name", "chat"), ("gen_ai.request.model", "anthropic.claude-sonnet-4"),
             ("gen_ai.usage.input_tokens", 900), ("gen_ai.usage.output_tokens", 120)], kind=3),
-        span(3, "execute_tool get_balance", 2, [
-            ("gen_ai.operation.name", "execute_tool"), ("gen_ai.tool.name", "get_balance"),
+        span(3, "execute_tool fetch_ledger", 2, [
+            ("gen_ai.operation.name", "execute_tool"), ("gen_ai.tool.name", "fetch_ledger"),
             ("gen_ai.tool.call.arguments", json.dumps({"account": "OPS-USD-001"})),
-            ("gen_ai.tool.call.result", json.dumps({"balance": 5000000}))]),
-        span(4, "execute_tool transfer_funds", 3, [
-            ("gen_ai.operation.name", "execute_tool"), ("gen_ai.tool.name", "transfer_funds"),
+            ("gen_ai.tool.call.result", json.dumps({"entries": 42}))]),
+        span(4, "execute_tool propose_adjustment", 3, [
+            ("gen_ai.operation.name", "execute_tool"), ("gen_ai.tool.name", "propose_adjustment"),
             ("gen_ai.tool.call.arguments", json.dumps(
-                {"from": "OPS-USD-001", "to": "CONC-USD-100", "amount": "5 mln", "currency": "USD"})),
-            ("gen_ai.tool.call.result", json.dumps({"status": "settled"}))]),
+                {"account": "OPS-USD-001", "amount": "5 mln", "currency": "USD"})),
+            ("gen_ai.tool.call.result", json.dumps({"status": "proposed"}))]),
     ]
     return {"resourceSpans": [{"resource": {"attributes": [
-        _attr("service.name", "treasury-sweep-agent"), _attr("cloud.provider", "aws"),
+        _attr("service.name", "recon-agent"), _attr("cloud.provider", "aws"),
         _attr("cloud.platform", "aws_bedrock_agentcore")]},
         "scopeSpans": [{"scope": {"name": "opentelemetry.instrumentation.genai", "version": "1.0.0"},
                         "spans": spans}]}]}
@@ -78,7 +78,8 @@ def seed(db_path: str) -> dict:
     aid = act_id("domino", RECON_NATIVE)
     ts = now_iso()
     manifest = {"tools": ["fetch_ledger", "compare_entries", "propose_adjustment"],
-                "data_scopes": ["finance.ledger"], "systems": [], "value_limits": {}}
+                "data_scopes": ["finance.ledger"], "systems": [],
+                "value_limits": {"propose_adjustment": {"amount": 10000, "currency": "USD"}}}
     rec = {"id": aid, "name": RECON_NATIVE, "owner": "seed-user", "tier": 2, "status": "discovered",
            "source_platform": "domino", "manifest": manifest, "last_seen": ts}
     with db.engine.begin() as cx:

@@ -90,7 +90,7 @@ def test_ac5_timeline_matches_api_and_renders_fast(page, shot, seeded):
 
 def test_ac6_scope_drift_on_agent_page_and_timeline_violations(page, shot, seeded):
     _open_agent(page, seeded["treasury_id"])
-    # the agent also has a second finding (value_unverifiable, run 2); pick the weekend-drift one by timestamp
+    # select the weekend-drift finding by timestamp
     finding = page.get_by_test_id("finding-item").filter(has_text="2026-11-07 02:14")
     expect(finding).to_have_count(1)
     expect(finding).to_have_attribute("data-finding-type", "scope_drift")
@@ -130,7 +130,7 @@ def test_ac12_fleet_tier1_badge_one_open_finding_links_to_timeline(page, shot, s
     row = _fleet_row(page, "treasury-sweep-agent")
     expect(row).to_have_count(1)
     expect(row.get_by_test_id("tier-badge")).to_contain_text("Tier 1")
-    expect(row.get_by_test_id("open-findings")).to_have_text("2")  # weekend drift + second run (unverifiable)
+    expect(row.get_by_test_id("open-findings")).to_have_text("1")
 
     row.get_by_role("link", name="treasury-sweep-agent").click()
     page.get_by_test_id("finding-item").filter(has_text="2026-11-07 02:14").get_by_test_id(
@@ -224,7 +224,7 @@ def test_violation_labels_distinguish_reasons(page, shot, seeded):
     page.goto(f"./#/runs/{seeded['run2_id']}")
     items = page.get_by_test_id("timeline-event")
     expect(items.first).to_be_visible()
-    unv = items.filter(has_text="transfer_funds")
+    unv = items.filter(has_text="propose_adjustment")
     expect(unv).to_have_count(1)
     expect(unv).to_have_attribute("data-violation", "true")
     expect(unv).to_have_attribute("data-violation-reason", "value_unverifiable")
