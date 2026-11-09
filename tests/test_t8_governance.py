@@ -263,6 +263,25 @@ def test_ac8_live_ensure_bundle_attaches_both_policies(db_mod, monkeypatch):
         bid = g.ensure_bundle(aid)
         assert bid
         assert g.ensure_bundle(aid) == bid
+        # read the bundle back from the real Governance API
+        assert _LIVE_PROXY, "DOMINO_API_PROXY required for live readback"
+        r = requests.get(f"{_LIVE_PROXY}/api/governance/v1/bundles/{bid}", timeout=30)
+        assert r.status_code == 200, r.text[:300]
+        b = r.json()
+        assert b["id"] == bid
+        pnames = [p.get("policyName") or "" for p in b.get("policies") or []]
+        assert any("2026-54" in n for n in pnames), pnames
+        assert any("SR 26-2" in n for n in pnames), pnames
+        # the app route reports the same bundle and both policies
+        main = importlib.import_module("backend.main")
+        with TestClient(main.app) as c:
+            rr = c.get(f"/api/agents/{aid}/governance")
+        assert rr.status_code == 200, rr.text
+        body = rr.json()
+        assert body["bundle_id"] == bid, body
+        rnames = [p["name"] if isinstance(p, dict) else p for p in body["policies"]]
+        assert any("2026-54" in n for n in rnames), body
+        assert any("SR 26-2" in n for n in rnames), body
     finally:
         if bid and _LIVE_PROXY:
             r = requests.patch(f"{_LIVE_PROXY}/api/governance/v1/bundles/{bid}", json={"state": "Archived"}, timeout=30)
