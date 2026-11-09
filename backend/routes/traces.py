@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from .. import chain, db
+from ..normalize import default_actor
 from ..normalize_span import iso, native_agent_id, normalize_span
 from ..otlp import parse_request
 
@@ -46,7 +47,14 @@ def _max_bytes() -> int:
         return DEFAULT_MAX_BYTES
 
 
-def ingest(spans: list[dict]) -> dict:
+def _actor_from(headers) -> tuple:
+    uid, name = headers.get("x-domino-user-id"), headers.get("x-domino-user")
+    if uid or name:
+        return (uid or name, name or uid)
+    return default_actor()
+
+
+def ingest(spans: list[dict], actor: tuple | None = None) -> dict:
     # Normalize before taking the lock.
     prepared = []
     for sp in spans:
@@ -57,57 +65,101 @@ def ingest(spans: list[dict]) -> dict:
     runs: dict[str, dict] = {}
     items = []
     shadow: dict[str, dict] = {}
+    conflicts: list[dict] = []
     with chain.lock, db.engine.begin() as conn:
         chain.begin_write(conn)
         amap = {r.native_id: r.id for r in conn.execute(select(db.agents.c.id, db.agents.c.native_id))}
+        run_ids = {p[3]["run_id"] for p in prepared}
         seen = {(r.run_id, r.span_id) for r in conn.execute(
             select(db.events.c.run_id, db.events.c.span_id).where(
-                db.events.c.run_id.in_({p[3]["run_id"] for p in prepared}),
-                db.events.c.span_id.is_not(None)))}
-        # Resolve each run's agent: explicit carrier span, then service.name match in this
-        # request, then what is already stored for the run.
-        run_ids = {p[3]["run_id"] for p in prepared}
-        run_agent: dict[str, str] = {}
-        for tier in (True, False):
-            for sp, native, explicit, ev in prepared:
-                rid = ev["run_id"]
-                if rid in run_agent or not native or explicit != tier:
-                    continue
-                act_id = amap.get(native)
-                if act_id:
-                    run_agent[rid] = act_id
-                elif explicit:
-                    run_agent[rid] = shadow_id(native)
-        for sp, native, explicit, ev in prepared:
-            # a span carrying its own unmatched agent id keeps its shadow placeholder
-            if native and explicit and not amap.get(native) and native not in shadow:
-                shadow[native] = {"id": shadow_id(native), "ev": ev}
-        stored: dict[str, str] = {}
-        for r in conn.execute(select(db.runs.c.id, db.runs.c.agent_id).where(db.runs.c.id.in_(run_ids))):
-            if r.agent_id and r.agent_id != "unknown":
-                stored[r.id] = r.agent_id
-        for r in conn.execute(select(db.events.c.run_id, db.events.c.agent_id).where(
-                db.events.c.run_id.in_(run_ids), db.events.c.agent_id.is_not(None),
-                db.events.c.agent_id != "unknown").distinct()):
-            stored.setdefault(r.run_id, r.agent_id)
-        to_relink = [rid for rid in run_ids if rid in run_agent and stored.get(rid) is None]
-        for rid in run_ids:
-            if rid not in run_agent and rid in stored:
-                run_agent[rid] = stored[rid]
+                db.events.c.run_id.in_(run_ids), db.events.c.span_id.is_not(None)))}
+        # spans stored earlier: span tree links and the agent they carry
+        stored_spans: dict[tuple, tuple] = {}
+        for r in conn.execute(select(db.events.c.run_id, db.events.c.span_id, db.events.c.parent_span_id,
+                                     db.events.c.agent_id).where(
+                db.events.c.run_id.in_(run_ids), db.events.c.span_id.is_not(None))):
+            stored_spans[(r.run_id, r.span_id)] = (r.parent_span_id, r.agent_id)
+        # only new spans are processed further (duplicates never become findings or events)
+        new = []
         for sp, native, explicit, ev in prepared:
             key = (ev["run_id"], sp.get("span_id") or None)
             if key[1] is not None:
                 if key in seen:
                     continue
                 seen.add(key)
-            act_id = amap.get(native) or (shadow_id(native) if native and explicit else None) \
-                or run_agent.get(ev["run_id"])
+            own = amap.get(native) or (shadow_id(native) if native and explicit else None)
+            new.append((sp, native, explicit, ev, key, own))
+        req = {}
+        for sp, native, explicit, ev, key, own in new:
+            if key[1] is not None:
+                req[key] = (sp.get("parent_span_id") or None, own)
+
+        def resolve(rid, sid):
+            """Own agent id of the span, else its nearest ancestor's; None if no ancestor carries one."""
+            cur, hops = sid, set()
+            while cur and cur not in hops:
+                hops.add(cur)
+                if (rid, cur) in req:
+                    parent, own_id = req[(rid, cur)]
+                elif (rid, cur) in stored_spans:
+                    parent, own_id = stored_spans[(rid, cur)]
+                    if own_id == "unknown":
+                        own_id = None
+                else:
+                    break
+                if own_id:
+                    return own_id
+                cur = parent
+            return None
+
+        def is_root(rid, parent):
+            return not parent or ((rid, parent) not in req and (rid, parent) not in stored_spans)
+
+        resolved = {}
+        for sp, native, explicit, ev, key, own in new:
+            resolved[id(sp)] = own or (resolve(ev["run_id"], sp.get("parent_span_id") or None))
+        # run agent: what is stored; else the root span's resolved agent; else explicit carrier,
+        # then service.name match in this request
+        stored: dict[str, str] = {}
+        for r in conn.execute(select(db.runs.c.id, db.runs.c.agent_id).where(db.runs.c.id.in_(run_ids))):
+            if r.agent_id and r.agent_id != "unknown":
+                stored[r.id] = r.agent_id
+        for r in conn.execute(select(db.events.c.run_id, db.events.c.agent_id, func.min(db.events.c.id).label("m"))
+                              .where(db.events.c.run_id.in_(run_ids), db.events.c.agent_id.is_not(None),
+                                     db.events.c.agent_id != "unknown")
+                              .group_by(db.events.c.run_id, db.events.c.agent_id).order_by("m")):
+            stored.setdefault(r.run_id, r.agent_id)
+        run_agent: dict[str, str] = {}
+        roots = sorted((x for x in new if is_root(x[3]["run_id"], x[0].get("parent_span_id") or None)),
+                       key=lambda x: (x[3]["ts"], x[4][1] or ""))
+        for sp, native, explicit, ev, key, own in roots:
+            if own and ev["run_id"] not in run_agent:
+                run_agent[ev["run_id"]] = own
+        for tier in (True, False):
+            for sp, native, explicit, ev, key, own in new:
+                rid = ev["run_id"]
+                if rid not in run_agent and native and explicit == tier and own:
+                    run_agent[rid] = own
+        for sp, native, explicit, ev, key, own in roots:
+            rid = ev["run_id"]
+            if own and rid in stored and own != stored[rid] and \
+                    not any(c["rid"] == rid and c["claimed"] == own for c in conflicts):
+                conflicts.append({"rid": rid, "claimed": own, "span_id": key[1]})
+        to_relink = [rid for rid in run_ids if rid in run_agent and stored.get(rid) is None]
+        run_agent.update({rid: a for rid, a in stored.items() if rid in run_ids})
+        for sp, native, explicit, ev, key, own in new:
+            if native and explicit and not amap.get(native) and native not in shadow:
+                shadow[native] = {"id": shadow_id(native), "ev": ev}
+        for sp, native, explicit, ev, key, own in new:
+            act_id = resolved[id(sp)] or run_agent.get(ev["run_id"])
             if act_id and amap.get(native) == act_id:
                 matched_spans += 1
             ev["agent_id"] = act_id or "unknown"
             items.append({"run_id": ev["run_id"], "agent_id": ev["agent_id"], "ts": ev["ts"],
-                          "kind": ev["kind"], "span_id": key[1], "raw_span": sp, "event": ev})
-            r = runs.setdefault(ev["run_id"], {"agent_id": act_id, "start": ev["ts"], "end": ev["ts"], "n": 0})
+                          "kind": ev["kind"], "span_id": key[1], "raw_span": sp, "event": ev,
+                          "parent_span_id": sp.get("parent_span_id") or None})
+            r = runs.setdefault(ev["run_id"], {"agent_id": run_agent.get(ev["run_id"]),
+                                               "start": ev["ts"], "end": ev["ts"], "n": 0})
             r["start"] = min(r["start"], ev["ts"])
             end = sp.get("end_ns") and iso(sp["end_ns"])
             r["end"] = max(r["end"], end or ev["ts"])
@@ -143,6 +195,13 @@ def ingest(spans: list[dict]) -> dict:
                     agent_id=(cur.agent_id if cur.agent_id and cur.agent_id != "unknown" else r["agent_id"]),
                     started_at=min(cur.started_at or r["start"], r["start"]),
                     ended_at=max(cur.ended_at or r["end"], r["end"]), record=rec))
+        actor = actor or default_actor()
+        for c in conflicts:
+            conn.execute(insert(db.audit_events).values(
+                actor_user_id=actor[0], actor_username=actor[1], action="run_agent_conflict",
+                target=c["rid"], ts=_now(),
+                detail={"run_id": c["rid"], "stored_agent_id": stored[c["rid"]],
+                        "claimed_agent_id": c["claimed"], "span_id": c["span_id"]}))
         for native, sh in shadow.items():
             pid, ev = sh["id"], sh["ev"]
             if conn.execute(select(db.findings.c.id).where(
@@ -199,7 +258,7 @@ async def post_traces(request: Request):
     except ValueError as e:
         return JSONResponse({"detail": f"invalid OTLP payload: {e}"}, status_code=400)
     try:
-        return await run_in_threadpool(ingest, spans)
+        return await run_in_threadpool(ingest, spans, _actor_from(request.headers))
     except (KeyError, TypeError, AttributeError) as e:
         return JSONResponse({"detail": f"invalid span: {e}"}, status_code=400)
 
