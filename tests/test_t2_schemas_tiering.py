@@ -189,3 +189,19 @@ def test_ac3_benchmark_input_rejected():
         with pytest.raises(TieringInputRejected) as e:
             score_tier(crit)
         assert "benchmark" in str(e.value).lower() or "backtest" in str(e.value).lower()
+
+
+def test_ac3_modified_config_weights_change_tier():
+    from backend.tiering import score_tier
+    cfg = yaml.safe_load((ROOT / "config" / "tiering.yaml").read_text())
+    crit = _crit(1)
+    first = next(iter(crit))
+    crit[first] = 5
+    base = score_tier(crit, config=cfg)
+    mod = copy.deepcopy(cfg)
+    for n, v in mod["criteria"].items():
+        v["weight"] = 1.0 if n == first else 0.0
+    changed = score_tier(crit, config=mod)
+    assert base.tier == 4
+    assert changed.tier == 1
+    assert changed.tier != base.tier
