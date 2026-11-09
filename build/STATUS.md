@@ -11,19 +11,12 @@ Updated: 2026-11-09 18:25 (workspace). Integration branch: `main`. Build spend a
 3. `git worktree list`, `git branch -r`. Resume the task under "In progress".
 
 ## Merged to main
-T-1, T-2, T-3, T-4, T-5, T-5b (ingest fix), T-6, T-7, T-7L (classifier v1/v2 + endpoint), T-7L2 (input validation, champion v6), T-8, T-9, T-10, T-11.
+T-1, T-2, T-3, T-4, T-5, T-5b (ingest fix), T-6, T-7, T-7L (classifier v1/v2 + endpoint), T-7L2 (input validation, champion v6), T-8, T-9, T-10, T-11, T-12 (b8aefb6).
 Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (live-only).
 
 ## In progress
-- **T-12** (external agent intake + passport), round 3 of 3, worktree `.worktrees/T-12`, branch `task/T-12`.
-  - Backend is done and reviewed: SSRF guard with a pinned IP and non-global addresses blocked; 5 s total deadline; JWS verify.
-  - Round-3 builder is rebasing onto main and then fixing UI items: human-readable status, a card-asserted identity panel for external agents, `data-signature` with a warning style for invalid signatures, user-facing error text, styled inputs, and blocking `::/96`.
-  - Round-3 UI test baseline: 14f40d6, the pre-rebase commit. T-12's own test diff before the rebase is saved in build/review/T-12-tests-prerebase.diff. After the rebase, compare it with `git diff $(git merge-base origin/main origin/task/T-12) origin/task/T-12 -- tests/`.
-  - Next steps:
-    1. ui-tester runs the full e2e suite on T-12.
-    2. visual-reviewer and code-reviewer run.
-    3. Merge. Post-merge tests: backend plus the full e2e suite (end of Wave 6).
-  - If round 3 is not green, stop and ask Nick (3-round rule).
+- **T-12** merged (b8aefb6). Post-merge backend run and end-of-wave e2e run (QA dir wave6-main) were in progress at 19:xx.
+- **T-14** (mocks + local hosting): tests being written in .worktrees/T-14 (branch task/T-14).
 
 ## Next
 - **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
