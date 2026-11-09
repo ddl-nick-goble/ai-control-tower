@@ -17,6 +17,24 @@ def load(name):
     return json.loads((RUNS / f"{name}.json").read_text())
 
 
+def fresh(payload):
+    """Rewrite a fixture run into a genuinely new run (new traceId/spanIds, parents kept consistent)."""
+    import copy
+    import secrets
+    p = copy.deepcopy(payload)
+    spans = all_spans(p)
+    tmap, smap = {}, {}
+    for s in spans:
+        tmap.setdefault(s["traceId"], secrets.token_hex(16))
+        smap[s["spanId"]] = secrets.token_hex(8)
+    for s in spans:
+        s["traceId"] = tmap[s["traceId"]]
+        s["spanId"] = smap[s["spanId"]]
+        if s.get("parentSpanId"):
+            s["parentSpanId"] = smap.get(s["parentSpanId"], s["parentSpanId"])
+    return p
+
+
 def all_spans(payload):
     return [s for rs in payload["resourceSpans"] for ss in rs["scopeSpans"] for s in ss["spans"]]
 
@@ -114,7 +132,7 @@ def test_ac4_every_fixture_run_events_carry_matched_agent(client, name):
 @pytest.mark.parametrize("name", ["weekend-drift", "otel-genai-kyc-refresh", "mlflow-liquidity-forecast"])
 def test_ac4_split_batches_children_first_then_agent_span(client, name):
     _intake()
-    p = load(name)
+    p = fresh(load(name))
     spans = all_spans(p)
     carriers = [s for s in spans if attr(s, "gen_ai.agent.id")]
     children = [s for s in spans if not attr(s, "gen_ai.agent.id")]
@@ -175,7 +193,7 @@ def test_ac4_split_batch_unmatched_agent_relinks_to_shadow(client):
 
 def test_ac4_per_agent_event_counts_reflect_all_spans(client):
     _intake()
-    drift, normal = load("weekend-drift"), load("otel-genai-treasury-sweep-normal")
+    drift, normal = fresh(load("weekend-drift")), fresh(load("otel-genai-treasury-sweep-normal"))
     act = agent_for(client, native_of(drift))
     assert native_of(normal) == native_of(drift)
     base = q(client, "select count(*) c from events where agent_id = ?", (act,))[0]["c"]
