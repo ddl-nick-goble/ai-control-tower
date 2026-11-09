@@ -1,0 +1,88 @@
+{
+  "name": "Meridian Corp Treasury Bot",
+  "description": "Client-side treasury agent operated by Meridian Industrial Corp. Requests balances, initiates payment instructions and reconciles statements with partner banks.",
+  "version": "2.3.1",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8765/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "http://localhost:8765/a2a/rest",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "provider": {
+    "organization": "Meridian Industrial Corp",
+    "url": "https://treasury.meridian-corp.example.com"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false
+  },
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "application/json"
+  ],
+  "securitySchemes": {
+    "bearer": {
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "JWT",
+        "description": "Bearer token issued to the client."
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "bearer": {
+          "list": []
+        }
+      }
+    }
+  ],
+  "skills": [
+    {
+      "id": "request-balance",
+      "name": "Request account balance",
+      "description": "Requests current balances for the client's accounts at the bank.",
+      "tags": [
+        "balance",
+        "treasury"
+      ],
+      "examples": [
+        "What is our USD operating balance?"
+      ]
+    },
+    {
+      "id": "initiate-payment",
+      "name": "Initiate payment instruction",
+      "description": "Submits a payment instruction for approval and release.",
+      "tags": [
+        "payments",
+        "wire"
+      ]
+    },
+    {
+      "id": "reconcile-statement",
+      "name": "Reconcile statement",
+      "description": "Reconciles bank statement lines against the client's ledger.",
+      "tags": [
+        "reconciliation",
+        "statements"
+      ]
+    }
+  ],
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpPU0UiLCJraWQiOiJhY3QtZml4dHVyZS1rZXktMSJ9",
+      "signature": "hR85Mhgz1DGQ4C_Qyh2JiXE-89sFvDDbCDqkRBhkjZ38br_v2gcNLwloqRrJzUFAQaxvA0rsFyfco6H82v2NcQ"
+    }
+  ]
+}

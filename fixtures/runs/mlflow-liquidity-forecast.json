@@ -1,0 +1,227 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "liquidity-forecast-agent"
+            }
+          },
+          {
+            "key": "cloud.platform",
+            "value": {
+              "stringValue": "databricks"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "mlflow",
+            "version": "1.0.0"
+          },
+          "spans": [
+            {
+              "traceId": "a7196b50ac2f86702824c1c099724caf",
+              "spanId": "4941d4072014b3ce",
+              "name": "liquidity-forecast-agent",
+              "kind": 1,
+              "startTimeUnixNano": "1793687400000000000",
+              "endTimeUnixNano": "1793687415000000000",
+              "attributes": [
+                {
+                  "key": "mlflow.spanType",
+                  "value": {
+                    "stringValue": "AGENT"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.id",
+                  "value": {
+                    "stringValue": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51"
+                  }
+                },
+                {
+                  "key": "mlflow.traceRequestId",
+                  "value": {
+                    "stringValue": "tr-a7196b50ac2f8670"
+                  }
+                },
+                {
+                  "key": "mlflow.spanInputs",
+                  "value": {
+                    "stringValue": "{\"horizon_days\": 30}"
+                  }
+                },
+                {
+                  "key": "mlflow.spanOutputs",
+                  "value": {
+                    "stringValue": "{\"forecast_id\": \"F-9021\"}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "a7196b50ac2f86702824c1c099724caf",
+              "spanId": "107f80e222f82876",
+              "name": "query_cash_flows",
+              "kind": 1,
+              "startTimeUnixNano": "1793687401000000000",
+              "endTimeUnixNano": "1793687401900000000",
+              "attributes": [
+                {
+                  "key": "mlflow.spanType",
+                  "value": {
+                    "stringValue": "TOOL"
+                  }
+                },
+                {
+                  "key": "mlflow.traceRequestId",
+                  "value": {
+                    "stringValue": "tr-a7196b50ac2f8670"
+                  }
+                },
+                {
+                  "key": "mlflow.spanInputs",
+                  "value": {
+                    "stringValue": "{\"horizon_days\": 30}"
+                  }
+                },
+                {
+                  "key": "mlflow.spanOutputs",
+                  "value": {
+                    "stringValue": "{\"rows\": 4210}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "4941d4072014b3ce"
+            },
+            {
+              "traceId": "a7196b50ac2f86702824c1c099724caf",
+              "spanId": "7efc2f91624a8940",
+              "name": "run_forecast_model",
+              "kind": 1,
+              "startTimeUnixNano": "1793687404000000000",
+              "endTimeUnixNano": "1793687404900000000",
+              "attributes": [
+                {
+                  "key": "mlflow.spanType",
+                  "value": {
+                    "stringValue": "TOOL"
+                  }
+                },
+                {
+                  "key": "mlflow.traceRequestId",
+                  "value": {
+                    "stringValue": "tr-a7196b50ac2f8670"
+                  }
+                },
+                {
+                  "key": "mlflow.spanInputs",
+                  "value": {
+                    "stringValue": "{\"model\": \"arima_v4\"}"
+                  }
+                },
+                {
+                  "key": "mlflow.spanOutputs",
+                  "value": {
+                    "stringValue": "{\"mape\": 0.031}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "4941d4072014b3ce"
+            },
+            {
+              "traceId": "a7196b50ac2f86702824c1c099724caf",
+              "spanId": "f1f836f99eee3692",
+              "name": "publish_forecast",
+              "kind": 1,
+              "startTimeUnixNano": "1793687407000000000",
+              "endTimeUnixNano": "1793687407900000000",
+              "attributes": [
+                {
+                  "key": "mlflow.spanType",
+                  "value": {
+                    "stringValue": "TOOL"
+                  }
+                },
+                {
+                  "key": "mlflow.traceRequestId",
+                  "value": {
+                    "stringValue": "tr-a7196b50ac2f8670"
+                  }
+                },
+                {
+                  "key": "mlflow.spanInputs",
+                  "value": {
+                    "stringValue": "{\"forecast_id\": \"F-9021\"}"
+                  }
+                },
+                {
+                  "key": "mlflow.spanOutputs",
+                  "value": {
+                    "stringValue": "{\"ok\": true}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "4941d4072014b3ce"
+            },
+            {
+              "traceId": "a7196b50ac2f86702824c1c099724caf",
+              "spanId": "f09e2e8c662248b4",
+              "name": "ChatModel",
+              "kind": 3,
+              "startTimeUnixNano": "1793687410000000000",
+              "endTimeUnixNano": "1793687411200000000",
+              "attributes": [
+                {
+                  "key": "mlflow.spanType",
+                  "value": {
+                    "stringValue": "CHAT_MODEL"
+                  }
+                },
+                {
+                  "key": "mlflow.traceRequestId",
+                  "value": {
+                    "stringValue": "tr-a7196b50ac2f8670"
+                  }
+                },
+                {
+                  "key": "mlflow.spanInputs",
+                  "value": {
+                    "stringValue": "{\"messages\": [{\"role\": \"user\", \"content\": \"Explain forecast\"}]}"
+                  }
+                },
+                {
+                  "key": "mlflow.spanOutputs",
+                  "value": {
+                    "stringValue": "{\"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"30-day outflow expected\"}}]}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "4941d4072014b3ce"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

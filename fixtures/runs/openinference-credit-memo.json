@@ -1,0 +1,257 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "credit-memo-drafter"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "openinference"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "openinference.instrumentation.langchain",
+            "version": "1.0.0"
+          },
+          "spans": [
+            {
+              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
+              "spanId": "815d2802827283e0",
+              "name": "credit-memo-drafter",
+              "kind": 1,
+              "startTimeUnixNano": "1793872800000000000",
+              "endTimeUnixNano": "1793872820000000000",
+              "attributes": [
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "stringValue": "AGENT"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.id",
+                  "value": {
+                    "stringValue": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11"
+                  }
+                },
+                {
+                  "key": "agent.name",
+                  "value": {
+                    "stringValue": "credit-memo-drafter"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "stringValue": "Draft memo for Alder Manufacturing"
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "stringValue": "Memo draft M-2210 created"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
+              "spanId": "ad84173581569969",
+              "name": "get_financials",
+              "kind": 1,
+              "startTimeUnixNano": "1793872801000000000",
+              "endTimeUnixNano": "1793872801700000000",
+              "attributes": [
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "stringValue": "TOOL"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "get_financials"
+                  }
+                },
+                {
+                  "key": "tool.parameters",
+                  "value": {
+                    "stringValue": "{\"customer\": \"Alder Manufacturing\", \"year\": 2025}"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "stringValue": "{\"customer\": \"Alder Manufacturing\", \"year\": 2025}"
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "stringValue": "{\"revenue\": 48200000}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "815d2802827283e0"
+            },
+            {
+              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
+              "spanId": "e58b081006f7e3df",
+              "name": "get_rating",
+              "kind": 1,
+              "startTimeUnixNano": "1793872804000000000",
+              "endTimeUnixNano": "1793872804700000000",
+              "attributes": [
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "stringValue": "TOOL"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "get_rating"
+                  }
+                },
+                {
+                  "key": "tool.parameters",
+                  "value": {
+                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "stringValue": "{\"rating\": \"BBB\"}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "815d2802827283e0"
+            },
+            {
+              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
+              "spanId": "c967a64cb14028d5",
+              "name": "draft_memo",
+              "kind": 1,
+              "startTimeUnixNano": "1793872807000000000",
+              "endTimeUnixNano": "1793872807700000000",
+              "attributes": [
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "stringValue": "TOOL"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "draft_memo"
+                  }
+                },
+                {
+                  "key": "tool.parameters",
+                  "value": {
+                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "stringValue": "{\"memo_id\": \"M-2210\"}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "815d2802827283e0"
+            },
+            {
+              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
+              "spanId": "12c9791e558e08ba",
+              "name": "ChatCompletion",
+              "kind": 3,
+              "startTimeUnixNano": "1793872810000000000",
+              "endTimeUnixNano": "1793872811500000000",
+              "attributes": [
+                {
+                  "key": "openinference.span.kind",
+                  "value": {
+                    "stringValue": "LLM"
+                  }
+                },
+                {
+                  "key": "llm.model_name",
+                  "value": {
+                    "stringValue": "gpt-4o"
+                  }
+                },
+                {
+                  "key": "llm.token_count.prompt",
+                  "value": {
+                    "intValue": "800"
+                  }
+                },
+                {
+                  "key": "llm.token_count.completion",
+                  "value": {
+                    "intValue": "220"
+                  }
+                },
+                {
+                  "key": "input.value",
+                  "value": {
+                    "stringValue": "Summarise financials"
+                  }
+                },
+                {
+                  "key": "output.value",
+                  "value": {
+                    "stringValue": "Revenue 48.2M, rating BBB"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "815d2802827283e0"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
