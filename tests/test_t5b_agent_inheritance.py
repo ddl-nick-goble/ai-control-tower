@@ -121,12 +121,22 @@ def test_ac4_split_batches_children_first_then_agent_span(client, name):
     assert carriers and children
     act = agent_for(client, native_of(p))
     post(client, subset(p, children))
+    first = {e["span_id"]: (e["event"], e["hash"], e["prev_hash"])
+             for e in ev(client, p, "agent_id, event, hash, prev_hash")}
+    assert len(first) == len(children)
     post(client, subset(p, carriers))
-    evs = ev(client, p)
+    evs = ev(client, p, "agent_id, event, hash, prev_hash, run_id")
     assert len(evs) == len(spans)
+    # the link column is re-pointed; append-only canonical events and hashes are untouched
     assert {e["agent_id"] for e in evs} == {act}, {e["agent_id"] for e in evs}
-    assert {json.loads(e["event"])["agent_id"] for e in evs} == {act}
+    for e in evs:
+        if e["span_id"] in first:
+            assert (e["event"], e["hash"], e["prev_hash"]) == first[e["span_id"]]
     assert_verify(client)
+    for run_id in {e["run_id"] for e in evs}:
+        r = client.get(f"/api/runs/{run_id}/timeline")
+        assert r.status_code == 200
+        assert r.json()["agent_id"] == act
 
 
 def test_ac4_unmatched_agent_run_links_all_spans_to_one_shadow_placeholder(client):
@@ -148,12 +158,18 @@ def test_ac4_split_batch_unmatched_agent_relinks_to_shadow(client):
     p = load("weekend-drift")
     spans = all_spans(p)
     post(client, subset(p, [s for s in spans if not attr(s, "gen_ai.agent.id")]))
+    first = {e["span_id"]: (e["event"], e["hash"], e["prev_hash"])
+             for e in ev(client, p, "agent_id, event, hash, prev_hash")}
+    assert first
     post(client, subset(p, [s for s in spans if attr(s, "gen_ai.agent.id")]))
     shadow = q(client, "select id from agents where status = 'shadow'")
     assert len(shadow) == 1
-    evs = ev(client, p)
+    evs = ev(client, p, "agent_id, event, hash, prev_hash")
     assert len(evs) == 40
     assert {e["agent_id"] for e in evs} == {shadow[0]["id"]}, {e["agent_id"] for e in evs}
+    for e in evs:
+        if e["span_id"] in first:
+            assert (e["event"], e["hash"], e["prev_hash"]) == first[e["span_id"]]
     assert_verify(client)
 
 
