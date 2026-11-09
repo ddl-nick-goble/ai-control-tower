@@ -495,3 +495,70 @@ def test_ac1_intake_main_exits_nonzero_when_adapter_fails(client, monkeypatch):
             runpy.run_path(str(ROOT / "jobs" / "intake.py"), run_name="__main__")
         rc = ei.value.code
     assert rc not in (None, 0)
+
+
+# ---------------------------------------------------------------- round 3 contracts
+
+def test_ac1_domino_fails_closed_without_project_id(env, monkeypatch):
+    monkeypatch.delenv("DOMINO_PROJECT_ID", raising=False)
+    monkeypatch.delenv("ACT_DOMINO_PROJECT_ID", raising=False)
+    monkeypatch.delenv("ACT_DOMINO_SCOPE", raising=False)
+    with pytest.raises(Exception):
+        _domino_agents()
+    assert _apps_calls() == []
+
+
+def test_ac1_domino_fails_closed_run_intake_reports_error(client, monkeypatch):
+    monkeypatch.delenv("DOMINO_PROJECT_ID", raising=False)
+    monkeypatch.delenv("ACT_DOMINO_PROJECT_ID", raising=False)
+    out = _intake()
+    assert any("domino" in str(e).lower() for e in out["errors"]), out
+    assert _apps_calls() == []
+
+
+def test_ac1_domino_drops_items_with_unconfirmed_project(env, monkeypatch):
+    import requests
+    mine = _item("dom-confirmed", "confirmed", "p", "o")
+    mine["projectId"] = "proj-123"
+    unknown = _item("dom-unknown", "unknown-project", "p", "o")
+    unknown.pop("projectId", None)
+    unknown.pop("project", None)
+    base = _fake_http
+
+    def fake(url, *a, **k):
+        if str(url).endswith("/api/apps/v1/apps"):
+            STATE.setdefault("calls", []).append(dict(k.get("params") or {}))
+            return _Resp({"items": [mine, unknown]})
+        return base(url, *a, **k)
+    monkeypatch.setattr(requests, "get", fake)
+    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: fake(u, **k))
+    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: fake(u, **k))
+    monkeypatch.setattr(requests.Session, "get", lambda self, u, *a, **k: fake(u, **k))
+    ids = [a.native_id for a in _domino_agents()]
+    assert ids == ["dom-confirmed"], ids
+
+
+@pytest.mark.parametrize("key,bad", [("models", ["not-a-dict"]), ("mcp_servers", [42])])
+def test_ac1_intake_route_malformed_dependencies_422(client, key, bad):
+    from backend import db
+    raw = _raw_aws("treasury-sweep-agent")
+    raw["dependencies"] = {key: bad}
+    before = len(_rows(db.agents))
+    r = _post_raw(client, [raw])
+    assert r.status_code == 422, r.text
+    assert len(_rows(db.agents)) == before
+
+
+def test_ac1_inprocess_bad_record_does_not_block_valid_ones(client, monkeypatch):
+    import dataclasses
+    from backend import db
+    aws = importlib.import_module("adapters.aws")
+    good = aws.AwsAdapter().list_agents()[0]
+    bad = dataclasses.replace(aws.AwsAdapter().list_agents()[1], dependencies={"models": ["x"]})
+    monkeypatch.setattr(aws.AwsAdapter, "list_agents", lambda self: [good, bad])
+    monkeypatch.setenv("ACT_INTAKE_INPROCESS", "1")
+    out = _intake()  # must not raise
+    assert out["errors"], out
+    names = {r._mapping["name"] for r in _rows(db.agents)}
+    assert good.name in names
+    assert bad.name not in names
