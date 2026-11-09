@@ -158,12 +158,14 @@ def _audit(conn, action, target, detail, actor=None):
 def apply_record(conn, rec: dict, actor=None) -> str:
     """Upsert a normalized record. Returns 'created' | 'updated' | 'retiered'. Re-tiers on manifest change."""
     aid, ts = rec["id"], rec["last_seen"]
+    actor = actor or default_actor()
     row = conn.execute(select(db.agents).where(db.agents.c.id == aid)).first()
     if row is None:
         conn.execute(insert(db.agents).values(
             id=aid, source_platform=rec["source_platform"], native_id=rec["source_native_id"], name=rec["name"],
             owner=rec["owner"], tier=str(rec["tier"]), tier_reasoning=rec["tier_reasoning"], criteria=rec["criteria"],
-            status=rec["status"], last_seen=ts, record=rec))
+            status=rec["status"], last_seen=ts, record=rec,
+            registered_by=actor[0], registered_by_username=actor[1]))
         conn.execute(insert(db.manifests).values(agent_id=aid, version=rec["version"], content=rec["manifest"], created_at=ts))
         result = "created"
     else:
