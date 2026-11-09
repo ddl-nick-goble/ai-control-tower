@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 
-from .. import db, evidence, governance
+from .. import db, governance
 from ..domino_identity import User, require_user
 from ..normalize import _audit
 
@@ -53,6 +53,8 @@ def post_validation(agent_id: str, body: dict = Body(...), user: User = Depends(
     n_prompts, reps = _count(body, "n_prompts", True), _count(body, "reps", True)
     if n_prompts < MIN_PROMPTS or reps < MIN_REPS:
         raise HTTPException(422, f"validation needs at least {MIN_PROMPTS} prompts and {MIN_REPS} repetitions")
+    if n_prompts > 1000 or reps > 50:
+        raise HTTPException(422, "n_prompts must be at most 1000 and reps at most 50")
     if not n["p5"] <= n["mean"] <= n["p95"]:
         raise HTTPException(422, "distribution must satisfy p5 <= mean <= p95")
     if not isinstance(body.get("judge_alias"), str) or not body["judge_alias"]:
@@ -69,6 +71,10 @@ def post_validation(agent_id: str, body: dict = Body(...), user: User = Depends(
         if not isinstance(sc, list) or len(sc) > MAX_SCORES:
             raise HTTPException(422, f"scores must be a list of at most {MAX_SCORES} numbers")
         detail["scores"] = [_num(x, "scores[]") for x in sc]
+        if len(sc) != n_prompts * reps:
+            raise HTTPException(422, "scores must contain n_prompts * reps values")
+        if abs(n["mean"] - sum(detail["scores"]) / len(sc)) > 1e-6:
+            raise HTTPException(422, "mean does not match the mean of scores")
     if body.get("mlflow_run_ids") is not None:
         ids = body["mlflow_run_ids"]
         if not isinstance(ids, list) or len(ids) > 1000 or not all(isinstance(x, str) and len(x) <= 200 for x in ids):

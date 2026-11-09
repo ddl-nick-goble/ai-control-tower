@@ -132,15 +132,13 @@ def run_validation(prompts, reps=5, agent_run=None, judge=None, mlflow_client=No
                     log.warning("prompt %s rep %s failed: %s", p.get("id"), rep, e)
                     err = True
                     j = {"score": 0.0, "model": None, "valid": False, "raw": f"error: {e}"[:300]}
+                raw_s = j.get("score")
+                if isinstance(raw_s, bool) or not isinstance(raw_s, (int, float)) or raw_s != raw_s:
+                    raw_s, j["valid"] = 0.0, False
                 if err:
                     error_count += 1
                 elif not j.get("valid", True):
                     invalid_count += 1
-                raw_s = j.get("score")
-                if isinstance(raw_s, bool) or not isinstance(raw_s, (int, float)) or raw_s != raw_s:
-                    raw_s, j["valid"] = 0.0, False
-                    if not err:
-                        invalid_count += 1
                 j["score"] = raw_s
                 s = min(1.0, max(0.0, float(j["score"])))
                 model_id = model_id or j.get("model")
@@ -201,9 +199,9 @@ def main() -> int:
         res = run_validation(load_prompts(), reps=int(os.environ.get("VALIDATE_REPS", "5")),
                              threshold=float(os.environ.get("VALIDATE_THRESHOLD", "0.7")))
         total = max(res["n_prompts"] * res["reps"], 1)
-        if res["error_count"] / total > MAX_ERROR_RATE:
-            print(f"validation aborted, not posted: {res['error_count']} of {total} calls failed "
-                  f"(limit {MAX_ERROR_RATE:.0%}); {res['invalid_count']} unparseable judge replies. "
+        if (res["error_count"] + res["invalid_count"]) / total > MAX_ERROR_RATE:
+            print(f"validation aborted, not posted: {res['error_count']} failed calls and "
+                  f"{res['invalid_count']} unparseable judge replies out of {total} (limit {MAX_ERROR_RATE:.0%}). "
                   f"Check the agent and the LLM gateway, then rerun.", file=sys.stderr)
             return 3
         post_validation(agent_id, res)
