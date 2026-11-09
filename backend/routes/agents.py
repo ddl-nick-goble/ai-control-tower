@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 
 from .. import db
 from ..domino_identity import User, require_user
-from ..normalize import _audit, apply_record
+from ..normalize import _audit, apply_record, from_source, normalize
 from ..tiering import TieringInputRejected, score_tier
 
 router = APIRouter()
@@ -71,10 +71,19 @@ def set_tier(agent_id: str, body: dict = Body(...), user: User = Depends(require
 
 
 @router.post("/api/agents/intake")
-def post_intake(body: dict = Body(...), user: User = Depends(require_user)):
-    """Upsert normalized agent records produced by jobs/intake.py when it runs outside this process."""
+def post_intake(body=Body(...), user: User = Depends(require_user)):
+    """Upsert raw source agents; id, tier, criteria and origin are computed here, never taken from the client."""
+    raws = None
+    if isinstance(body, dict):
+        raws = body.get("agents") if body.get("agents") is not None else body.get("records")
+    if not isinstance(raws, list):
+        raise HTTPException(422, "body must be {\"agents\": [source agents]}")
+    try:
+        recs = [normalize(from_source(r)) for r in raws]
+    except (ValueError, TypeError, AttributeError) as e:
+        raise HTTPException(422, str(e))
     counts = {"created": 0, "updated": 0, "retiered": 0}
     with db.engine.begin() as cx:
-        for rec in body.get("records", []):
-            counts[apply_record(cx, rec)] += 1
+        for rec in recs:
+            counts[apply_record(cx, rec, actor=(user.user_id, user.username))] += 1
     return counts

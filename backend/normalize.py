@@ -1,5 +1,6 @@
 """SourceAgent -> Agent Record (A2A Agent Card fields, OASF tags, bank fields); tier inference; upsert."""
 import hashlib
+import os
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, insert, select, update
@@ -72,7 +73,7 @@ def _identity(i):
     if not i or i.get("type") in (None, "none"):
         return {"type": "none", "distinct": False}
     subject = i.get("subject") or i.get("principal") or i.get("principalId") or i.get("clientId") or "unknown"
-    out = {k: v for k, v in i.items() if k != "principal"}
+    out = dict(i)
     out.update(subject=str(subject), distinct=bool(i.get("distinct", True)))
     return out
 
@@ -112,12 +113,44 @@ def normalize(sa, tier_override=None) -> dict:
     return rec
 
 
-def _audit(conn, action, target, detail, actor=("system:intake", "intake")):
+def default_actor():
+    """In-process caller: the starting Domino user; system:intake only when unknown."""
+    u = os.environ.get("DOMINO_STARTING_USERNAME")
+    return (u, u) if u else ("system:intake", "intake")
+
+
+def from_source(d) -> "SourceAgent":
+    """Build a SourceAgent from a raw dict. Server-owned fields are ignored. Raises ValueError if invalid."""
+    import dataclasses
+    from adapters.base import SourceAgent
+    if not isinstance(d, dict):
+        raise ValueError("agent must be an object")
+    for k in ("native_id", "platform", "name"):
+        if not isinstance(d.get(k), str) or not d[k].strip():
+            raise ValueError(f"missing or invalid source field: {k}")
+    names = {f.name for f in dataclasses.fields(SourceAgent)} - {"id", "tier", "registered_by"}
+    kw = {k: v for k, v in d.items() if k in names and k != "status"}
+    for k, t in (("tools", list), ("data_scopes", list), ("systems", list), ("versions", list),
+                 ("value_limits", dict), ("criteria", dict), ("identity", dict), ("dependencies", dict),
+                 ("extra", dict)):
+        if k in kw and not isinstance(kw[k], t):
+            raise ValueError(f"invalid source field: {k}")
+    if any(not isinstance(v, dict) for v in kw.get("versions", [])):
+        raise ValueError("invalid source field: versions")
+    if any(not isinstance(v, str) for k in ("tools", "data_scopes", "systems") for v in kw.get(k, [])):
+        raise ValueError("invalid source field: tools/data_scopes/systems")
+    if d.get("status") is not None:
+        kw["status"] = str(d["status"])
+    return SourceAgent(**kw)
+
+
+def _audit(conn, action, target, detail, actor=None):
+    actor = actor or default_actor()
     conn.execute(insert(db.audit_events).values(
         actor_user_id=actor[0], actor_username=actor[1], action=action, target=target, ts=now_iso(), detail=detail))
 
 
-def apply_record(conn, rec: dict) -> str:
+def apply_record(conn, rec: dict, actor=None) -> str:
     """Upsert a normalized record. Returns 'created' | 'updated' | 'retiered'. Re-tiers on manifest change."""
     aid, ts = rec["id"], rec["last_seen"]
     row = conn.execute(select(db.agents).where(db.agents.c.id == aid)).first()
@@ -136,12 +169,12 @@ def apply_record(conn, rec: dict) -> str:
         tier, reasoning, criteria = row.tier, row.tier_reasoning, row.criteria
         result = "updated"
         if changed or tier is None:
-            _audit(conn, "manifest-change", aid, {"before": old.get("manifest"), "after": rec["manifest"]})
+            _audit(conn, "manifest-change", aid, {"before": old.get("manifest"), "after": rec["manifest"]}, actor)
             conn.execute(insert(db.manifests).values(agent_id=aid, version=rec["version"], content=rec["manifest"], created_at=ts))
             tier, reasoning, criteria = str(rec["tier"]), rec["tier_reasoning"], rec["criteria"]
+            _audit(conn, "retier", aid, {"from": row.tier, "to": tier, "reason": "manifest or permissions changed",
+                                         "reasoning": reasoning}, actor)
             if str(row.tier) != tier:
-                _audit(conn, "retier", aid, {"from": row.tier, "to": tier, "reason": "manifest or permissions changed",
-                                             "reasoning": reasoning})
                 result = "retiered"
             new.update(tier=int(tier), tier_reasoning=reasoning, criteria=criteria)
         status = row.status if row.status not in (None, "shadow") else rec["status"]

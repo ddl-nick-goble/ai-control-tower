@@ -4,6 +4,7 @@ Run as a Domino job (`python jobs/intake.py`). With ACT_URL set it calls the ACT
 (bearer token from the in-run token endpoint); otherwise it writes to the DB in-process.
 Set ACT_INTAKE_INPROCESS=1 to force in-process.
 """
+import dataclasses
 import json
 import logging
 import os
@@ -44,10 +45,12 @@ def _http():
 
 def run_intake() -> dict:
     from backend.normalize import normalize
-    records, errors = [], []
+    records, raws, errors = [], [], []
     for ad in _adapters():
         try:
-            records += [normalize(sa) for sa in ad.list_agents()]
+            sas = ad.list_agents()
+            records += [normalize(sa) for sa in sas]
+            raws += [json.loads(json.dumps(dataclasses.asdict(sa), default=str)) for sa in sas]
         except Exception as e:
             log.exception("adapter %s failed", ad.platform)
             errors.append(f"{ad.platform}: {e}")
@@ -72,7 +75,7 @@ def run_intake() -> dict:
                 errors.append(f"{p.name}: {e}")
     else:
         requests, base, headers = _http()
-        r = requests.post(f"{base}/api/agents/intake", json={"records": records}, headers=headers, timeout=60)
+        r = requests.post(f"{base}/api/agents/intake", json={"agents": raws}, headers=headers, timeout=60)
         r.raise_for_status()
         counts = r.json()
         for p in _run_files():
@@ -85,8 +88,12 @@ def run_intake() -> dict:
     return {"agents": len(records), **counts, "runs_posted": runs_posted, "errors": errors}
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+def main() -> int:
     out = run_intake()
     print(json.dumps(out, indent=2))
-    sys.exit(1 if out["errors"] and not out["agents"] else 0)
+    return 1 if out["errors"] else 0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    sys.exit(main())
