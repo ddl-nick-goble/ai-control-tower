@@ -1,0 +1,289 @@
+diff --git a/fixtures/README.md b/fixtures/README.md
+index 44e68ae..347034e 100644
+--- a/fixtures/README.md
++++ b/fixtures/README.md
+@@ -23,3 +23,22 @@ platform's free-form slot. Exactly one agent per platform has `identity.type ==
+ treasury-sweep-agent manifest: tools get_balance, sweep_plan, get_fx_rate, transfer_funds, post_journal_entry (no list_credentials);
+ `value_limits.transfer_funds = {amount: 250000, currency: USD}`; criteria autonomous / moves_money (Tier 1).
+ `gen_ai.agent.id` in OTel runs is the AWS `agentRuntimeId`.
++
++## Matching rule and synthetic extensions
++
++Matching rule (all dialects): `gen_ai.agent.id` on the agent-level span equals the platform-native id of the agent
++(AWS `agentRuntimeId`, Google service/agent engine id, Microsoft package `id`, Databricks `agent_service_id`).
++The OpenInference and MLflow runs also keep their dialect-native name attributes (`agent.name`, span name) next to it.
++`openinference-credit-memo` carries the Microsoft package id; `mlflow-liquidity-forecast` carries the Databricks agent service id.
++
++Synthetic fixture extensions (not real platform fields):
++- `identity` (all platforms) stands in for the real identity objects: Microsoft Entra `agentIdentity`, AgentCore workload identity,
++  Google agent identity (IAM principal), Databricks service principal.
++- AWS `metadata` stands in for real AgentCore resource tags / runtime metadata.
++- Microsoft `principalId` and Databricks `application_id` are canonical 8-4-4-4-12 UUIDs.
++
++## External card (A2A 1.0)
++
++`external/agent-card.json` is unsigned (default served). `external/agent-card-signed.json` is the same card plus a `signatures`
++entry (JWS ES256, protected header + signature over the base64url of the canonical JSON of the card without `signatures`),
++verifiable with `external/signing-key.pub.jwk.json`. `serve.py --signed` serves the signed card.
+diff --git a/fixtures/databricks/agent-services.json b/fixtures/databricks/agent-services.json
+index 352e8fb..c859866 100644
+--- a/fixtures/databricks/agent-services.json
++++ b/fixtures/databricks/agent-services.json
+@@ -15,7 +15,7 @@
+       "identity": {
+         "type": "service_principal",
+         "principal": "sp-liquidity-forecast",
+-        "application_id": "15d4c3b2a1f0-e9c8-d6a4-f5b3-4c2d1e7a",
++        "application_id": "15d4c3b2-a1f0-4e9c-86a4-f5b34c2d1e7a",
+         "distinct": true
+       },
+       "tags": [
+diff --git a/fixtures/external/agent-card-signed.json b/fixtures/external/agent-card-signed.json
+new file mode 100644
+index 0000000..4dbfaac
+--- /dev/null
++++ b/fixtures/external/agent-card-signed.json
+@@ -0,0 +1,88 @@
++{
++  "name": "Meridian Corp Treasury Bot",
++  "description": "Client-side treasury agent operated by Meridian Industrial Corp. Requests balances, initiates payment instructions and reconciles statements with partner banks.",
++  "version": "2.3.1",
++  "supportedInterfaces": [
++    {
++      "url": "http://localhost:8765/a2a",
++      "protocolBinding": "JSONRPC",
++      "protocolVersion": "1.0"
++    },
++    {
++      "url": "http://localhost:8765/a2a/rest",
++      "protocolBinding": "HTTP+JSON",
++      "protocolVersion": "1.0"
++    }
++  ],
++  "provider": {
++    "organization": "Meridian Industrial Corp",
++    "url": "https://treasury.meridian-corp.example.com"
++  },
++  "capabilities": {
++    "streaming": true,
++    "pushNotifications": false
++  },
++  "defaultInputModes": [
++    "text/plain",
++    "application/json"
++  ],
++  "defaultOutputModes": [
++    "application/json"
++  ],
++  "securitySchemes": {
++    "bearer": {
++      "httpAuthSecurityScheme": {
++        "scheme": "Bearer",
++        "bearerFormat": "JWT",
++        "description": "Bearer token issued to the client."
++      }
++    }
++  },
++  "securityRequirements": [
++    {
++      "schemes": {
++        "bearer": {
++          "list": []
++        }
++      }
++    }
++  ],
++  "skills": [
++    {
++      "id": "request-balance",
++      "name": "Request account balance",
++      "description": "Requests current balances for the client's accounts at the bank.",
++      "tags": [
++        "balance",
++        "treasury"
++      ],
++      "examples": [
++        "What is our USD operating balance?"
++      ]
++    },
++    {
++      "id": "initiate-payment",
++      "name": "Initiate payment instruction",
++      "description": "Submits a payment instruction for approval and release.",
++      "tags": [
++        "payments",
++        "wire"
++      ]
++    },
++    {
++      "id": "reconcile-statement",
++      "name": "Reconcile statement",
++      "description": "Reconciles bank statement lines against the client's ledger.",
++      "tags": [
++        "reconciliation",
++        "statements"
++      ]
++    }
++  ],
++  "signatures": [
++    {
++      "protected": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpPU0UiLCJraWQiOiJhY3QtZml4dHVyZS1rZXktMSJ9",
++      "signature": "hR85Mhgz1DGQ4C_Qyh2JiXE-89sFvDDbCDqkRBhkjZ38br_v2gcNLwloqRrJzUFAQaxvA0rsFyfco6H82v2NcQ"
++    }
++  ]
++}
+diff --git a/fixtures/external/agent-card.json b/fixtures/external/agent-card.json
+index 4d1fd6c..cc9cdbe 100644
+--- a/fixtures/external/agent-card.json
++++ b/fixtures/external/agent-card.json
+@@ -1,18 +1,26 @@
+ {
+-  "protocolVersion": "1.0",
+   "name": "Meridian Corp Treasury Bot",
+   "description": "Client-side treasury agent operated by Meridian Industrial Corp. Requests balances, initiates payment instructions and reconciles statements with partner banks.",
+   "version": "2.3.1",
+-  "url": "http://localhost:8765/a2a",
+-  "preferredTransport": "JSONRPC",
++  "supportedInterfaces": [
++    {
++      "url": "http://localhost:8765/a2a",
++      "protocolBinding": "JSONRPC",
++      "protocolVersion": "1.0"
++    },
++    {
++      "url": "http://localhost:8765/a2a/rest",
++      "protocolBinding": "HTTP+JSON",
++      "protocolVersion": "1.0"
++    }
++  ],
+   "provider": {
+     "organization": "Meridian Industrial Corp",
+     "url": "https://treasury.meridian-corp.example.com"
+   },
+   "capabilities": {
+     "streaming": true,
+-    "pushNotifications": false,
+-    "stateTransitionHistory": false
++    "pushNotifications": false
+   },
+   "defaultInputModes": [
+     "text/plain",
+@@ -23,13 +31,20 @@
+   ],
+   "securitySchemes": {
+     "bearer": {
+-      "type": "http",
+-      "scheme": "bearer"
++      "httpAuthSecurityScheme": {
++        "scheme": "Bearer",
++        "bearerFormat": "JWT",
++        "description": "Bearer token issued to the client."
++      }
+     }
+   },
+-  "security": [
++  "securityRequirements": [
+     {
+-      "bearer": []
++      "schemes": {
++        "bearer": {
++          "list": []
++        }
++      }
+     }
+   ],
+   "skills": [
+diff --git a/fixtures/external/serve.py b/fixtures/external/serve.py
+index e50edb2..43f2878 100644
+--- a/fixtures/external/serve.py
++++ b/fixtures/external/serve.py
+@@ -4,7 +4,8 @@ import argparse
+ import http.server
+ from pathlib import Path
+ 
+-CARD = Path(__file__).resolve().parent / "agent-card.json"
++HERE = Path(__file__).resolve().parent
++CARD = HERE / "agent-card.json"
+ 
+ 
+ class Handler(http.server.BaseHTTPRequestHandler):
+@@ -26,5 +27,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
+ if __name__ == "__main__":
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--port", type=int, default=8765)
++    ap.add_argument("--signed", action="store_true", help="serve agent-card-signed.json")
+     args = ap.parse_args()
++    if args.signed:
++        CARD = HERE / "agent-card-signed.json"
+     http.server.ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+diff --git a/fixtures/external/signing-key.pub.jwk.json b/fixtures/external/signing-key.pub.jwk.json
+new file mode 100644
+index 0000000..a0b77a0
+--- /dev/null
++++ b/fixtures/external/signing-key.pub.jwk.json
+@@ -0,0 +1,9 @@
++{
++  "kty": "EC",
++  "crv": "P-256",
++  "x": "EZRmnfx-wSCN7n4HVE74EmguTc7drBe5NvljiJHX3rg",
++  "y": "-bnuN8NVWHfcbG8UjAtlVHA9l7NAkf7nMROQ4CqJjjg",
++  "kid": "act-fixture-key-1",
++  "alg": "ES256",
++  "use": "sig"
++}
+diff --git a/fixtures/microsoft/list-packages.json b/fixtures/microsoft/list-packages.json
+index bcfac46..e5e4268 100644
+--- a/fixtures/microsoft/list-packages.json
++++ b/fixtures/microsoft/list-packages.json
+@@ -19,7 +19,7 @@
+       "identity": {
+         "type": "managed_identity",
+         "clientId": "0c7d1e34-5a2b-4c88-b1f0-7e9a3d4c5b02",
+-        "principalId": "20b5c4d3a9e7-0f1b-88c4-b2a5-43e1d7c0",
++        "principalId": "20b5c4d3-a9e7-4f1b-88c4-b2a543e1d7c0",
+         "distinct": true
+       },
+       "customMetadata": {
+@@ -64,7 +64,7 @@
+       "identity": {
+         "type": "managed_identity",
+         "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
+-        "principalId": "31c6d5e4baf8-1a2a-99d4-c3b6-54f2e8d1",
++        "principalId": "31c6d5e4-baf8-4a2a-99d4-c3b654f2e8d1",
+         "distinct": true
+       },
+       "customMetadata": {
+diff --git a/fixtures/runs/mlflow-liquidity-forecast.json b/fixtures/runs/mlflow-liquidity-forecast.json
+index ba818be..174ebd0 100644
+--- a/fixtures/runs/mlflow-liquidity-forecast.json
++++ b/fixtures/runs/mlflow-liquidity-forecast.json
+@@ -38,6 +38,12 @@
+                     "stringValue": "AGENT"
+                   }
+                 },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51"
++                  }
++                },
+                 {
+                   "key": "mlflow.traceRequestId",
+                   "value": {
+diff --git a/fixtures/runs/openinference-credit-memo.json b/fixtures/runs/openinference-credit-memo.json
+index 8f42629..39d0f06 100644
+--- a/fixtures/runs/openinference-credit-memo.json
++++ b/fixtures/runs/openinference-credit-memo.json
+@@ -38,6 +38,12 @@
+                     "stringValue": "AGENT"
+                   }
+                 },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11"
++                  }
++                },
+                 {
+                   "key": "agent.name",
+                   "value": {

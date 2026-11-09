@@ -1,0 +1,4212 @@
+diff --git a/fixtures/README.md b/fixtures/README.md
+new file mode 100644
+index 0000000..347034e
+--- /dev/null
++++ b/fixtures/README.md
+@@ -0,0 +1,44 @@
++# ACT fixtures (T-3)
++
++Fixture feeds for AC-1 (11 platform agents; with one live Domino agent they make the fleet) and AC-12 (weekend drift).
++Each platform keeps its own envelope. Bank extras (owner, tools, data scopes, systems, value limits, criteria) sit in the
++platform's free-form slot. Exactly one agent per platform has `identity.type == "none"` (no distinct identity).
++
++| File | Source API shape | Count |
++|---|---|---|
++| aws/list-agent-runtimes.json | Bedrock AgentCore `ListAgentRuntimes` (`agentRuntimes[]`); extras in `tags`, `identity`, `metadata` | 3 (treasury-sweep-agent, kyc-refresh-agent, trade-break-triage; the last has no distinct identity) |
++| aws/list-discoverable-registry-records.json | Agent Registry `ListDiscoverableRegistryRecords` (`registryRecords[]`) | 3 records for the same agents |
++| google/agent-registry-services.json | Google Agent Registry `Service` resources (`services[]`, names `projects/.../locations/.../services/...`); extras in `labels`, `properties`, `identity` | 3 (payments-fraud-screener, collections-outreach-agent, regulatory-report-drafter; last has no identity) |
++| google/agent-registry-bindings.json | Agent Registry `Binding` resources, grouped by service name under `bindingsByService` | 3 |
++| microsoft/list-packages.json | Agent 365 Graph "List packages" (`@odata.context`, `value[]`); extras in `identity`, `customMetadata`, `owner` | 3 (relationship-manager-copilot, credit-memo-drafter, branch-ops-assistant; last has no identity) |
++| databricks/agent-services.json | Unity Catalog `/api/2.1/unity-catalog/agent-services` (`agent_services[]`); extras in `owner`, `tags`, `properties`, `identity` | 2 (liquidity-forecast-agent, model-risk-doc-agent; last has no identity) |
++| runs/otel-genai-kyc-refresh.json | OTLP/HTTP JSON, OTel GenAI dialect, in-manifest run | 8 spans |
++| runs/otel-genai-treasury-sweep-normal.json | OTel GenAI, in-manifest run (transfer_funds 180000 under the 250000 limit) | 8 spans |
++| runs/openinference-credit-memo.json | OTLP JSON, OpenInference dialect (AGENT/TOOL/LLM) | 5 spans |
++| runs/mlflow-liquidity-forecast.json | OTLP JSON, MLflow-exported dialect (AGENT/TOOL/CHAT_MODEL) | 5 spans |
++| runs/weekend-drift.json | AC-12: treasury-sweep-agent, OTel GenAI, Sat 2026-11-07 UTC. transfer_funds amount 4750000 at 02:14:00Z (limit 250000), one list_credentials call (not in manifest), rest in-manifest | 40 spans |
++| external/agent-card.json | A2A 1.0 Agent Card for a client-side treasury bot | 3 skills |
++| external/serve.py | stdlib server: `python3 serve.py --port 8765` serves `/.well-known/agent-card.json` on 0.0.0.0 | n/a |
++
++treasury-sweep-agent manifest: tools get_balance, sweep_plan, get_fx_rate, transfer_funds, post_journal_entry (no list_credentials);
++`value_limits.transfer_funds = {amount: 250000, currency: USD}`; criteria autonomous / moves_money (Tier 1).
++`gen_ai.agent.id` in OTel runs is the AWS `agentRuntimeId`.
++
++## Matching rule and synthetic extensions
++
++Matching rule (all dialects): `gen_ai.agent.id` on the agent-level span equals the platform-native id of the agent
++(AWS `agentRuntimeId`, Google service/agent engine id, Microsoft package `id`, Databricks `agent_service_id`).
++The OpenInference and MLflow runs also keep their dialect-native name attributes (`agent.name`, span name) next to it.
++`openinference-credit-memo` carries the Microsoft package id; `mlflow-liquidity-forecast` carries the Databricks agent service id.
++
++Synthetic fixture extensions (not real platform fields):
++- `identity` (all platforms) stands in for the real identity objects: Microsoft Entra `agentIdentity`, AgentCore workload identity,
++  Google agent identity (IAM principal), Databricks service principal.
++- AWS `metadata` stands in for real AgentCore resource tags / runtime metadata.
++- Microsoft `principalId` and Databricks `application_id` are canonical 8-4-4-4-12 UUIDs.
++
++## External card (A2A 1.0)
++
++`external/agent-card.json` is unsigned (default served). `external/agent-card-signed.json` is the same card plus a `signatures`
++entry (JWS ES256, protected header + signature over the base64url of the canonical JSON of the card without `signatures`),
++verifiable with `external/signing-key.pub.jwk.json`. `serve.py --signed` serves the signed card.
+diff --git a/fixtures/aws/list-agent-runtimes.json b/fixtures/aws/list-agent-runtimes.json
+new file mode 100644
+index 0000000..e4bbf91
+--- /dev/null
++++ b/fixtures/aws/list-agent-runtimes.json
+@@ -0,0 +1,133 @@
++{
++  "agentRuntimes": [
++    {
++      "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
++      "agentRuntimeId": "treasury_sweep_agent-Xk3Lq9ZpT2",
++      "agentRuntimeVersion": "3",
++      "agentRuntimeName": "treasury-sweep-agent",
++      "description": "Sweeps excess cash between treasury accounts and posts journals.",
++      "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
++      "status": "READY",
++      "tags": {
++        "owner": "treasury-ops@example-bank.com",
++        "cost-center": "CC-2e4e"
++      },
++      "identity": {
++        "type": "iam_role",
++        "principal": "arn:aws:iam::123456789012:role/agentcore-treasury-sweep-agent",
++        "distinct": true
++      },
++      "metadata": {
++        "owner": "treasury-ops@example-bank.com",
++        "tools": [
++          "get_balance",
++          "sweep_plan",
++          "get_fx_rate",
++          "transfer_funds",
++          "post_journal_entry"
++        ],
++        "data_scopes": [
++          "treasury.cash_positions",
++          "treasury.nostro_balances"
++        ],
++        "systems": [
++          "TMS",
++          "CoreBanking",
++          "SWIFT-gateway"
++        ],
++        "value_limits": {
++          "transfer_funds": {
++            "amount": 250000,
++            "currency": "USD"
++          }
++        },
++        "criteria": {
++          "autonomy": "autonomous",
++          "consequence": "moves_money",
++          "human_in_loop": false,
++          "customer_impact": "high"
++        }
++      }
++    },
++    {
++      "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
++      "agentRuntimeId": "kyc_refresh_agent-Rt7Hn4WvB8",
++      "agentRuntimeVersion": "3",
++      "agentRuntimeName": "kyc-refresh-agent",
++      "description": "Prepares periodic KYC refresh requests for corporate customers.",
++      "lastUpdatedAt": "2026-10-28T09:05:12.087Z",
++      "status": "READY",
++      "tags": {
++        "owner": "kyc-operations@example-bank.com",
++        "cost-center": "CC-c6f7"
++      },
++      "identity": {
++        "type": "iam_role",
++        "principal": "arn:aws:iam::123456789012:role/agentcore-kyc-refresh-agent",
++        "distinct": true
++      },
++      "metadata": {
++        "owner": "kyc-operations@example-bank.com",
++        "tools": [
++          "lookup_customer",
++          "fetch_sanctions_list",
++          "draft_refresh_request",
++          "update_kyc_status"
++        ],
++        "data_scopes": [
++          "customer.pii",
++          "kyc.documents"
++        ],
++        "systems": [
++          "KYC-platform",
++          "CRM"
++        ],
++        "criteria": {
++          "autonomy": "supervised",
++          "consequence": "regulatory_record",
++          "human_in_loop": true
++        }
++      }
++    },
++    {
++      "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
++      "agentRuntimeId": "trade_break_triage-Mc2Fd6YjQ5",
++      "agentRuntimeVersion": "3",
++      "agentRuntimeName": "trade-break-triage",
++      "description": "Classifies equity and FX trade breaks and opens tickets.",
++      "lastUpdatedAt": "2026-11-05T16:41:30.944Z",
++      "status": "READY",
++      "tags": {
++        "owner": "markets-ops@example-bank.com",
++        "cost-center": "CC-ee9a"
++      },
++      "identity": {
++        "type": "none",
++        "principal": "arn:aws:iam::123456789012:role/agentcore-markets-shared-runtime",
++        "note": "shares the markets runtime execution role"
++      },
++      "metadata": {
++        "owner": "markets-ops@example-bank.com",
++        "tools": [
++          "get_trade",
++          "get_confirmation",
++          "classify_break",
++          "open_ticket"
++        ],
++        "data_scopes": [
++          "trades.equities",
++          "trades.fx"
++        ],
++        "systems": [
++          "OMS",
++          "ServiceNow"
++        ],
++        "criteria": {
++          "autonomy": "supervised",
++          "consequence": "operational",
++          "human_in_loop": true
++        }
++      }
++    }
++  ]
++}
+diff --git a/fixtures/aws/list-discoverable-registry-records.json b/fixtures/aws/list-discoverable-registry-records.json
+new file mode 100644
+index 0000000..9e74245
+--- /dev/null
++++ b/fixtures/aws/list-discoverable-registry-records.json
+@@ -0,0 +1,100 @@
++{
++  "registryRecords": [
++    {
++      "registryId": "reg-bank-prod",
++      "recordId": "rec-xk3lq9zpt2",
++      "name": "treasury-sweep-agent",
++      "descriptorType": "AGENT",
++      "description": "Sweeps excess cash between treasury accounts and posts journals.",
++      "status": "APPROVED",
++      "version": "3",
++      "updatedAt": "2026-11-03T14:22:41.512Z",
++      "descriptors": {
++        "agent": {
++          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
++          "protocol": "HTTP",
++          "owner": "treasury-ops@example-bank.com",
++          "tools": [
++            {
++              "name": "get_balance"
++            },
++            {
++              "name": "sweep_plan"
++            },
++            {
++              "name": "get_fx_rate"
++            },
++            {
++              "name": "transfer_funds"
++            },
++            {
++              "name": "post_journal_entry"
++            }
++          ]
++        }
++      }
++    },
++    {
++      "registryId": "reg-bank-prod",
++      "recordId": "rec-rt7hn4wvb8",
++      "name": "kyc-refresh-agent",
++      "descriptorType": "AGENT",
++      "description": "Prepares periodic KYC refresh requests for corporate customers.",
++      "status": "APPROVED",
++      "version": "3",
++      "updatedAt": "2026-10-28T09:05:12.087Z",
++      "descriptors": {
++        "agent": {
++          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
++          "protocol": "HTTP",
++          "owner": "kyc-operations@example-bank.com",
++          "tools": [
++            {
++              "name": "lookup_customer"
++            },
++            {
++              "name": "fetch_sanctions_list"
++            },
++            {
++              "name": "draft_refresh_request"
++            },
++            {
++              "name": "update_kyc_status"
++            }
++          ]
++        }
++      }
++    },
++    {
++      "registryId": "reg-bank-prod",
++      "recordId": "rec-mc2fd6yjq5",
++      "name": "trade-break-triage",
++      "descriptorType": "AGENT",
++      "description": "Classifies equity and FX trade breaks and opens tickets.",
++      "status": "APPROVED",
++      "version": "3",
++      "updatedAt": "2026-11-05T16:41:30.944Z",
++      "descriptors": {
++        "agent": {
++          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
++          "protocol": "HTTP",
++          "owner": "markets-ops@example-bank.com",
++          "tools": [
++            {
++              "name": "get_trade"
++            },
++            {
++              "name": "get_confirmation"
++            },
++            {
++              "name": "classify_break"
++            },
++            {
++              "name": "open_ticket"
++            }
++          ]
++        }
++      }
++    }
++  ]
++}
+diff --git a/fixtures/databricks/agent-services.json b/fixtures/databricks/agent-services.json
+new file mode 100644
+index 0000000..c859866
+--- /dev/null
++++ b/fixtures/databricks/agent-services.json
+@@ -0,0 +1,99 @@
++{
++  "agent_services": [
++    {
++      "name": "liquidity-forecast-agent",
++      "full_name": "bank_prod.agents.liquidity_forecast_agent",
++      "agent_service_id": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51",
++      "catalog_name": "bank_prod",
++      "schema_name": "agents",
++      "comment": "Forecasts intraday and 30-day liquidity from cash flow tables.",
++      "owner": "treasury-analytics@example-bank.com",
++      "created_at": 1759395600000,
++      "updated_at": 1793603733000,
++      "updated_by": "treasury-analytics@example-bank.com",
++      "endpoint_name": "agents_liquidity_forecast_agent",
++      "identity": {
++        "type": "service_principal",
++        "principal": "sp-liquidity-forecast",
++        "application_id": "15d4c3b2-a1f0-4e9c-86a4-f5b34c2d1e7a",
++        "distinct": true
++      },
++      "tags": [
++        {
++          "key": "owner",
++          "value": "treasury-analytics@example-bank.com"
++        },
++        {
++          "key": "criteria_autonomy",
++          "value": "autonomous"
++        }
++      ],
++      "properties": {
++        "owner": "treasury-analytics@example-bank.com",
++        "tools": [
++          "query_cash_flows",
++          "run_forecast_model",
++          "publish_forecast"
++        ],
++        "data_scopes": [
++          "treasury.cash_flows",
++          "market.rates"
++        ],
++        "systems": [
++          "Databricks-lakehouse",
++          "TMS"
++        ],
++        "criteria": {
++          "autonomy": "autonomous",
++          "consequence": "internal_report",
++          "human_in_loop": false
++        }
++      }
++    },
++    {
++      "name": "model-risk-doc-agent",
++      "full_name": "bank_prod.agents.model_risk_doc_agent",
++      "agent_service_id": "b8f2e3d5-4c60-4b7e-9daf-1a2b3c4d5e62",
++      "catalog_name": "bank_prod",
++      "schema_name": "agents",
++      "comment": "Drafts model validation documentation from the model inventory.",
++      "owner": "model-risk-mgmt@example-bank.com",
++      "created_at": 1759395600000,
++      "updated_at": 1793102991000,
++      "updated_by": "model-risk-mgmt@example-bank.com",
++      "endpoint_name": "agents_model_risk_doc_agent",
++      "identity": {
++        "type": "none",
++        "note": "runs as the creating user's identity"
++      },
++      "tags": [
++        {
++          "key": "owner",
++          "value": "model-risk-mgmt@example-bank.com"
++        },
++        {
++          "key": "criteria_autonomy",
++          "value": "assistive"
++        }
++      ],
++      "properties": {
++        "owner": "model-risk-mgmt@example-bank.com",
++        "tools": [
++          "fetch_model_inventory",
++          "draft_validation_doc"
++        ],
++        "data_scopes": [
++          "mrm.inventory"
++        ],
++        "systems": [
++          "MRM-system"
++        ],
++        "criteria": {
++          "autonomy": "assistive",
++          "consequence": "internal_draft",
++          "human_in_loop": true
++        }
++      }
++    }
++  ]
++}
+diff --git a/fixtures/external/agent-card-signed.json b/fixtures/external/agent-card-signed.json
+new file mode 100644
+index 0000000..4dbfaac
+--- /dev/null
++++ b/fixtures/external/agent-card-signed.json
+@@ -0,0 +1,88 @@
++{
++  "name": "Meridian Corp Treasury Bot",
++  "description": "Client-side treasury agent operated by Meridian Industrial Corp. Requests balances, initiates payment instructions and reconciles statements with partner banks.",
++  "version": "2.3.1",
++  "supportedInterfaces": [
++    {
++      "url": "http://localhost:8765/a2a",
++      "protocolBinding": "JSONRPC",
++      "protocolVersion": "1.0"
++    },
++    {
++      "url": "http://localhost:8765/a2a/rest",
++      "protocolBinding": "HTTP+JSON",
++      "protocolVersion": "1.0"
++    }
++  ],
++  "provider": {
++    "organization": "Meridian Industrial Corp",
++    "url": "https://treasury.meridian-corp.example.com"
++  },
++  "capabilities": {
++    "streaming": true,
++    "pushNotifications": false
++  },
++  "defaultInputModes": [
++    "text/plain",
++    "application/json"
++  ],
++  "defaultOutputModes": [
++    "application/json"
++  ],
++  "securitySchemes": {
++    "bearer": {
++      "httpAuthSecurityScheme": {
++        "scheme": "Bearer",
++        "bearerFormat": "JWT",
++        "description": "Bearer token issued to the client."
++      }
++    }
++  },
++  "securityRequirements": [
++    {
++      "schemes": {
++        "bearer": {
++          "list": []
++        }
++      }
++    }
++  ],
++  "skills": [
++    {
++      "id": "request-balance",
++      "name": "Request account balance",
++      "description": "Requests current balances for the client's accounts at the bank.",
++      "tags": [
++        "balance",
++        "treasury"
++      ],
++      "examples": [
++        "What is our USD operating balance?"
++      ]
++    },
++    {
++      "id": "initiate-payment",
++      "name": "Initiate payment instruction",
++      "description": "Submits a payment instruction for approval and release.",
++      "tags": [
++        "payments",
++        "wire"
++      ]
++    },
++    {
++      "id": "reconcile-statement",
++      "name": "Reconcile statement",
++      "description": "Reconciles bank statement lines against the client's ledger.",
++      "tags": [
++        "reconciliation",
++        "statements"
++      ]
++    }
++  ],
++  "signatures": [
++    {
++      "protected": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpPU0UiLCJraWQiOiJhY3QtZml4dHVyZS1rZXktMSJ9",
++      "signature": "hR85Mhgz1DGQ4C_Qyh2JiXE-89sFvDDbCDqkRBhkjZ38br_v2gcNLwloqRrJzUFAQaxvA0rsFyfco6H82v2NcQ"
++    }
++  ]
++}
+diff --git a/fixtures/external/agent-card.json b/fixtures/external/agent-card.json
+new file mode 100644
+index 0000000..cc9cdbe
+--- /dev/null
++++ b/fixtures/external/agent-card.json
+@@ -0,0 +1,82 @@
++{
++  "name": "Meridian Corp Treasury Bot",
++  "description": "Client-side treasury agent operated by Meridian Industrial Corp. Requests balances, initiates payment instructions and reconciles statements with partner banks.",
++  "version": "2.3.1",
++  "supportedInterfaces": [
++    {
++      "url": "http://localhost:8765/a2a",
++      "protocolBinding": "JSONRPC",
++      "protocolVersion": "1.0"
++    },
++    {
++      "url": "http://localhost:8765/a2a/rest",
++      "protocolBinding": "HTTP+JSON",
++      "protocolVersion": "1.0"
++    }
++  ],
++  "provider": {
++    "organization": "Meridian Industrial Corp",
++    "url": "https://treasury.meridian-corp.example.com"
++  },
++  "capabilities": {
++    "streaming": true,
++    "pushNotifications": false
++  },
++  "defaultInputModes": [
++    "text/plain",
++    "application/json"
++  ],
++  "defaultOutputModes": [
++    "application/json"
++  ],
++  "securitySchemes": {
++    "bearer": {
++      "httpAuthSecurityScheme": {
++        "scheme": "Bearer",
++        "bearerFormat": "JWT",
++        "description": "Bearer token issued to the client."
++      }
++    }
++  },
++  "securityRequirements": [
++    {
++      "schemes": {
++        "bearer": {
++          "list": []
++        }
++      }
++    }
++  ],
++  "skills": [
++    {
++      "id": "request-balance",
++      "name": "Request account balance",
++      "description": "Requests current balances for the client's accounts at the bank.",
++      "tags": [
++        "balance",
++        "treasury"
++      ],
++      "examples": [
++        "What is our USD operating balance?"
++      ]
++    },
++    {
++      "id": "initiate-payment",
++      "name": "Initiate payment instruction",
++      "description": "Submits a payment instruction for approval and release.",
++      "tags": [
++        "payments",
++        "wire"
++      ]
++    },
++    {
++      "id": "reconcile-statement",
++      "name": "Reconcile statement",
++      "description": "Reconciles bank statement lines against the client's ledger.",
++      "tags": [
++        "reconciliation",
++        "statements"
++      ]
++    }
++  ]
++}
+diff --git a/fixtures/external/serve.py b/fixtures/external/serve.py
+new file mode 100644
+index 0000000..43f2878
+--- /dev/null
++++ b/fixtures/external/serve.py
+@@ -0,0 +1,34 @@
++#!/usr/bin/env python3
++"""Serve the fixture A2A Agent Card at /.well-known/agent-card.json (stdlib only)."""
++import argparse
++import http.server
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++CARD = HERE / "agent-card.json"
++
++
++class Handler(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        if self.path.split("?")[0] in ("/.well-known/agent-card.json", "/.well-known/agent.json"):
++            body = CARD.read_bytes()
++            self.send_response(200)
++            self.send_header("Content-Type", "application/json")
++            self.send_header("Content-Length", str(len(body)))
++            self.end_headers()
++            self.wfile.write(body)
++        else:
++            self.send_error(404)
++
++    def log_message(self, *a):
++        pass
++
++
++if __name__ == "__main__":
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--port", type=int, default=8765)
++    ap.add_argument("--signed", action="store_true", help="serve agent-card-signed.json")
++    args = ap.parse_args()
++    if args.signed:
++        CARD = HERE / "agent-card-signed.json"
++    http.server.ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
+diff --git a/fixtures/external/signing-key.pub.jwk.json b/fixtures/external/signing-key.pub.jwk.json
+new file mode 100644
+index 0000000..a0b77a0
+--- /dev/null
++++ b/fixtures/external/signing-key.pub.jwk.json
+@@ -0,0 +1,9 @@
++{
++  "kty": "EC",
++  "crv": "P-256",
++  "x": "EZRmnfx-wSCN7n4HVE74EmguTc7drBe5NvljiJHX3rg",
++  "y": "-bnuN8NVWHfcbG8UjAtlVHA9l7NAkf7nMROQ4CqJjjg",
++  "kid": "act-fixture-key-1",
++  "alg": "ES256",
++  "use": "sig"
++}
+diff --git a/fixtures/google/agent-registry-bindings.json b/fixtures/google/agent-registry-bindings.json
+new file mode 100644
+index 0000000..7629389
+--- /dev/null
++++ b/fixtures/google/agent-registry-bindings.json
+@@ -0,0 +1,43 @@
++{
++  "bindingsByService": {
++    "projects/bank-ai-prod/locations/us-central1/services/payments-fraud-screener": [
++      {
++        "name": "projects/bank-ai-prod/locations/us-central1/services/payments-fraud-screener/bindings/payments-fraud-screener-endpoint",
++        "displayName": "payments-fraud-screener endpoint",
++        "createTime": "2026-10-02T09:05:00Z",
++        "target": {
++          "agentEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/122077102645"
++        },
++        "authProviderBinding": {
++          "serviceAccount": "sa-fraud-screener@bank-ai-prod.iam.gserviceaccount.com"
++        }
++      }
++    ],
++    "projects/bank-ai-prod/locations/us-central1/services/collections-outreach-agent": [
++      {
++        "name": "projects/bank-ai-prod/locations/us-central1/services/collections-outreach-agent/bindings/collections-outreach-agent-endpoint",
++        "displayName": "collections-outreach-agent endpoint",
++        "createTime": "2026-10-02T09:05:00Z",
++        "target": {
++          "agentEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/401391792873"
++        },
++        "authProviderBinding": {
++          "serviceAccount": "sa-collections-outreach@bank-ai-prod.iam.gserviceaccount.com"
++        }
++      }
++    ],
++    "projects/bank-ai-prod/locations/us-central1/services/regulatory-report-drafter": [
++      {
++        "name": "projects/bank-ai-prod/locations/us-central1/services/regulatory-report-drafter/bindings/regulatory-report-drafter-endpoint",
++        "displayName": "regulatory-report-drafter endpoint",
++        "createTime": "2026-10-02T09:05:00Z",
++        "target": {
++          "agentEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/548145599405"
++        },
++        "authProviderBinding": {
++          "serviceAccount": "default-compute"
++        }
++      }
++    ]
++  }
++}
+diff --git a/fixtures/google/agent-registry-services.json b/fixtures/google/agent-registry-services.json
+new file mode 100644
+index 0000000..a46c7b3
+--- /dev/null
++++ b/fixtures/google/agent-registry-services.json
+@@ -0,0 +1,142 @@
++{
++  "services": [
++    {
++      "name": "projects/bank-ai-prod/locations/us-central1/services/payments-fraud-screener",
++      "displayName": "payments-fraud-screener",
++      "description": "Scores real-time payments and holds suspicious ones.",
++      "createTime": "2026-10-02T09:00:00Z",
++      "updateTime": "2026-11-01T08:12:09.331Z",
++      "labels": {
++        "owner": "fraud-analytics_at_example-bank-com",
++        "env": "prod"
++      },
++      "properties": {
++        "owner": "fraud-analytics@example-bank.com",
++        "tools": [
++          "score_payment",
++          "get_customer_profile",
++          "hold_payment",
++          "release_payment"
++        ],
++        "data_scopes": [
++          "payments.realtime",
++          "customer.profile"
++        ],
++        "systems": [
++          "PaymentsHub",
++          "FraudEngine"
++        ],
++        "value_limits": {
++          "hold_payment": {
++            "amount": 50000,
++            "currency": "USD"
++          }
++        },
++        "criteria": {
++          "autonomy": "autonomous",
++          "consequence": "blocks_customer_payments",
++          "human_in_loop": false
++        },
++        "owner_email": "fraud-analytics@example-bank.com"
++      },
++      "identity": {
++        "type": "service_account",
++        "principal": "sa-fraud-screener@bank-ai-prod.iam.gserviceaccount.com",
++        "distinct": true
++      },
++      "interfaces": [
++        {
++          "protocolBinding": "JSONRPC",
++          "url": "https://payments-fraud-screener-abc123-uc.a.run.app"
++        }
++      ]
++    },
++    {
++      "name": "projects/bank-ai-prod/locations/us-central1/services/collections-outreach-agent",
++      "displayName": "collections-outreach-agent",
++      "description": "Drafts and sends delinquency outreach to retail customers.",
++      "createTime": "2026-10-02T09:00:00Z",
++      "updateTime": "2026-10-22T13:47:55.120Z",
++      "labels": {
++        "owner": "retail-collections_at_example-bank-com",
++        "env": "prod"
++      },
++      "properties": {
++        "owner": "retail-collections@example-bank.com",
++        "tools": [
++          "get_delinquency",
++          "draft_message",
++          "send_sms"
++        ],
++        "data_scopes": [
++          "loans.delinquency",
++          "customer.contact"
++        ],
++        "systems": [
++          "CollectionsCRM",
++          "SMS-gateway"
++        ],
++        "criteria": {
++          "autonomy": "supervised",
++          "consequence": "customer_communication",
++          "human_in_loop": true
++        },
++        "owner_email": "retail-collections@example-bank.com"
++      },
++      "identity": {
++        "type": "service_account",
++        "principal": "sa-collections-outreach@bank-ai-prod.iam.gserviceaccount.com",
++        "distinct": true
++      },
++      "interfaces": [
++        {
++          "protocolBinding": "JSONRPC",
++          "url": "https://collections-outreach-agent-abc123-uc.a.run.app"
++        }
++      ]
++    },
++    {
++      "name": "projects/bank-ai-prod/locations/us-central1/services/regulatory-report-drafter",
++      "displayName": "regulatory-report-drafter",
++      "description": "Drafts sections of regulatory reports from the general ledger.",
++      "createTime": "2026-10-02T09:00:00Z",
++      "updateTime": "2026-11-06T10:30:02.774Z",
++      "labels": {
++        "owner": "regulatory-reporting_at_example-bank-com",
++        "env": "prod"
++      },
++      "properties": {
++        "owner": "regulatory-reporting@example-bank.com",
++        "tools": [
++          "query_gl",
++          "draft_section",
++          "validate_xbrl"
++        ],
++        "data_scopes": [
++          "finance.gl",
++          "regulatory.templates"
++        ],
++        "systems": [
++          "GL",
++          "ReportingHub"
++        ],
++        "criteria": {
++          "autonomy": "assistive",
++          "consequence": "internal_draft",
++          "human_in_loop": true
++        },
++        "owner_email": "regulatory-reporting@example-bank.com"
++      },
++      "identity": {
++        "type": "none",
++        "note": "runs as the default compute service account"
++      },
++      "interfaces": [
++        {
++          "protocolBinding": "JSONRPC",
++          "url": "https://regulatory-report-drafter-abc123-uc.a.run.app"
++        }
++      ]
++    }
++  ]
++}
+diff --git a/fixtures/microsoft/list-packages.json b/fixtures/microsoft/list-packages.json
+new file mode 100644
+index 0000000..e5e4268
+--- /dev/null
++++ b/fixtures/microsoft/list-packages.json
+@@ -0,0 +1,137 @@
++{
++  "@odata.context": "https://graph.microsoft.com/beta/$metadata#copilot/admin/catalog/packages",
++  "@odata.count": 3,
++  "value": [
++    {
++      "id": "a1f3c9d2-4b7e-4e1a-9c55-0d2e6f8a1b01",
++      "displayName": "Relationship Manager Copilot",
++      "agentName": "relationship-manager-copilot",
++      "version": "1.2.0",
++      "type": "agent",
++      "publisher": "Example Bank IT",
++      "lastModifiedDateTime": "2026-10-30T11:20:44Z",
++      "createdDateTime": "2026-09-29T10:00:00Z",
++      "isBlocked": false,
++      "supportedHosts": [
++        "Copilot"
++      ],
++      "shortDescription": "Summarises client meetings and drafts follow-ups.",
++      "identity": {
++        "type": "managed_identity",
++        "clientId": "0c7d1e34-5a2b-4c88-b1f0-7e9a3d4c5b02",
++        "principalId": "20b5c4d3-a9e7-4f1b-88c4-b2a543e1d7c0",
++        "distinct": true
++      },
++      "customMetadata": {
++        "owner": "wealth-advisory@example-bank.com",
++        "tools": [
++          "get_portfolio",
++          "summarize_meeting",
++          "draft_email"
++        ],
++        "data_scopes": [
++          "wealth.portfolios",
++          "customer.profile"
++        ],
++        "systems": [
++          "WealthCRM",
++          "Outlook"
++        ],
++        "criteria": {
++          "autonomy": "assistive",
++          "consequence": "internal_draft",
++          "human_in_loop": true
++        }
++      },
++      "owner": {
++        "userPrincipalName": "wealth-advisory@example-bank.com"
++      }
++    },
++    {
++      "id": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
++      "displayName": "Credit Memo Drafter",
++      "agentName": "credit-memo-drafter",
++      "version": "1.2.0",
++      "type": "agent",
++      "publisher": "Example Bank IT",
++      "lastModifiedDateTime": "2026-11-04T15:03:18Z",
++      "createdDateTime": "2026-09-29T10:00:00Z",
++      "isBlocked": false,
++      "supportedHosts": [
++        "Copilot"
++      ],
++      "shortDescription": "Drafts corporate credit memos from financials and ratings.",
++      "identity": {
++        "type": "managed_identity",
++        "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
++        "principalId": "31c6d5e4-baf8-4a2a-99d4-c3b654f2e8d1",
++        "distinct": true
++      },
++      "customMetadata": {
++        "owner": "corporate-credit@example-bank.com",
++        "tools": [
++          "get_financials",
++          "get_rating",
++          "draft_memo"
++        ],
++        "data_scopes": [
++          "credit.financials",
++          "credit.ratings"
++        ],
++        "systems": [
++          "CreditSuite",
++          "SharePoint"
++        ],
++        "criteria": {
++          "autonomy": "assistive",
++          "consequence": "internal_draft",
++          "human_in_loop": true
++        }
++      },
++      "owner": {
++        "userPrincipalName": "corporate-credit@example-bank.com"
++      }
++    },
++    {
++      "id": "c3f5e1b4-6d90-4a3c-9e77-2f4a8bac3d21",
++      "displayName": "Branch Ops Assistant",
++      "agentName": "branch-ops-assistant",
++      "version": "1.2.0",
++      "type": "agent",
++      "publisher": "Example Bank IT",
++      "lastModifiedDateTime": "2026-10-19T08:41:02Z",
++      "createdDateTime": "2026-09-29T10:00:00Z",
++      "isBlocked": false,
++      "supportedHosts": [
++        "Copilot"
++      ],
++      "shortDescription": "Answers branch procedure questions and creates tasks.",
++      "identity": {
++        "type": "none",
++        "note": "uses the shared Copilot Studio connection identity"
++      },
++      "customMetadata": {
++        "owner": "branch-operations@example-bank.com",
++        "tools": [
++          "search_procedures",
++          "create_task"
++        ],
++        "data_scopes": [
++          "ops.procedures"
++        ],
++        "systems": [
++          "Intranet",
++          "TaskHub"
++        ],
++        "criteria": {
++          "autonomy": "assistive",
++          "consequence": "operational",
++          "human_in_loop": true
++        }
++      },
++      "owner": {
++        "userPrincipalName": "branch-operations@example-bank.com"
++      }
++    }
++  ]
++}
+diff --git a/fixtures/runs/mlflow-liquidity-forecast.json b/fixtures/runs/mlflow-liquidity-forecast.json
+new file mode 100644
+index 0000000..174ebd0
+--- /dev/null
++++ b/fixtures/runs/mlflow-liquidity-forecast.json
+@@ -0,0 +1,227 @@
++{
++  "resourceSpans": [
++    {
++      "resource": {
++        "attributes": [
++          {
++            "key": "service.name",
++            "value": {
++              "stringValue": "liquidity-forecast-agent"
++            }
++          },
++          {
++            "key": "cloud.platform",
++            "value": {
++              "stringValue": "databricks"
++            }
++          }
++        ]
++      },
++      "scopeSpans": [
++        {
++          "scope": {
++            "name": "mlflow",
++            "version": "1.0.0"
++          },
++          "spans": [
++            {
++              "traceId": "a7196b50ac2f86702824c1c099724caf",
++              "spanId": "4941d4072014b3ce",
++              "name": "liquidity-forecast-agent",
++              "kind": 1,
++              "startTimeUnixNano": "1793687400000000000",
++              "endTimeUnixNano": "1793687415000000000",
++              "attributes": [
++                {
++                  "key": "mlflow.spanType",
++                  "value": {
++                    "stringValue": "AGENT"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51"
++                  }
++                },
++                {
++                  "key": "mlflow.traceRequestId",
++                  "value": {
++                    "stringValue": "tr-a7196b50ac2f8670"
++                  }
++                },
++                {
++                  "key": "mlflow.spanInputs",
++                  "value": {
++                    "stringValue": "{\"horizon_days\": 30}"
++                  }
++                },
++                {
++                  "key": "mlflow.spanOutputs",
++                  "value": {
++                    "stringValue": "{\"forecast_id\": \"F-9021\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              }
++            },
++            {
++              "traceId": "a7196b50ac2f86702824c1c099724caf",
++              "spanId": "107f80e222f82876",
++              "name": "query_cash_flows",
++              "kind": 1,
++              "startTimeUnixNano": "1793687401000000000",
++              "endTimeUnixNano": "1793687401900000000",
++              "attributes": [
++                {
++                  "key": "mlflow.spanType",
++                  "value": {
++                    "stringValue": "TOOL"
++                  }
++                },
++                {
++                  "key": "mlflow.traceRequestId",
++                  "value": {
++                    "stringValue": "tr-a7196b50ac2f8670"
++                  }
++                },
++                {
++                  "key": "mlflow.spanInputs",
++                  "value": {
++                    "stringValue": "{\"horizon_days\": 30}"
++                  }
++                },
++                {
++                  "key": "mlflow.spanOutputs",
++                  "value": {
++                    "stringValue": "{\"rows\": 4210}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "4941d4072014b3ce"
++            },
++            {
++              "traceId": "a7196b50ac2f86702824c1c099724caf",
++              "spanId": "7efc2f91624a8940",
++              "name": "run_forecast_model",
++              "kind": 1,
++              "startTimeUnixNano": "1793687404000000000",
++              "endTimeUnixNano": "1793687404900000000",
++              "attributes": [
++                {
++                  "key": "mlflow.spanType",
++                  "value": {
++                    "stringValue": "TOOL"
++                  }
++                },
++                {
++                  "key": "mlflow.traceRequestId",
++                  "value": {
++                    "stringValue": "tr-a7196b50ac2f8670"
++                  }
++                },
++                {
++                  "key": "mlflow.spanInputs",
++                  "value": {
++                    "stringValue": "{\"model\": \"arima_v4\"}"
++                  }
++                },
++                {
++                  "key": "mlflow.spanOutputs",
++                  "value": {
++                    "stringValue": "{\"mape\": 0.031}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "4941d4072014b3ce"
++            },
++            {
++              "traceId": "a7196b50ac2f86702824c1c099724caf",
++              "spanId": "f1f836f99eee3692",
++              "name": "publish_forecast",
++              "kind": 1,
++              "startTimeUnixNano": "1793687407000000000",
++              "endTimeUnixNano": "1793687407900000000",
++              "attributes": [
++                {
++                  "key": "mlflow.spanType",
++                  "value": {
++                    "stringValue": "TOOL"
++                  }
++                },
++                {
++                  "key": "mlflow.traceRequestId",
++                  "value": {
++                    "stringValue": "tr-a7196b50ac2f8670"
++                  }
++                },
++                {
++                  "key": "mlflow.spanInputs",
++                  "value": {
++                    "stringValue": "{\"forecast_id\": \"F-9021\"}"
++                  }
++                },
++                {
++                  "key": "mlflow.spanOutputs",
++                  "value": {
++                    "stringValue": "{\"ok\": true}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "4941d4072014b3ce"
++            },
++            {
++              "traceId": "a7196b50ac2f86702824c1c099724caf",
++              "spanId": "f09e2e8c662248b4",
++              "name": "ChatModel",
++              "kind": 3,
++              "startTimeUnixNano": "1793687410000000000",
++              "endTimeUnixNano": "1793687411200000000",
++              "attributes": [
++                {
++                  "key": "mlflow.spanType",
++                  "value": {
++                    "stringValue": "CHAT_MODEL"
++                  }
++                },
++                {
++                  "key": "mlflow.traceRequestId",
++                  "value": {
++                    "stringValue": "tr-a7196b50ac2f8670"
++                  }
++                },
++                {
++                  "key": "mlflow.spanInputs",
++                  "value": {
++                    "stringValue": "{\"messages\": [{\"role\": \"user\", \"content\": \"Explain forecast\"}]}"
++                  }
++                },
++                {
++                  "key": "mlflow.spanOutputs",
++                  "value": {
++                    "stringValue": "{\"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"30-day outflow expected\"}}]}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "4941d4072014b3ce"
++            }
++          ]
++        }
++      ]
++    }
++  ]
++}
+diff --git a/fixtures/runs/openinference-credit-memo.json b/fixtures/runs/openinference-credit-memo.json
+new file mode 100644
+index 0000000..39d0f06
+--- /dev/null
++++ b/fixtures/runs/openinference-credit-memo.json
+@@ -0,0 +1,257 @@
++{
++  "resourceSpans": [
++    {
++      "resource": {
++        "attributes": [
++          {
++            "key": "service.name",
++            "value": {
++              "stringValue": "credit-memo-drafter"
++            }
++          },
++          {
++            "key": "telemetry.sdk.name",
++            "value": {
++              "stringValue": "openinference"
++            }
++          }
++        ]
++      },
++      "scopeSpans": [
++        {
++          "scope": {
++            "name": "openinference.instrumentation.langchain",
++            "version": "1.0.0"
++          },
++          "spans": [
++            {
++              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
++              "spanId": "815d2802827283e0",
++              "name": "credit-memo-drafter",
++              "kind": 1,
++              "startTimeUnixNano": "1793872800000000000",
++              "endTimeUnixNano": "1793872820000000000",
++              "attributes": [
++                {
++                  "key": "openinference.span.kind",
++                  "value": {
++                    "stringValue": "AGENT"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11"
++                  }
++                },
++                {
++                  "key": "agent.name",
++                  "value": {
++                    "stringValue": "credit-memo-drafter"
++                  }
++                },
++                {
++                  "key": "input.value",
++                  "value": {
++                    "stringValue": "Draft memo for Alder Manufacturing"
++                  }
++                },
++                {
++                  "key": "output.value",
++                  "value": {
++                    "stringValue": "Memo draft M-2210 created"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              }
++            },
++            {
++              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
++              "spanId": "ad84173581569969",
++              "name": "get_financials",
++              "kind": 1,
++              "startTimeUnixNano": "1793872801000000000",
++              "endTimeUnixNano": "1793872801700000000",
++              "attributes": [
++                {
++                  "key": "openinference.span.kind",
++                  "value": {
++                    "stringValue": "TOOL"
++                  }
++                },
++                {
++                  "key": "tool.name",
++                  "value": {
++                    "stringValue": "get_financials"
++                  }
++                },
++                {
++                  "key": "tool.parameters",
++                  "value": {
++                    "stringValue": "{\"customer\": \"Alder Manufacturing\", \"year\": 2025}"
++                  }
++                },
++                {
++                  "key": "input.value",
++                  "value": {
++                    "stringValue": "{\"customer\": \"Alder Manufacturing\", \"year\": 2025}"
++                  }
++                },
++                {
++                  "key": "output.value",
++                  "value": {
++                    "stringValue": "{\"revenue\": 48200000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "815d2802827283e0"
++            },
++            {
++              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
++              "spanId": "e58b081006f7e3df",
++              "name": "get_rating",
++              "kind": 1,
++              "startTimeUnixNano": "1793872804000000000",
++              "endTimeUnixNano": "1793872804700000000",
++              "attributes": [
++                {
++                  "key": "openinference.span.kind",
++                  "value": {
++                    "stringValue": "TOOL"
++                  }
++                },
++                {
++                  "key": "tool.name",
++                  "value": {
++                    "stringValue": "get_rating"
++                  }
++                },
++                {
++                  "key": "tool.parameters",
++                  "value": {
++                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
++                  }
++                },
++                {
++                  "key": "input.value",
++                  "value": {
++                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
++                  }
++                },
++                {
++                  "key": "output.value",
++                  "value": {
++                    "stringValue": "{\"rating\": \"BBB\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "815d2802827283e0"
++            },
++            {
++              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
++              "spanId": "c967a64cb14028d5",
++              "name": "draft_memo",
++              "kind": 1,
++              "startTimeUnixNano": "1793872807000000000",
++              "endTimeUnixNano": "1793872807700000000",
++              "attributes": [
++                {
++                  "key": "openinference.span.kind",
++                  "value": {
++                    "stringValue": "TOOL"
++                  }
++                },
++                {
++                  "key": "tool.name",
++                  "value": {
++                    "stringValue": "draft_memo"
++                  }
++                },
++                {
++                  "key": "tool.parameters",
++                  "value": {
++                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
++                  }
++                },
++                {
++                  "key": "input.value",
++                  "value": {
++                    "stringValue": "{\"customer\": \"Alder Manufacturing\"}"
++                  }
++                },
++                {
++                  "key": "output.value",
++                  "value": {
++                    "stringValue": "{\"memo_id\": \"M-2210\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "815d2802827283e0"
++            },
++            {
++              "traceId": "d6ba2b0aee0ca923732881584d8c4fa2",
++              "spanId": "12c9791e558e08ba",
++              "name": "ChatCompletion",
++              "kind": 3,
++              "startTimeUnixNano": "1793872810000000000",
++              "endTimeUnixNano": "1793872811500000000",
++              "attributes": [
++                {
++                  "key": "openinference.span.kind",
++                  "value": {
++                    "stringValue": "LLM"
++                  }
++                },
++                {
++                  "key": "llm.model_name",
++                  "value": {
++                    "stringValue": "gpt-4o"
++                  }
++                },
++                {
++                  "key": "llm.token_count.prompt",
++                  "value": {
++                    "intValue": "800"
++                  }
++                },
++                {
++                  "key": "llm.token_count.completion",
++                  "value": {
++                    "intValue": "220"
++                  }
++                },
++                {
++                  "key": "input.value",
++                  "value": {
++                    "stringValue": "Summarise financials"
++                  }
++                },
++                {
++                  "key": "output.value",
++                  "value": {
++                    "stringValue": "Revenue 48.2M, rating BBB"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "815d2802827283e0"
++            }
++          ]
++        }
++      ]
++    }
++  ]
++}
+diff --git a/fixtures/runs/otel-genai-kyc-refresh.json b/fixtures/runs/otel-genai-kyc-refresh.json
+new file mode 100644
+index 0000000..e9f5b67
+--- /dev/null
++++ b/fixtures/runs/otel-genai-kyc-refresh.json
+@@ -0,0 +1,353 @@
++{
++  "resourceSpans": [
++    {
++      "resource": {
++        "attributes": [
++          {
++            "key": "service.name",
++            "value": {
++              "stringValue": "kyc-refresh-agent"
++            }
++          },
++          {
++            "key": "cloud.provider",
++            "value": {
++              "stringValue": "aws"
++            }
++          },
++          {
++            "key": "cloud.platform",
++            "value": {
++              "stringValue": "aws_bedrock_agentcore"
++            }
++          }
++        ]
++      },
++      "scopeSpans": [
++        {
++          "scope": {
++            "name": "opentelemetry.instrumentation.genai",
++            "version": "1.0.0"
++          },
++          "spans": [
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "36b3216fdaeeb975",
++              "name": "invoke_agent kyc-refresh-agent",
++              "kind": 1,
++              "startTimeUnixNano": "1793782800000000000",
++              "endTimeUnixNano": "1793782860000000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "invoke_agent"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "kyc_refresh_agent-Rt7Hn4WvB8"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.name",
++                  "value": {
++                    "stringValue": "kyc-refresh-agent"
++                  }
++                },
++                {
++                  "key": "gen_ai.provider.name",
++                  "value": {
++                    "stringValue": "aws.bedrock"
++                  }
++                },
++                {
++                  "key": "gen_ai.input.messages",
++                  "value": {
++                    "stringValue": "[{\"role\": \"user\", \"content\": \"Refresh KYC for C-100482\"}]"
++                  }
++                },
++                {
++                  "key": "gen_ai.output.messages",
++                  "value": {
++                    "stringValue": "[{\"role\": \"assistant\", \"content\": \"Refresh request D-5531 drafted.\"}]"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              }
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "729fae923d5a4fd1",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1793782801000000000",
++              "endTimeUnixNano": "1793782802800000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "900"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "140"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "2aabfe228f219e9c",
++              "name": "execute_tool lookup_customer",
++              "kind": 1,
++              "startTimeUnixNano": "1793782804000000000",
++              "endTimeUnixNano": "1793782804600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "lookup_customer"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"customer_id\": \"C-100482\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"name\": \"Harbor Freight Logistics\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "b0eb53f16947ccf2",
++              "name": "execute_tool fetch_sanctions_list",
++              "kind": 1,
++              "startTimeUnixNano": "1793782807000000000",
++              "endTimeUnixNano": "1793782807600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "fetch_sanctions_list"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"name\": \"Harbor Freight Logistics\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"matches\": 0}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "5ec84d8dbc742547",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1793782810000000000",
++              "endTimeUnixNano": "1793782811800000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "900"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "140"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "70f58904dba41ecc",
++              "name": "execute_tool draft_refresh_request",
++              "kind": 1,
++              "startTimeUnixNano": "1793782813000000000",
++              "endTimeUnixNano": "1793782813600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "draft_refresh_request"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"customer_id\": \"C-100482\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"draft_id\": \"D-5531\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "cc3fc1626e53a130",
++              "name": "execute_tool update_kyc_status",
++              "kind": 1,
++              "startTimeUnixNano": "1793782816000000000",
++              "endTimeUnixNano": "1793782816600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "update_kyc_status"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"customer_id\": \"C-100482\", \"status\": \"refresh_requested\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"ok\": true}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            },
++            {
++              "traceId": "a4c123b1612dd272d1371c17149d4395",
++              "spanId": "43b026c48bbf33fe",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1793782819000000000",
++              "endTimeUnixNano": "1793782820800000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "900"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "140"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "36b3216fdaeeb975"
++            }
++          ]
++        }
++      ]
++    }
++  ]
++}
+diff --git a/fixtures/runs/otel-genai-treasury-sweep-normal.json b/fixtures/runs/otel-genai-treasury-sweep-normal.json
+new file mode 100644
+index 0000000..55af9a2
+--- /dev/null
++++ b/fixtures/runs/otel-genai-treasury-sweep-normal.json
+@@ -0,0 +1,341 @@
++{
++  "resourceSpans": [
++    {
++      "resource": {
++        "attributes": [
++          {
++            "key": "service.name",
++            "value": {
++              "stringValue": "treasury-sweep-agent"
++            }
++          },
++          {
++            "key": "cloud.provider",
++            "value": {
++              "stringValue": "aws"
++            }
++          },
++          {
++            "key": "cloud.platform",
++            "value": {
++              "stringValue": "aws_bedrock_agentcore"
++            }
++          }
++        ]
++      },
++      "scopeSpans": [
++        {
++          "scope": {
++            "name": "opentelemetry.instrumentation.genai",
++            "version": "1.0.0"
++          },
++          "spans": [
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "08f86bebb2737f6a",
++              "name": "invoke_agent treasury-sweep-agent",
++              "kind": 1,
++              "startTimeUnixNano": "1793887200000000000",
++              "endTimeUnixNano": "1793887260000000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "invoke_agent"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "treasury_sweep_agent-Xk3Lq9ZpT2"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.name",
++                  "value": {
++                    "stringValue": "treasury-sweep-agent"
++                  }
++                },
++                {
++                  "key": "gen_ai.provider.name",
++                  "value": {
++                    "stringValue": "aws.bedrock"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              }
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "6f0fb23c6f5da2ce",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1793887201000000000",
++              "endTimeUnixNano": "1793887202800000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "900"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "140"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "c255404e4fb44003",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1793887204000000000",
++              "endTimeUnixNano": "1793887204600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-USD-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 1820000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "4d6608697a8d41be",
++              "name": "execute_tool sweep_plan",
++              "kind": 1,
++              "startTimeUnixNano": "1793887207000000000",
++              "endTimeUnixNano": "1793887207600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "sweep_plan"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"source\": \"OPS-USD-001\", \"target\": \"CONC-USD-100\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"proposed_amount\": 180000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "d440e50454f31af3",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1793887210000000000",
++              "endTimeUnixNano": "1793887211800000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "900"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "140"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "176813e02ea68ef7",
++              "name": "execute_tool transfer_funds",
++              "kind": 1,
++              "startTimeUnixNano": "1793887213000000000",
++              "endTimeUnixNano": "1793887213600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "transfer_funds"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"from\": \"OPS-USD-001\", \"to\": \"CONC-USD-100\", \"amount\": 180000, \"currency\": \"USD\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"status\": \"settled\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "86e4d3cea27d2693",
++              "name": "execute_tool post_journal_entry",
++              "kind": 1,
++              "startTimeUnixNano": "1793887216000000000",
++              "endTimeUnixNano": "1793887216600000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "post_journal_entry"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"ref\": \"SWP-20261105-01\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"ok\": true}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            },
++            {
++              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
++              "spanId": "4b484e73cf575dca",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1793887219000000000",
++              "endTimeUnixNano": "1793887220800000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "900"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "140"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "08f86bebb2737f6a"
++            }
++          ]
++        }
++      ]
++    }
++  ]
++}
+diff --git a/fixtures/runs/weekend-drift.json b/fixtures/runs/weekend-drift.json
+new file mode 100644
+index 0000000..ece63b0
+--- /dev/null
++++ b/fixtures/runs/weekend-drift.json
+@@ -0,0 +1,1569 @@
++{
++  "resourceSpans": [
++    {
++      "resource": {
++        "attributes": [
++          {
++            "key": "service.name",
++            "value": {
++              "stringValue": "treasury-sweep-agent"
++            }
++          },
++          {
++            "key": "cloud.provider",
++            "value": {
++              "stringValue": "aws"
++            }
++          },
++          {
++            "key": "cloud.platform",
++            "value": {
++              "stringValue": "aws_bedrock_agentcore"
++            }
++          }
++        ]
++      },
++      "scopeSpans": [
++        {
++          "scope": {
++            "name": "opentelemetry.instrumentation.genai",
++            "version": "1.0.0"
++          },
++          "spans": [
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "cc2bd818319478da",
++              "name": "invoke_agent treasury-sweep-agent",
++              "kind": 1,
++              "startTimeUnixNano": "1794015539000000000",
++              "endTimeUnixNano": "1794020780000000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "invoke_agent"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.id",
++                  "value": {
++                    "stringValue": "treasury_sweep_agent-Xk3Lq9ZpT2"
++                  }
++                },
++                {
++                  "key": "gen_ai.agent.name",
++                  "value": {
++                    "stringValue": "treasury-sweep-agent"
++                  }
++                },
++                {
++                  "key": "gen_ai.provider.name",
++                  "value": {
++                    "stringValue": "aws.bedrock"
++                  }
++                },
++                {
++                  "key": "gen_ai.input.messages",
++                  "value": {
++                    "stringValue": "[{\"role\": \"user\", \"content\": \"Weekend sweep: consolidate excess balances to concentration account.\"}]"
++                  }
++                },
++                {
++                  "key": "gen_ai.output.messages",
++                  "value": {
++                    "stringValue": "[{\"role\": \"assistant\", \"content\": \"Sweep complete; 1 transfer executed.\"}]"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              }
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "6bd0c621de49f145",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794015540000000000",
++              "endTimeUnixNano": "1794015541900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "fda9988c79fc3552",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794015680000000000",
++              "endTimeUnixNano": "1794015680700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-USD-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 900000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "6f7eaed46725a2a7",
++              "name": "execute_tool get_fx_rate",
++              "kind": 1,
++              "startTimeUnixNano": "1794015820000000000",
++              "endTimeUnixNano": "1794015820700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_fx_rate"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"pair\": \"USD/USD\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"rate\": 1.0}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "b860dcd6c8a1f8b4",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794015960000000000",
++              "endTimeUnixNano": "1794015961900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "6287cced9041dff0",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794016100000000000",
++              "endTimeUnixNano": "1794016100700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-USD-002\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 1050000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "2cee737443e21047",
++              "name": "execute_tool get_fx_rate",
++              "kind": 1,
++              "startTimeUnixNano": "1794016240000000000",
++              "endTimeUnixNano": "1794016240700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_fx_rate"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"pair\": \"USD/USD\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"rate\": 1.0}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "1948d33296c87009",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794016380000000000",
++              "endTimeUnixNano": "1794016381900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "e8a7f770d9106fd2",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794016520000000000",
++              "endTimeUnixNano": "1794016520700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-EUR-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 1200000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "87db7f1adbc60926",
++              "name": "execute_tool get_fx_rate",
++              "kind": 1,
++              "startTimeUnixNano": "1794016660000000000",
++              "endTimeUnixNano": "1794016660700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_fx_rate"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"pair\": \"EUR/USD\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"rate\": 1.08}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "f6967e7893f57fd1",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794016800000000000",
++              "endTimeUnixNano": "1794016801900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "4c1604d115cea325",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794016940000000000",
++              "endTimeUnixNano": "1794016940700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 1350000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "a65e19cbae530282",
++              "name": "execute_tool get_fx_rate",
++              "kind": 1,
++              "startTimeUnixNano": "1794017080000000000",
++              "endTimeUnixNano": "1794017080700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_fx_rate"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"pair\": \"GBP/USD\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"rate\": 1.08}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "bd36cb9d21f6be6a",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794017220000000000",
++              "endTimeUnixNano": "1794017221900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "bf0d7c1c1e21862a",
++              "name": "execute_tool sweep_plan",
++              "kind": 1,
++              "startTimeUnixNano": "1794017360000000000",
++              "endTimeUnixNano": "1794017360700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "sweep_plan"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"target\": \"CONC-USD-100\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"proposed_amount\": 4750000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "b8a18a8902073fec",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794017500000000000",
++              "endTimeUnixNano": "1794017501900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "8df4f50947aaeb26",
++              "name": "execute_tool transfer_funds",
++              "kind": 1,
++              "startTimeUnixNano": "1794017640000000000",
++              "endTimeUnixNano": "1794017640700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "transfer_funds"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"from\": \"OPS-USD-001\", \"to\": \"CONC-USD-100\", \"amount\": 4750000, \"currency\": \"USD\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"status\": \"settled\", \"reference\": \"TRF-88231\"}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "c57d21fa5d328263",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794017710000000000",
++              "endTimeUnixNano": "1794017711900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "dfe574de739988b8",
++              "name": "execute_tool post_journal_entry",
++              "kind": 1,
++              "startTimeUnixNano": "1794017780000000000",
++              "endTimeUnixNano": "1794017780700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "post_journal_entry"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"ref\": \"SWP-20261107-01\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"ok\": true}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "86e7577496a2c877",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794017850000000000",
++              "endTimeUnixNano": "1794017851900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "3e130f7eb1973166",
++              "name": "execute_tool list_credentials",
++              "kind": 1,
++              "startTimeUnixNano": "1794017920000000000",
++              "endTimeUnixNano": "1794017920700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "list_credentials"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"scope\": \"all\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"count\": 42}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "2b5e803b61ba4168",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794018070000000000",
++              "endTimeUnixNano": "1794018071900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "160adb59261ff2d3",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794018220000000000",
++              "endTimeUnixNano": "1794018220700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"CONC-USD-100\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 6500000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "c425c8d99d19bdd0",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794018370000000000",
++              "endTimeUnixNano": "1794018371900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "b6cc60d5d32cbe54",
++              "name": "execute_tool post_journal_entry",
++              "kind": 1,
++              "startTimeUnixNano": "1794018520000000000",
++              "endTimeUnixNano": "1794018520700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "post_journal_entry"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"ref\": \"SWP-20261107-02\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"ok\": true}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "014c2b54b95523cf",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794018670000000000",
++              "endTimeUnixNano": "1794018671900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "6941fa1c257c6f56",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794018820000000000",
++              "endTimeUnixNano": "1794018820700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-USD-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 120000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "1c5cb347611a3ce9",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794018970000000000",
++              "endTimeUnixNano": "1794018971900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "d97dcbee500fe7ee",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794019120000000000",
++              "endTimeUnixNano": "1794019120700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 410000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "5fc324bdb2e1142a",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794019270000000000",
++              "endTimeUnixNano": "1794019271900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "21c402364f9572b8",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794019420000000000",
++              "endTimeUnixNano": "1794019420700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 410000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "5a8e48f687ab165c",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794019570000000000",
++              "endTimeUnixNano": "1794019571900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "58ac5831be38cb8c",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794019720000000000",
++              "endTimeUnixNano": "1794019720700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 410000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "b4ba2e751989a017",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794019870000000000",
++              "endTimeUnixNano": "1794019871900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "49ddb14f71010b93",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794020020000000000",
++              "endTimeUnixNano": "1794020020700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 410000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "b7d946bf54074e32",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794020170000000000",
++              "endTimeUnixNano": "1794020171900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "48c801bef750110c",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794020320000000000",
++              "endTimeUnixNano": "1794020320700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 410000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "57513064d6d59291",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794020470000000000",
++              "endTimeUnixNano": "1794020471900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "f0cde2e5738713a8",
++              "name": "execute_tool get_balance",
++              "kind": 1,
++              "startTimeUnixNano": "1794020620000000000",
++              "endTimeUnixNano": "1794020620700000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "execute_tool"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.name",
++                  "value": {
++                    "stringValue": "get_balance"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.arguments",
++                  "value": {
++                    "stringValue": "{\"account\": \"OPS-GBP-001\"}"
++                  }
++                },
++                {
++                  "key": "gen_ai.tool.call.result",
++                  "value": {
++                    "stringValue": "{\"balance\": 410000}"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            },
++            {
++              "traceId": "83b7ffc050fec94dbca3a0aac36098b2",
++              "spanId": "18d8962058765a6c",
++              "name": "chat anthropic.claude-sonnet-4",
++              "kind": 3,
++              "startTimeUnixNano": "1794020770000000000",
++              "endTimeUnixNano": "1794020771900000000",
++              "attributes": [
++                {
++                  "key": "gen_ai.operation.name",
++                  "value": {
++                    "stringValue": "chat"
++                  }
++                },
++                {
++                  "key": "gen_ai.request.model",
++                  "value": {
++                    "stringValue": "anthropic.claude-sonnet-4"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.input_tokens",
++                  "value": {
++                    "intValue": "1100"
++                  }
++                },
++                {
++                  "key": "gen_ai.usage.output_tokens",
++                  "value": {
++                    "intValue": "160"
++                  }
++                }
++              ],
++              "status": {
++                "code": 1
++              },
++              "parentSpanId": "cc2bd818319478da"
++            }
++          ]
++        }
++      ]
++    }
++  ]
++}
+diff --git a/tests/test_t3_fixtures.py b/tests/test_t3_fixtures.py
+new file mode 100644
+index 0000000..9e5582a
+--- /dev/null
++++ b/tests/test_t3_fixtures.py
+@@ -0,0 +1,452 @@
++"""T-3 fixture tests (AC-1 data, AC-12 data). Written from the spec, not the implementation."""
++import json
++import os
++import socket
++import subprocess
++import sys
++import time
++import uuid
++import urllib.request
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parent.parent
++FIX = ROOT / "fixtures"
++
++
++# ---------- helpers ----------
++def jfiles(sub):
++    d = FIX / sub
++    return sorted(d.rglob("*.json")) if d.exists() else []
++
++
++def load(p):
++    return json.loads(Path(p).read_text())
++
++
++def walk(o):
++    yield o
++    if isinstance(o, dict):
++        for v in o.values():
++            yield from walk(v)
++    elif isinstance(o, list):
++        for v in o:
++            yield from walk(v)
++
++
++def list_items(sub, *keys):
++    """Collect items from top-level list(s) under the given keys across files in a dir."""
++    out = []
++    for f in jfiles(sub):
++        d = load(f)
++        for k in keys:
++            if isinstance(d, dict) and isinstance(d.get(k), list):
++                out += d[k]
++    return out
++
++
++def require(sub):
++    files = jfiles(sub)
++    assert files, f"fixtures/{sub}/ has no JSON fixture files (fixtures missing)"
++    return files
++
++
++def attrs(span):
++    res = {}
++    for a in span.get("attributes", []):
++        v = a.get("value", {})
++        res[a["key"]] = next(iter(v.values())) if isinstance(v, dict) and v else v
++    return res
++
++
++def spans_of(doc):
++    out = []
++    for rs in doc.get("resourceSpans", []):
++        for ss in rs.get("scopeSpans", []):
++            out += ss.get("spans", [])
++    return out
++
++
++def all_run_files():
++    return jfiles("runs")
++
++
++# ---------- AC-1: feeds ----------
++def test_ac1_all_fixture_files_valid_json():
++    files = [p for p in FIX.rglob("*.json")] if FIX.exists() else []
++    assert files, "no fixture JSON files exist (fixtures missing)"
++    for p in files:
++        json.loads(p.read_text())
++
++
++def test_ac1_fixture_counts_per_platform():
++    require("aws"); require("google"); require("microsoft"); require("databricks")
++    aws = list_items("aws", "agentRuntimes")
++    assert len(aws) == 3, f"AWS AgentCore count {len(aws)}"
++    for a in aws:
++        for k in ("agentRuntimeId", "agentRuntimeArn", "agentRuntimeName"):
++            assert a.get(k), f"AWS runtime missing {k}"
++    ms = list_items("microsoft", "value")
++    assert len(ms) == 3, f"Agent 365 count {len(ms)}"
++    db = [x for f in jfiles("databricks") for x in walk(load(f))
++          if isinstance(x, list) and x and all(isinstance(i, dict) for i in x)]
++    # Databricks: the largest list of dicts at top level is the agent list
++    top = []
++    for f in jfiles("databricks"):
++        d = load(f)
++        if isinstance(d, dict):
++            for v in d.values():
++                if isinstance(v, list) and v and all(isinstance(i, dict) for i in v):
++                    top += v
++    assert len(top) == 2, f"Databricks count {len(top)}"
++    goog = []
++    for f in jfiles("google"):
++        d = load(f)
++        if isinstance(d, dict):
++            for v in d.values():
++                if isinstance(v, list):
++                    goog += [i for i in v if isinstance(i, dict) and "name" in i]
++    assert len(goog) == 3, f"Google count {len(goog)}"
++    for g in goog:
++        assert g["name"].startswith("projects/") and "/locations/" in g["name"]
++    assert len(aws) + len(ms) + len(top) + len(goog) == 11
++
++
++def test_ac1_aws_registry_response_present():
++    require("aws")
++    text = " ".join(f.read_text() for f in jfiles("aws"))
++    assert "agentRuntimes" in text
++    # ListDiscoverableRegistryRecords response: some file other than the runtime list or a records key
++    assert any(
++        isinstance(load(f), dict) and any("record" in k.lower() for k in load(f))
++        for f in jfiles("aws")
++    ), "no Agent Registry ListDiscoverableRegistryRecords response (a top-level key containing 'record')"
++
++
++def test_ac1_microsoft_odata_shape():
++    files = require("microsoft")
++    d = load(files[0])
++    assert isinstance(d.get("value"), list)
++    assert any(k.startswith("@odata") for k in d), "expected OData annotations (@odata.*)"
++
++
++def test_ac1_databricks_unity_catalog_shape():
++    files = require("databricks")
++    text = " ".join(f.read_text() for f in files)
++    assert "agent" in text.lower()
++    assert any(isinstance(load(f), dict) for f in files)
++
++
++def test_ac1_includes_treasury_sweep_agent_in_aws():
++    require("aws")
++    names = [a.get("agentRuntimeName") for a in list_items("aws", "agentRuntimes")]
++    assert "treasury-sweep-agent" in names
++
++
++def test_ac1_owner_tools_identity_discoverable_each_platform():
++    for sub in ("aws", "google", "microsoft", "databricks"):
++        files = require(sub)
++        text = " ".join(f.read_text() for f in files).lower()
++        assert "owner" in text, f"{sub}: no owner info"
++        assert "tool" in text, f"{sub}: no tools info"
++        assert any(w in text for w in ("identity", "principal", "serviceaccount", "service_account",
++                                       "managedidentity", "clientid")), f"{sub}: no identity info"
++
++
++def test_ac1_one_agent_per_platform_lacks_distinct_identity():
++    """Four total (one per platform): look for agents whose identity is explicitly shared/none."""
++    for sub in ("aws", "google", "microsoft", "databricks"):
++        require(sub)
++        flagged = 0
++        for f in jfiles(sub):
++            for o in walk(load(f)):
++                if isinstance(o, dict):
++                    if o.get("distinct") is False or o.get("identityDistinct") is False \
++                            or o.get("distinct_identity") is False:
++                        flagged += 1
++                    elif isinstance(o.get("identity"), dict) and (
++                            o["identity"].get("type") == "none" or o["identity"].get("distinct") is False):
++                        flagged += 1
++        assert flagged == 1, f"{sub}: expected exactly 1 agent without distinct identity, found {flagged}"
++
++
++# ---------- AC-1: runs / dialects ----------
++def _dialect_files():
++    otel, oi, ml = [], [], []
++    for f in all_run_files():
++        t = f.read_text()
++        if "gen_ai.agent.id" in t or "invoke_agent" in t:
++            otel.append(f)
++        if "openinference.span.kind" in t:
++            oi.append(f)
++        if "mlflow.spanType" in t:
++            ml.append(f)
++    return otel, oi, ml
++
++
++def test_ac1_run_files_are_otlp_json():
++    files = require("runs")
++    for f in files:
++        d = load(f)
++        assert "resourceSpans" in d, f"{f.name}: not OTLP/HTTP JSON"
++        assert spans_of(d), f"{f.name}: no spans"
++
++
++def test_ac1_three_span_dialects_present():
++    require("runs")
++    otel, oi, ml = _dialect_files()
++    assert otel, "no OTel GenAI file"
++    assert oi, "no OpenInference file"
++    assert ml, "no MLflow file"
++
++
++def test_ac1_otel_genai_attributes():
++    otel, _, _ = _dialect_files()
++    assert otel, "no OTel GenAI file"
++    keys, names = set(), set()
++    for f in otel:
++        for s in spans_of(load(f)):
++            keys |= set(attrs(s)); names.add(s.get("name", "").split(" ")[0])
++    assert {"gen_ai.agent.id", "gen_ai.operation.name", "gen_ai.tool.name"} <= keys
++    assert {"invoke_agent", "execute_tool"} <= names
++
++
++def test_ac1_openinference_attributes():
++    _, oi, _ = _dialect_files()
++    assert oi, "no OpenInference file"
++    kinds, keys = set(), set()
++    for f in oi:
++        for s in spans_of(load(f)):
++            a = attrs(s); keys |= set(a)
++            if "openinference.span.kind" in a:
++                kinds.add(a["openinference.span.kind"])
++    assert {"AGENT", "TOOL"} <= kinds
++    assert "tool.name" in keys
++
++
++def test_ac1_mlflow_attributes():
++    _, _, ml = _dialect_files()
++    assert ml, "no MLflow file"
++    keys = set()
++    for f in ml:
++        for s in spans_of(load(f)):
++            keys |= set(attrs(s))
++    assert "mlflow.spanType" in keys
++
++
++# ---------- external agent card ----------
++def test_ac1_agent_card_fields():
++    """A2A 1.0 Agent Card schema."""
++    p = FIX / "external" / "agent-card.json"
++    assert p.exists(), "fixtures/external/agent-card.json missing"
++    c = load(p)
++    for k in ("name", "description", "version", "skills", "capabilities",
++              "defaultInputModes", "defaultOutputModes", "supportedInterfaces"):
++        assert k in c, f"agent card missing {k}"
++    assert isinstance(c["skills"], list) and c["skills"]
++    for sk in c["skills"]:
++        for k in ("id", "name", "description", "tags"):
++            assert sk.get(k), f"skill missing {k}"
++        assert isinstance(sk["tags"], list)
++    assert isinstance(c["capabilities"], dict)
++    assert isinstance(c["defaultInputModes"], list) and isinstance(c["defaultOutputModes"], list)
++    ifs = c["supportedInterfaces"]
++    assert isinstance(ifs, list) and ifs, "supportedInterfaces must be a non-empty list"
++    for i in ifs:
++        for k in ("url", "protocolBinding", "protocolVersion"):
++            assert i.get(k), f"supportedInterfaces item missing {k}"
++        assert str(i["protocolVersion"]).startswith("1."), i["protocolVersion"]
++
++
++def test_ac1_agent_card_has_no_pre_1_0_top_level_keys():
++    c = load(FIX / "external" / "agent-card.json")
++    for k in ("url", "preferredTransport", "protocolVersion"):
++        assert k not in c, f"pre-1.0 top-level key {k} must not be present"
++
++
++def test_ac1_agent_card_served_over_http():
++    serve = FIX / "external" / "serve.py"
++    assert serve.exists(), "fixtures/external/serve.py missing"
++    s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
++    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
++    proc = subprocess.Popen([sys.executable, str(serve), "--port", str(port)], env=env,
++                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++    try:
++        body = None
++        for _ in range(50):
++            try:
++                with urllib.request.urlopen(f"http://127.0.0.1:{port}/.well-known/agent-card.json", timeout=2) as r:
++                    assert r.status == 200
++                    body = json.loads(r.read())
++                break
++            except Exception:
++                if proc.poll() is not None:
++                    break
++                time.sleep(0.2)
++        assert body is not None, "server did not serve the card"
++        assert body == load(FIX / "external" / "agent-card.json")
++    finally:
++        proc.terminate()
++        proc.wait(timeout=5)
++
++
++# ---------- AC-12: weekend drift ----------
++DRIFT = FIX / "runs" / "weekend-drift.json"
++
++
++def _manifest():
++    for f in jfiles("aws"):
++        for o in walk(load(f)):
++            if isinstance(o, dict) and "treasury-sweep-agent" in [
++                    v for v in o.values() if isinstance(v, str)]:
++                tools, limits = None, None
++                for p in walk(o):
++                    if isinstance(p, dict):
++                        tools = p.get("tools", tools)
++                        limits = p.get("value_limits", limits)
++                if tools is not None:
++                    return tools, limits
++    return None, None
++
++
++def _tool_names(tools):
++    return [t if isinstance(t, str) else t.get("name") for t in tools]
++
++
++def test_ac12_weekend_drift_has_40_spans():
++    assert DRIFT.exists(), "fixtures/runs/weekend-drift.json missing"
++    assert len(spans_of(load(DRIFT))) == 40
++
++
++def test_ac12_manifest_has_transfer_funds_limit_not_list_credentials():
++    tools, limits = _manifest()
++    assert tools is not None, "treasury-sweep-agent manifest tools not found in fixtures/aws"
++    names = _tool_names(tools)
++    assert "transfer_funds" in names
++    assert "list_credentials" not in names
++    lim = (limits or {}).get("transfer_funds")
++    if isinstance(lim, dict):
++        lim = lim.get("amount")
++    assert isinstance(lim, (int, float)) and not isinstance(lim, bool), f"no numeric limit: {limits}"
++
++
++def test_ac12_weekend_drift_calls_and_amount_over_limit():
++    assert DRIFT.exists(), "fixtures/runs/weekend-drift.json missing"
++    spans = spans_of(load(DRIFT))
++    def tool(s):
++        a = attrs(s)
++        return a.get("gen_ai.tool.name") or a.get("tool.name")
++    tf = [s for s in spans if tool(s) == "transfer_funds"]
++    lc = [s for s in spans if tool(s) == "list_credentials"]
++    assert tf, "no transfer_funds call"
++    assert lc, "no list_credentials call"
++    # at 2026-11-07T02:14:00Z
++    from datetime import datetime, timezone
++    target = datetime(2026, 11, 7, 2, 14, tzinfo=timezone.utc).timestamp()
++    def start(s):
++        return int(s["startTimeUnixNano"]) / 1e9
++    hit = [s for s in tf if abs(start(s) - target) < 1]
++    assert hit, "no transfer_funds call at 2026-11-07T02:14:00Z"
++    tools, limits = _manifest()
++    assert limits and "transfer_funds" in limits, "manifest limit not found"
++    lim = limits["transfer_funds"]
++    lim = lim.get("amount") if isinstance(lim, dict) else lim
++    execs = [s for s in hit if attrs(s).get("gen_ai.operation.name") == "execute_tool"
++             or s.get("name", "").startswith("execute_tool")]
++    assert execs, "transfer_funds call is not an execute_tool span"
++    raw = attrs(execs[0]).get("gen_ai.tool.call.arguments")
++    assert isinstance(raw, str), "execute_tool span lacks gen_ai.tool.call.arguments JSON string"
++    args = json.loads(raw)
++    assert isinstance(args, dict)
++    amt = args.get("amount")
++    assert isinstance(amt, (int, float)) and not isinstance(amt, bool), f"amount not numeric: {amt!r}"
++    assert amt > lim
++
++
++def test_ac12_weekend_drift_is_for_treasury_sweep_agent():
++    assert DRIFT.exists(), "fixtures/runs/weekend-drift.json missing"
++    assert "treasury-sweep-agent" in DRIFT.read_text()
++
++
++# ---------- native ids / distinct runs / uuid shape ----------
++def _native_ids():
++    ids = set()
++    for a in list_items("aws", "agentRuntimes"):
++        ids.add(a.get("agentRuntimeId"))
++    for f in jfiles("google"):
++        d = load(f)
++        for v in d.values() if isinstance(d, dict) else []:
++            for i in v if isinstance(v, list) else []:
++                if isinstance(i, dict) and str(i.get("name", "")).startswith("projects/"):
++                    ids.add(i["name"]); ids.add(i["name"].rsplit("/", 1)[-1])
++        for o in walk(d):
++            if isinstance(o, dict) and o.get("agentEngine"):
++                ids.add(o["agentEngine"]); ids.add(o["agentEngine"].rsplit("/", 1)[-1])
++    for p in list_items("microsoft", "value"):
++        ids.add(p.get("id"))
++    for f in jfiles("databricks"):
++        d = load(f)
++        for v in d.values() if isinstance(d, dict) else []:
++            for i in v if isinstance(v, list) else []:
++                if isinstance(i, dict):
++                    ids.add(i.get("agent_service_id"))
++    ids.discard(None)
++    assert len(ids) >= 8, f"native id set suspiciously small: {ids}"
++    return ids
++
++
++def _is_agent_span(s):
++    a = attrs(s)
++    return (a.get("gen_ai.operation.name") == "invoke_agent"
++            or s.get("name", "").startswith("invoke_agent")
++            or a.get("openinference.span.kind") == "AGENT"
++            or a.get("mlflow.spanType") == "AGENT")
++
++
++def test_ac1_every_run_agent_span_carries_native_agent_id():
++    ids = _native_ids()
++    files = require("runs")
++    for f in files:
++        d = load(f)
++        res = {}
++        for rs in d.get("resourceSpans", []):
++            res.update(attrs(rs.get("resource", {})))
++        agent_spans = [s for s in spans_of(d) if _is_agent_span(s)]
++        assert agent_spans, f"{f.name}: no agent-level span"
++        for s in agent_spans:
++            v = attrs(s).get("gen_ai.agent.id") or res.get("gen_ai.agent.id")
++            assert v, f"{f.name}: agent span lacks gen_ai.agent.id"
++            assert v in ids, f"{f.name}: gen_ai.agent.id {v!r} is not a native platform id"
++
++
++def test_ac1_trace_ids_distinct_between_run_files():
++    files = require("runs")
++    seen = {}
++    for f in files:
++        tids = {s.get("traceId") for s in spans_of(load(f))}
++        assert len(tids) == 1 and None not in tids, f"{f.name}: expected one traceId, got {tids}"
++        t = tids.pop()
++        assert t not in seen, f"traceId {t} shared by {seen[t]} and {f.name}"
++        seen[t] = f.name
++
++
++def test_ac1_microsoft_principal_id_is_uuid():
++    pk = list_items("microsoft", "value")
++    assert pk
++    vals = [p.get("identity", {}).get("principalId") for p in pk]
++    vals = [v for v in vals if v is not None]
++    assert vals, "no principalId values"
++    for v in vals:
++        assert str(uuid.UUID(v)) == v.lower(), f"principalId not canonical 8-4-4-4-12 UUID: {v}"
++
++
++def test_ac1_databricks_application_id_is_uuid():
++    n = 0
++    for f in jfiles("databricks"):
++        for o in walk(load(f)):
++            if isinstance(o, dict) and "application_id" in o:
++                v = o["application_id"]
++                assert str(uuid.UUID(v)) == v.lower(), f"application_id not canonical UUID: {v}"
++                n += 1
++    assert n >= 1

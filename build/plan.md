@@ -34,7 +34,7 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 |----|-----|-----------|---------|---------|----|--------|---------------|--------|
 | T-1 | enables all (health, DB init, anon write rejected) | — | app.sh, requirements.txt, package.json, vite.config.js, backend/db.py, backend/domino_identity.py, backend/main.py, frontend/ scaffold, .gitignore, .env.example | domino-deploy (sonnet) | test-author, code-reviewer | task/T-1 | a14d50d | merged (822a54b) |
 | T-2 | AC-2, AC-3 (scorer) | — | schemas/, config/, backend/tiering.py, docs/BORROWED.md | builder | test-author, code-reviewer | task/T-2 | 4a50153 | merged (8998f25) |
-| T-3 | AC-1, AC-12 (data) | T-2 | fixtures/ | builder | test-author, code-reviewer | task/T-3 | fe4c551 | building (round 2) |
+| T-3 | AC-1, AC-12 (data) | T-2 | fixtures/ | builder | test-author, code-reviewer | task/T-3 | fe4c551 | merged (b481c45) |
 | T-5 | AC-4, AC-5 (backend) | T-1, T-2 | backend/otlp.py, backend/normalize_span.py, backend/chain.py, backend/routes/traces.py, backend/routes/runs.py, backend/db.py (findings columns, granted in Wave 2) | builder | test-author, code-reviewer | task/T-5 | 446af59 | building (round 2) |
 | T-7 | AC-8 (data), AC-10 (agent) | T-1 | models/, agents/, tracing_setup.py, experiment_setup.py | domino-setup (sonnet) + domino-deploy (sonnet) + builder | test-author, code-reviewer | task/T-7 | 1c2e4ea | building |
 | T-4 | AC-1, AC-2 (routes), AC-3 (re-tier) | T-1, T-2, T-3 | adapters/, backend/normalize.py, backend/routes/agents.py, jobs/intake.py | builder | test-author, code-reviewer | task/T-4 | — | pending |
@@ -52,3 +52,4 @@ Shared registration of routers in backend/main.py belongs to T-1. Later tasks th
 ## Design decisions
 - Shadow agents (T-5, round 2): an unmatched gen_ai.agent.id creates a placeholder agents row with status `shadow` and id `act:shadow:<sha256(native)[:16]>`. The shadow_agent finding points to that placeholder. T-4's fleet route and T-9's fleet page show shadow agents separately, so the demo's 13-agent count holds.
 - Drift dedupe (T-6): ingest is idempotent per (run_id, span_id). The run-ingested hook can fire more than once per run, so T-6 must upsert one scope_drift finding per run and keep it idempotent.
+- For T-12 (from T-3 review): the signed card's signature covers base64url(protected) + "." + base64url(key-sorted, compact JSON of the card without `signatures`), ES256, public JWK at fixtures/external/signing-key.pub.jwk.json. The verifier must match tests/test_t3_signed_card.py. fixtures/README.md line 8 still says gen_ai.agent.id is the AWS agentRuntimeId; reword it to AWS-only when docs are touched (T-13).

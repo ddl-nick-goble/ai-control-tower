@@ -1,0 +1,1119 @@
+diff --git a/agents/__init__.py b/agents/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/agents/recon_agent/__init__.py b/agents/recon_agent/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/agents/recon_agent/act_export.py b/agents/recon_agent/act_export.py
+new file mode 100644
+index 0000000..05d6f77
+--- /dev/null
++++ b/agents/recon_agent/act_export.py
+@@ -0,0 +1,105 @@
++"""Direct ACT export: buffer spans for a run, POST OTLP/HTTP JSON at the end of the run.
++
++MLflow < 3.11 cannot export OTLP itself, so the agent records spans here in OTel GenAI
++conventions (invoke_agent, execute_tool, chat). Env:
++  ACT_TRACES_URL  OTLP/HTTP traces endpoint; unset means export is a no-op
++  ACT_TOKEN_URL   where to read the bearer token (default http://localhost:8899/access-token)
++"""
++import json
++import logging
++import os
++import secrets
++import time
++from contextlib import contextmanager
++
++import requests
++
++log = logging.getLogger(__name__)
++DEFAULT_TOKEN_URL = "http://localhost:8899/access-token"
++KIND = {"internal": 1, "server": 2, "client": 3}
++
++
++def _val(v):
++    if isinstance(v, bool):
++        return {"boolValue": v}
++    if isinstance(v, int):
++        return {"intValue": str(v)}
++    if isinstance(v, float):
++        return {"doubleValue": v}
++    if isinstance(v, (dict, list, tuple)):
++        v = json.dumps(v, default=str)
++    return {"stringValue": str(v)}
++
++
++def _attrs(d):
++    return [{"key": k, "value": _val(v)} for k, v in d.items() if v is not None]
++
++
++class ActTraceBuffer:
++    def __init__(self, service_name="act-recon-agent"):
++        self.service_name = service_name
++        self.trace_id = secrets.token_hex(16)
++        self.spans = []
++        self._stack = []
++
++    @contextmanager
++    def span(self, name, attributes=None, kind="internal"):
++        """Record a span; nested use sets parentSpanId. Yields the attribute dict (mutable)."""
++        attrs = dict(attributes or {})
++        sp = {"traceId": self.trace_id, "spanId": secrets.token_hex(8), "name": name,
++              "kind": KIND[kind], "startTimeUnixNano": str(time.time_ns())}
++        if self._stack:
++            sp["parentSpanId"] = self._stack[-1]
++        self._stack.append(sp["spanId"])
++        status = {"code": 1}
++        try:
++            yield attrs
++        except Exception as e:
++            status = {"code": 2, "message": str(e)[:300]}
++            attrs["error.type"] = type(e).__name__
++            raise
++        finally:
++            self._stack.pop()
++            sp["endTimeUnixNano"] = str(time.time_ns())
++            sp["attributes"] = _attrs(attrs)
++            sp["status"] = status
++            self.spans.append(sp)
++
++    def invoke_agent(self, agent_id, agent_name, **attrs):
++        return self.span(f"invoke_agent {agent_name}", {
++            "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.id": agent_id,
++            "gen_ai.agent.name": agent_name, **attrs})
++
++    def execute_tool(self, tool_name, arguments=None, **attrs):
++        return self.span(f"execute_tool {tool_name}", {
++            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": tool_name,
++            "gen_ai.tool.call.arguments": json.dumps(arguments or {}, default=str), **attrs})
++
++    def chat(self, model, **attrs):
++        return self.span(f"chat {model}", {
++            "gen_ai.operation.name": "chat", "gen_ai.request.model": model, **attrs}, kind="client")
++
++    def payload(self):
++        return {"resourceSpans": [{
++            "resource": {"attributes": _attrs({"service.name": self.service_name})},
++            "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
++        }]}
++
++    def flush(self) -> bool:
++        """POST buffered spans synchronously. No-op (False) if ACT_TRACES_URL is unset or empty buffer.
++        Never raises: an export failure must not fail the agent run."""
++        url = os.environ.get("ACT_TRACES_URL")
++        if not url or not self.spans:
++            return False
++        try:
++            tok = requests.get(os.environ.get("ACT_TOKEN_URL", DEFAULT_TOKEN_URL), timeout=5).text.strip()
++            r = requests.post(url, json=self.payload(), timeout=30,
++                              headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
++            ok = r.status_code < 300
++            if not ok:
++                log.warning("ACT export got HTTP %s", r.status_code)
++            self.spans = []
++            return ok
++        except Exception as e:  # noqa: BLE001
++            log.warning("ACT export failed: %s", type(e).__name__)
++            return False
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+new file mode 100644
+index 0000000..938edd2
+--- /dev/null
++++ b/agents/recon_agent/agent.py
+@@ -0,0 +1,113 @@
++"""Reconciliation assistant: reads two ledgers, calls fetch_ledger / compare_entries /
++propose_adjustment, classifies breaks with the registered break_classifier model.
++Proposals only; ACT receives the OTel spans as evidence."""
++import json
++import logging
++import os
++
++import requests
++
++from agents.recon_agent import llm, tools
++from agents.recon_agent.act_export import ActTraceBuffer
++from agents.recon_agent.tracing_setup import add_tracing
++
++log = logging.getLogger(__name__)
++AGENT_NAME = "recon-agent"
++MAX_STEPS = 8
++SYSTEM = ("You are a reconciliation assistant. Fetch both ledgers, compare them, then propose an "
++          "adjustment for each break (proposals only, nothing is executed). Be concise.")
++
++TOOL_SPECS = [
++    {"name": "fetch_ledger", "description": "Load a fixture ledger by name (gl_ledger or custodian_ledger).",
++     "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
++    {"name": "compare_entries", "description": "Compare two ledgers (by name) and list breaks.",
++     "input_schema": {"type": "object", "properties": {"ledger_a": {"type": "string"},
++                                                       "ledger_b": {"type": "string"}},
++                      "required": ["ledger_a", "ledger_b"]}},
++    {"name": "propose_adjustment", "description": "Propose a journal entry for a break.",
++     "input_schema": {"type": "object", "properties": {"break_id": {"type": "string"},
++                                                       "reason": {"type": "string"},
++                                                       "amount": {"type": "number"},
++                                                       "ref": {"type": "string"}},
++                      "required": ["break_id", "reason"]}},
++]
++
++
++def classify_break(br: dict) -> str:
++    payload = {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
++    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
++    if not url:
++        from models.break_classifier.predict import predict
++        return predict(payload)["class"]
++    proxy = (os.environ.get("DOMINO_API_PROXY") or "http://localhost:8899").rstrip("/")
++    tok = os.environ.get("BREAK_CLASSIFIER_TOKEN") or requests.get(f"{proxy}/access-token", timeout=5).text.strip()
++    r = requests.post(url, json={"data": payload}, headers={"Authorization": f"Bearer {tok}"}, timeout=30)
++    r.raise_for_status()
++    res = r.json()
++    res = res.get("result", res)
++    return str(res["class"]) if isinstance(res, dict) and "class" in res else str(res)
++
++
++def _dispatch(name, inp, buf, store):
++    if name == "fetch_ledger":
++        out = tools.fetch_ledger(inp["name"])
++        store[inp["name"]] = out
++        return out
++    if name == "compare_entries":
++        breaks = tools.compare_entries(inp["ledger_a"], inp["ledger_b"])
++        for br in breaks:
++            with buf.execute_tool("break_classifier", {k: br[k] for k in
++                                  ("amount_diff", "days_diff", "missing_side")}) as a:
++                br["classification"] = classify_break(br)
++                a["gen_ai.tool.call.result"] = br["classification"]
++        store["breaks"] = breaks
++        return breaks
++    if name == "propose_adjustment":
++        return tools.propose_adjustment(**inp)
++    raise ValueError(f"unknown tool {name}")
++
++
++def _run(prompt: str, buf: ActTraceBuffer) -> dict:
++    messages = [{"role": "user", "content": prompt}]
++    store, proposals, text = {}, [], ""
++    for _ in range(MAX_STEPS):
++        with buf.chat("sonnet") as ca:
++            resp = llm.create_message("sonnet", messages, tools=TOOL_SPECS, system=SYSTEM)
++            ca["gen_ai.response.model"] = resp.get("model") or "sonnet"
++            usage = resp.get("usage") or {}
++            ca["gen_ai.usage.input_tokens"] = usage.get("input_tokens")
++            ca["gen_ai.usage.output_tokens"] = usage.get("output_tokens")
++        content = resp.get("content", [])
++        messages.append({"role": "assistant", "content": content})
++        text = "".join(b.get("text", "") for b in content if b.get("type") == "text") or text
++        uses = [b for b in content if b.get("type") == "tool_use"]
++        if resp.get("stop_reason") != "tool_use" or not uses:
++            break
++        results = []
++        for u in uses:
++            with buf.execute_tool(u["name"], u.get("input")) as a:
++                try:
++                    out = _dispatch(u["name"], u.get("input") or {}, buf, store)
++                    err = False
++                except Exception as e:  # noqa: BLE001
++                    out, err = {"error": str(e)}, True
++                a["gen_ai.tool.call.result"] = json.dumps(out, default=str)[:2000]
++            if u["name"] == "propose_adjustment" and not err:
++                proposals.append(out)
++            results.append({"type": "tool_result", "tool_use_id": u["id"],
++                            "content": json.dumps(out, default=str), "is_error": err})
++        messages.append({"role": "user", "content": results})
++    return {"summary": text, "breaks": store.get("breaks", []), "proposals": proposals}
++
++
++@add_tracing(name="recon_agent", span_type="AGENT")
++def run(prompt: str) -> dict:
++    buf = ActTraceBuffer()
++    agent_id = os.environ.get("RECON_AGENT_ID", "recon-agent")
++    try:
++        with buf.invoke_agent(agent_id, AGENT_NAME) as a:
++            a["gen_ai.agent.description"] = "Ledger reconciliation assistant"
++            result = _run(prompt, buf)
++    finally:
++        buf.flush()
++    return result
+diff --git a/agents/recon_agent/config.yaml b/agents/recon_agent/config.yaml
+new file mode 100644
+index 0000000..4157839
+--- /dev/null
++++ b/agents/recon_agent/config.yaml
+@@ -0,0 +1,8 @@
++# Logged as MLflow params by DominoAgentContext(agent_config_path=...).
++# Model names are LLM Gateway 2.0 aliases.
++models:
++  primary: sonnet
++  fast: haiku
++agents:
++  default:
++    max_tokens: 1024
+diff --git a/agents/recon_agent/data/custodian_ledger.json b/agents/recon_agent/data/custodian_ledger.json
+new file mode 100644
+index 0000000..89f5a3e
+--- /dev/null
++++ b/agents/recon_agent/data/custodian_ledger.json
+@@ -0,0 +1,86 @@
++[
++ {
++  "ref": "TXN-001",
++  "date": "2026-10-01",
++  "amount": 1000.0,
++  "description": "Trade settlement TXN-001"
++ },
++ {
++  "ref": "TXN-002",
++  "date": "2026-10-02",
++  "amount": 1137.5,
++  "description": "Trade settlement TXN-002"
++ },
++ {
++  "ref": "TXN-003",
++  "date": "2026-10-03",
++  "amount": 1262.5,
++  "description": "Trade settlement TXN-003"
++ },
++ {
++  "ref": "TXN-004",
++  "date": "2026-10-04",
++  "amount": 1412.5,
++  "description": "Trade settlement TXN-004"
++ },
++ {
++  "ref": "TXN-005",
++  "date": "2026-10-08",
++  "amount": 1550.0,
++  "description": "Trade settlement TXN-005"
++ },
++ {
++  "ref": "TXN-006",
++  "date": "2026-10-06",
++  "amount": 1687.5,
++  "description": "Trade settlement TXN-006"
++ },
++ {
++  "ref": "TXN-007",
++  "date": "2026-10-07",
++  "amount": 2075.0,
++  "description": "Trade settlement TXN-007"
++ },
++ {
++  "ref": "TXN-008",
++  "date": "2026-10-08",
++  "amount": 1962.5,
++  "description": "Trade settlement TXN-008"
++ },
++ {
++  "ref": "TXN-009",
++  "date": "2026-10-09",
++  "amount": 2100.0,
++  "description": "Trade settlement TXN-009"
++ },
++ {
++  "ref": "TXN-010",
++  "date": "2026-10-12",
++  "amount": 2237.5,
++  "description": "Trade settlement TXN-010"
++ },
++ {
++  "ref": "TXN-011",
++  "date": "2026-10-11",
++  "amount": 2375.0,
++  "description": "Trade settlement TXN-011"
++ },
++ {
++  "ref": "TXN-013",
++  "date": "2026-10-13",
++  "amount": 2650.0,
++  "description": "Trade settlement TXN-013"
++ },
++ {
++  "ref": "TXN-014",
++  "date": "2026-10-14",
++  "amount": 2787.5,
++  "description": "Trade settlement TXN-014"
++ },
++ {
++  "ref": "TXN-015",
++  "date": "2026-10-15",
++  "amount": 2925.0,
++  "description": "Trade settlement TXN-015"
++ }
++]
+\ No newline at end of file
+diff --git a/agents/recon_agent/data/gl_ledger.json b/agents/recon_agent/data/gl_ledger.json
+new file mode 100644
+index 0000000..5f3b9c5
+--- /dev/null
++++ b/agents/recon_agent/data/gl_ledger.json
+@@ -0,0 +1,86 @@
++[
++ {
++  "ref": "TXN-001",
++  "date": "2026-10-01",
++  "amount": 1000.0,
++  "description": "Trade settlement TXN-001"
++ },
++ {
++  "ref": "TXN-002",
++  "date": "2026-10-02",
++  "amount": 1137.5,
++  "description": "Trade settlement TXN-002"
++ },
++ {
++  "ref": "TXN-003",
++  "date": "2026-10-03",
++  "amount": 1275.0,
++  "description": "Trade settlement TXN-003"
++ },
++ {
++  "ref": "TXN-004",
++  "date": "2026-10-04",
++  "amount": 1412.5,
++  "description": "Trade settlement TXN-004"
++ },
++ {
++  "ref": "TXN-005",
++  "date": "2026-10-05",
++  "amount": 1550.0,
++  "description": "Trade settlement TXN-005"
++ },
++ {
++  "ref": "TXN-006",
++  "date": "2026-10-06",
++  "amount": 1687.5,
++  "description": "Trade settlement TXN-006"
++ },
++ {
++  "ref": "TXN-007",
++  "date": "2026-10-07",
++  "amount": 1825.0,
++  "description": "Trade settlement TXN-007"
++ },
++ {
++  "ref": "TXN-008",
++  "date": "2026-10-08",
++  "amount": 1962.5,
++  "description": "Trade settlement TXN-008"
++ },
++ {
++  "ref": "TXN-009",
++  "date": "2026-10-09",
++  "amount": 2100.0,
++  "description": "Trade settlement TXN-009"
++ },
++ {
++  "ref": "TXN-010",
++  "date": "2026-10-10",
++  "amount": 2237.5,
++  "description": "Trade settlement TXN-010"
++ },
++ {
++  "ref": "TXN-011",
++  "date": "2026-10-11",
++  "amount": 2375.0,
++  "description": "Trade settlement TXN-011"
++ },
++ {
++  "ref": "TXN-012",
++  "date": "2026-10-12",
++  "amount": 2512.5,
++  "description": "Trade settlement TXN-012"
++ },
++ {
++  "ref": "TXN-013",
++  "date": "2026-10-13",
++  "amount": 2650.0,
++  "description": "Trade settlement TXN-013"
++ },
++ {
++  "ref": "TXN-015",
++  "date": "2026-10-15",
++  "amount": 2925.0,
++  "description": "Trade settlement TXN-015"
++ }
++]
+\ No newline at end of file
+diff --git a/agents/recon_agent/experiment_setup.py b/agents/recon_agent/experiment_setup.py
+new file mode 100644
+index 0000000..5626e91
+--- /dev/null
++++ b/agents/recon_agent/experiment_setup.py
+@@ -0,0 +1,18 @@
++"""MLflow experiment naming: {base}-{project}-{username} (unique across the deployment)."""
++import os
++
++
++def experiment_name(base: str) -> str:
++    return f"{base}-{os.environ.get('DOMINO_PROJECT_NAME', 'local')}-{os.environ.get('DOMINO_STARTING_USERNAME', 'dev')}"
++
++
++def setup_experiment(base: str) -> str:
++    import mlflow
++    name = experiment_name(base)
++    mlflow.set_experiment(name)
++    return name
++
++
++def domino_tags() -> dict:
++    return {"domino.project": os.environ.get("DOMINO_PROJECT_NAME", ""),
++            "domino.run_id": os.environ.get("DOMINO_RUN_ID", "")}
+diff --git a/agents/recon_agent/llm.py b/agents/recon_agent/llm.py
+new file mode 100644
+index 0000000..61fd652
+--- /dev/null
++++ b/agents/recon_agent/llm.py
+@@ -0,0 +1,89 @@
++"""Single entry point for LLM calls: Domino LLM Gateway 2.0, Anthropic-compatible path.
++
++Gateway base URL comes from env LLM_GATEWAY_URL (the gateway App's URL, for example
++https://<apps host>/apps/<vanity>); nothing is hardcoded and no provider key is used.
++Model names are gateway aliases (for example "sonnet", "haiku"). The in-run access token is
++read fresh from $DOMINO_API_PROXY/access-token (default http://localhost:8899) on every call.
++"""
++import os
++
++import requests
++
++DEFAULT_PROXY = "http://localhost:8899"
++ANTHROPIC_VERSION = "2023-06-01"
++
++
++class GatewayError(RuntimeError):
++    pass
++
++
++def _token() -> str:
++    proxy = (os.environ.get("DOMINO_API_PROXY") or DEFAULT_PROXY).rstrip("/")
++    try:
++        tok = requests.get(f"{proxy}/access-token", timeout=5).text.strip()
++    except requests.RequestException:
++        tok = ""
++    if not tok:  # outside Domino: a Domino bearer the user stored
++        tok = os.environ.get("LLM_GATEWAY_TOKEN", "")
++    if not tok:
++        raise GatewayError("no Domino access token (in-run proxy unreachable, LLM_GATEWAY_TOKEN unset)")
++    return tok
++
++
++def gateway_url() -> str:
++    url = os.environ.get("LLM_GATEWAY_URL", "").rstrip("/")
++    if not url:
++        raise GatewayError("LLM_GATEWAY_URL is not set (Project env var: the LLM Gateway App URL)")
++    return url
++
++
++def _headers(tags=None) -> dict:
++    h = {"Authorization": f"Bearer {_token()}", "anthropic-version": ANTHROPIC_VERSION,
++         "content-type": "application/json"}
++    for k, v in (tags or {}).items():
++        h[f"X-LLM-Tag-{k}"] = str(v)
++    return h
++
++
++def list_aliases() -> list:
++    """Aliases the caller may use (GET <base>/v1/models, data[].id)."""
++    r = requests.get(f"{gateway_url()}/v1/models", headers=_headers(), timeout=30, allow_redirects=False)
++    _check(r)
++    return [m["id"] for m in r.json().get("data", [])]
++
++
++def _check(r) -> None:
++    if 300 <= r.status_code < 400:
++        raise GatewayError(
++            f"gateway redirected ({r.status_code}) to {r.headers.get('location', '?').split('?')[0]}: "
++            "bearer missing/expired, or the user has not consented to the gateway App "
++            "(open the gateway URL in a browser once and accept)")
++    if r.status_code >= 400:
++        raise GatewayError(f"gateway {r.status_code}: {r.text[:500]}")
++
++
++def create_message(model_alias, messages, tools=None, system=None, max_tokens=1024,
++                   tags=None, timeout=120, **extra) -> dict:
++    """Call POST <gateway>/anthropic/v1/messages and return an Anthropic-style dict.
++
++    Returns {"stop_reason", "content": [{"type": "text"|"tool_use", ...}], "model", "usage", "id"}.
++    "model" is the model id the gateway reports having served (alias resolved upstream).
++    """
++    body = {"model": model_alias, "messages": messages, "max_tokens": max_tokens}
++    if tools:
++        body["tools"] = tools
++    if system:
++        body["system"] = system
++    body.update(extra)
++    r = requests.post(f"{gateway_url()}/anthropic/v1/messages", json=body,
++                      headers=_headers(tags), timeout=timeout, allow_redirects=False)
++    _check(r)
++    d = r.json()
++    return {
++        "stop_reason": d.get("stop_reason"),
++        "content": d.get("content", []),
++        "model": d.get("model"),
++        "usage": d.get("usage", {}),
++        "id": d.get("id"),
++        "alias": model_alias,
++    }
+diff --git a/agents/recon_agent/tools.py b/agents/recon_agent/tools.py
+new file mode 100644
+index 0000000..a078b1a
+--- /dev/null
++++ b/agents/recon_agent/tools.py
+@@ -0,0 +1,49 @@
++"""Reconciliation tools. propose_adjustment only proposes; nothing is executed (ACT is evidence)."""
++import json
++from datetime import date
++from pathlib import Path
++
++DATA = Path(__file__).parent / "data"
++
++
++def fetch_ledger(name: str) -> list:
++    p = DATA / f"{Path(str(name)).stem}.json"
++    if not p.is_file():
++        raise ValueError(f"unknown ledger {name!r}; available: {sorted(x.stem for x in DATA.glob('*.json'))}")
++    return json.loads(p.read_text())
++
++
++def _as_ledger(x):
++    return fetch_ledger(x) if isinstance(x, str) else x
++
++
++def compare_entries(ledger_a, ledger_b) -> list:
++    """Return breaks keyed by ref: amount_mismatch, timing, missing_a / missing_b."""
++    a = {e["ref"]: e for e in _as_ledger(ledger_a)}
++    b = {e["ref"]: e for e in _as_ledger(ledger_b)}
++    breaks = []
++    for ref in sorted(set(a) | set(b)):
++        ea, eb = a.get(ref), b.get(ref)
++        br = {"ref": ref, "amount_diff": 0.0, "days_diff": 0, "missing_side": 0}
++        if ea is None or eb is None:
++            br.update(missing_side=1, kind="missing_entry", missing_in="a" if ea is None else "b",
++                      amount=(ea or eb)["amount"])
++        else:
++            ad = round(abs(ea["amount"] - eb["amount"]), 2)
++            dd = abs((date.fromisoformat(ea["date"]) - date.fromisoformat(eb["date"])).days)
++            if not ad and not dd:
++                continue
++            br.update(amount_diff=ad, days_diff=dd, amount=ea["amount"],
++                      kind="amount_mismatch" if ad else "timing")
++        breaks.append(br)
++    for i, br in enumerate(breaks, 1):
++        br["break_id"] = str(i)
++    return breaks
++
++
++def propose_adjustment(break_id, reason, amount=None, ref=None, debit_account="SUSPENSE",
++                       credit_account="CASH") -> dict:
++    """Proposed journal entry (proposal only)."""
++    return {"status": "proposed", "executed": False, "break_id": str(break_id), "ref": ref,
++            "reason": reason, "debit_account": debit_account, "credit_account": credit_account,
++            "amount": amount}
+diff --git a/agents/recon_agent/tracing_setup.py b/agents/recon_agent/tracing_setup.py
+new file mode 100644
+index 0000000..e6bfe4b
+--- /dev/null
++++ b/agents/recon_agent/tracing_setup.py
+@@ -0,0 +1,30 @@
++"""Tracing helpers: Domino @add_tracing when available, otherwise a no-op decorator.
++MLflow problems (no tracking server) never fail the agent run."""
++import functools
++import logging
++
++log = logging.getLogger(__name__)
++
++try:
++    from domino.agents.tracing import add_tracing as _domino_add_tracing
++except Exception:  # noqa: BLE001
++    _domino_add_tracing = None
++
++
++def add_tracing(name, **kw):
++    def deco(fn):
++        if _domino_add_tracing is None:
++            return fn
++        traced = _domino_add_tracing(name=name, **kw)(fn)
++
++        @functools.wraps(fn)
++        def wrapper(*a, **k):
++            try:
++                return traced(*a, **k)
++            except Exception as e:  # noqa: BLE001
++                if getattr(e, "_agent_error", False):
++                    raise
++                log.warning("tracing failed (%s); running untraced", type(e).__name__)
++                return fn(*a, **k)
++        return wrapper
++    return deco
+diff --git a/experiment_setup.py b/experiment_setup.py
+new file mode 100644
+index 0000000..b618f03
+--- /dev/null
++++ b/experiment_setup.py
+@@ -0,0 +1,127 @@
++"""
++Domino Experiment Tracking Setup
++
++This module provides utilities for setting up MLflow experiment tracking
++in Domino Data Lab with proper naming conventions and context logging.
++
++Usage:
++    from experiment_setup import setup_experiment, log_domino_context, setup_autolog
++
++    setup_experiment("my-model")
++    setup_autolog()
++
++    with mlflow.start_run(run_name="training-v1"):
++        log_domino_context()
++        # Your training code here
++"""
++
++import os
++
++import mlflow
++
++# ACT reconciliation work: names come out as act-recon-<project>-<username>.
++# Experiment names are unique across the whole Domino deployment, so keep the suffix.
++DEFAULT_BASE = "act-recon"
++
++
++def setup_experiment(base_name: str = DEFAULT_BASE) -> str:
++    """
++    Set up a Domino-compatible MLflow experiment.
++
++    Experiment names are unique across the whole Domino deployment, not per
++    project, so this function appends the project name and username.
++
++    Args:
++        base_name: Base name for the experiment
++
++    Returns:
++        The full experiment name
++    """
++    username = os.environ.get('DOMINO_STARTING_USERNAME', 'unknown')
++    project = os.environ.get('DOMINO_PROJECT_NAME', 'unknown')
++
++    # Create unique experiment name
++    experiment_name = f"{base_name}-{project}-{username}"
++
++    mlflow.set_experiment(experiment_name)
++    print(f"Experiment set: {experiment_name}")
++
++    return experiment_name
++
++
++def log_domino_context():
++    """
++    Log Domino environment information as MLflow tags.
++
++    Call this at the start of each run to capture:
++    - User who started the run
++    - Project name
++    - Domino run ID and run number
++    - Hardware tier id (DOMINO_HARDWARE_TIER_ID)
++    """
++    mlflow.set_tags({
++        "domino.user": os.environ.get('DOMINO_STARTING_USERNAME', 'unknown'),
++        "domino.project": os.environ.get('DOMINO_PROJECT_NAME', 'unknown'),
++        "domino.run_id": os.environ.get('DOMINO_RUN_ID', 'unknown'),
++        "domino.run_number": os.environ.get('DOMINO_RUN_NUMBER', 'unknown'),
++        "domino.hardware_tier": os.environ.get('DOMINO_HARDWARE_TIER_ID', 'unknown'),
++    })
++
++
++def setup_autolog():
++    """
++    Enable MLflow auto-logging for detected ML frameworks.
++
++    Automatically detects and enables logging for:
++    - scikit-learn
++    - TensorFlow/Keras
++    - PyTorch
++    - XGBoost
++    - LightGBM
++    """
++    try:
++        import sklearn
++        mlflow.sklearn.autolog()
++        print("Enabled scikit-learn auto-logging")
++    except ImportError:
++        pass
++
++    try:
++        import tensorflow
++        mlflow.tensorflow.autolog()
++        print("Enabled TensorFlow auto-logging")
++    except ImportError:
++        pass
++
++    try:
++        import torch
++        mlflow.pytorch.autolog()
++        print("Enabled PyTorch auto-logging")
++    except ImportError:
++        pass
++
++    try:
++        import xgboost
++        mlflow.xgboost.autolog()
++        print("Enabled XGBoost auto-logging")
++    except ImportError:
++        pass
++
++    try:
++        import lightgbm
++        mlflow.lightgbm.autolog()
++        print("Enabled LightGBM auto-logging")
++    except ImportError:
++        pass
++
++
++def enable_large_artifact_upload():
++    """
++    Enable multipart upload for large artifacts.
++
++    Call this before logging large files (e.g., LLMs, deep learning models)
++    to enable chunked upload and prevent timeouts.
++    """
++    os.environ['MLFLOW_ENABLE_PROXY_MULTIPART_UPLOAD'] = "true"
++    os.environ['MLFLOW_MULTIPART_UPLOAD_CHUNK_SIZE'] = "104857600"  # 100MB
++    print("Enabled multipart upload for large artifacts")
+diff --git a/models/__init__.py b/models/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/models/break_classifier/__init__.py b/models/break_classifier/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/models/break_classifier/predict.py b/models/break_classifier/predict.py
+new file mode 100644
+index 0000000..55adef3
+--- /dev/null
++++ b/models/break_classifier/predict.py
+@@ -0,0 +1,21 @@
++"""Endpoint entry function: predict(payload) -> {"class": str}. Model path from BREAK_CLASSIFIER_MODEL_PATH."""
++import os
++
++import joblib
++
++_cache = {}
++FEATURES = ["amount_diff", "days_diff", "missing_side"]
++
++
++def _model():
++    p = os.environ["BREAK_CLASSIFIER_MODEL_PATH"]
++    if p not in _cache:
++        _cache[p] = joblib.load(p)
++    return _cache[p]
++
++
++def predict(payload: dict = None, **kw) -> dict:
++    d = payload if payload is not None else kw
++    d = d.get("data", d)
++    x = [[float(d.get(f, 0)) for f in FEATURES]]
++    return {"class": str(_model().predict(x)[0])}
+diff --git a/models/break_classifier/train.py b/models/break_classifier/train.py
+new file mode 100644
+index 0000000..b6053d9
+--- /dev/null
++++ b/models/break_classifier/train.py
+@@ -0,0 +1,60 @@
++"""Train break_classifier (tiny LogisticRegression on synthetic break features).
++
++As __main__ (a Domino job): logs to MLflow, registers "break_classifier", alias "champion".
++"""
++import os
++import sys
++
++import joblib
++import numpy as np
++from sklearn.linear_model import LogisticRegression
++
++FEATURES = ["amount_diff", "days_diff", "missing_side"]
++MODEL_FILE = "break_classifier.joblib"
++
++
++def _data(n=300, seed=0):
++    r = np.random.default_rng(seed)
++    t = np.c_[np.zeros(n), r.integers(1, 6, n), np.zeros(n)]
++    a = np.c_[r.uniform(1, 500, n), np.zeros(n), np.zeros(n)]
++    m = np.c_[r.uniform(0, 2000, n), np.zeros(n), np.ones(n)]
++    X = np.vstack([t, a, m])
++    y = ["timing"] * n + ["amount_mismatch"] * n + ["missing_entry"] * n
++    return X, np.array(y)
++
++
++def _fit():
++    X, y = _data()
++    return LogisticRegression(max_iter=1000).fit(X, y), X, y
++
++
++def train(output_dir: str) -> str:
++    model, _, _ = _fit()
++    os.makedirs(output_dir, exist_ok=True)
++    path = os.path.join(output_dir, MODEL_FILE)
++    joblib.dump(model, path)
++    return path
++
++
++def main(output_dir="/tmp/break_classifier"):
++    import mlflow
++    import pandas as pd
++    from mlflow.models import infer_signature
++    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
++    from agents.recon_agent.experiment_setup import domino_tags, setup_experiment
++    setup_experiment("break-classifier")
++    model, X, y = _fit()
++    df = pd.DataFrame(X[:5], columns=FEATURES)
++    with mlflow.start_run(run_name="break-classifier-train"):
++        mlflow.set_tags(domino_tags())
++        mlflow.log_metric("train_accuracy", float(model.score(X, y)))
++        info = mlflow.sklearn.log_model(model, "model", signature=infer_signature(df, model.predict(df)),
++                                        input_example=df, registered_model_name="break_classifier")
++    client = mlflow.MlflowClient()
++    ver = max(int(v.version) for v in client.search_model_versions("name='break_classifier'"))
++    client.set_registered_model_alias("break_classifier", "champion", str(ver))
++    print("registered break_classifier v", ver, info.model_uri)
++
++
++if __name__ == "__main__":
++    main(*sys.argv[1:2])
+diff --git a/requirements.txt b/requirements.txt
+index 78c2aa3..802a6e2 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -4,3 +4,7 @@ sqlalchemy>=2.0
+ httpx>=0.27
+ PyJWT[crypto]>=2.8
+ jupyter-server-proxy
++requests
++scikit-learn
++joblib
++mlflow
+diff --git a/tests/conftest.py b/tests/conftest.py
+index fc14cbc..f00129a 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -25,3 +25,7 @@ def db_mod(db_env):
+     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
+         del sys.modules[m]
+     return importlib.import_module("backend.db")
++
++
++def pytest_configure(config):
++    config.addinivalue_line("markers", "live: needs a live deployment; skipped unless its env var is set")
+diff --git a/tests/test_t7_agent.py b/tests/test_t7_agent.py
+new file mode 100644
+index 0000000..7131520
+--- /dev/null
++++ b/tests/test_t7_agent.py
+@@ -0,0 +1,169 @@
++"""T-7 tests: recon agent, break_classifier, OTLP span export to ACT.
++
++Assumed contracts (builder must match):
++- agents.recon_agent.tools: fetch_ledger(name), compare_entries(ledger_a, ledger_b),
++  propose_adjustment(...) ; two fixture files under agents/recon_agent/data/
++- models.break_classifier.train.train(output_dir) writes a model file into output_dir;
++  models/break_classifier/predict.py predict(payload: dict) -> {"class": str},
++  loading the model from env BREAK_CLASSIFIER_MODEL_PATH
++- agents.recon_agent.agent.run(prompt: str) -> dict
++- agents.recon_agent.llm.create_message(...) is the only gateway entry point; the stub
++  returns an Anthropic-style dict {"stop_reason", "content": [blocks]} with
++  {"type": "tool_use", "id", "name", "input"} / {"type": "text", "text"} blocks.
++- Tracing hook posts OTLP/HTTP JSON to env ACT_TRACES_URL with Bearer token from
++  http://localhost:8899/access-token (stubbed via requests/urllib is NOT patched; the test
++  sets DOMINO_TOKEN_URL-independent behavior by patching a callable if present; see
++  fixture `token_stub`, which serves the token over a local HTTP server and sets
++  ACT_TOKEN_URL, falling back on the default URL being unreachable).
++"""
++import importlib
++import json
++import os
++import threading
++from http.server import BaseHTTPRequestHandler, HTTPServer
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parent.parent
++TOKEN = "stub-token-xyz"
++
++
++def _serve(handler_cls):
++    srv = HTTPServer(("127.0.0.1", 0), handler_cls)
++    threading.Thread(target=srv.serve_forever, daemon=True).start()
++    return srv
++
++
++def _attrs(span):
++    out = {}
++    for a in span.get("attributes", []):
++        v = a["value"]
++        out[a["key"]] = next(iter(v.values())) if v else None
++    return out
++
++
++def test_t7_tools_exist():
++    tools = importlib.import_module("agents.recon_agent.tools")
++    for n in ("fetch_ledger", "compare_entries", "propose_adjustment"):
++        assert callable(getattr(tools, n)), n
++    files = sorted(p for p in (ROOT / "agents/recon_agent/data").glob("*") if p.is_file())
++    assert len(files) >= 2
++    a = tools.fetch_ledger(files[0].stem)
++    b = tools.fetch_ledger(files[1].stem)
++    assert a and b
++    breaks = tools.compare_entries(a, b)
++    assert len(breaks) >= 1
++
++
++@pytest.fixture
++def trained_model(tmp_path, monkeypatch):
++    train = importlib.import_module("models.break_classifier.train")
++    train.train(str(tmp_path))
++    files = [p for p in tmp_path.rglob("*") if p.is_file()]
++    assert files, "train() wrote no model file"
++    path = next((p for p in files if p.suffix in (".pkl", ".joblib")), files[0])
++    monkeypatch.setenv("BREAK_CLASSIFIER_MODEL_PATH", str(path))
++    return path
++
++
++def test_t7_break_classifier_predict_returns_class(trained_model):
++    predict = importlib.import_module("models.break_classifier.predict")
++    out = predict.predict({"amount_diff": 12.5, "days_diff": 2, "missing_side": 0})
++    assert isinstance(out, dict)
++    assert isinstance(out["class"], str) and out["class"]
++
++
++def test_t7_agent_run_posts_otel_spans(trained_model, monkeypatch):
++    posts = []
++
++    class ActH(BaseHTTPRequestHandler):
++        def do_POST(self):
++            n = int(self.headers.get("Content-Length", 0))
++            posts.append((self.path, dict(self.headers), self.rfile.read(n)))
++            self.send_response(200)
++            self.send_header("Content-Type", "application/json")
++            self.end_headers()
++            self.wfile.write(b"{}")
++
++        def log_message(self, *a):
++            pass
++
++    class TokH(BaseHTTPRequestHandler):
++        def do_GET(self):
++            self.send_response(200)
++            self.end_headers()
++            self.wfile.write(TOKEN.encode())
++
++        def log_message(self, *a):
++            pass
++
++    act, tok = _serve(ActH), _serve(TokH)
++    monkeypatch.setenv("ACT_TRACES_URL", f"http://127.0.0.1:{act.server_port}/v1/traces")
++    monkeypatch.setenv("ACT_TOKEN_URL", f"http://127.0.0.1:{tok.server_port}/access-token")
++    monkeypatch.setenv("DOMINO_API_PROXY", "")
++    monkeypatch.delenv("BREAK_CLASSIFIER_ENDPOINT_URL", raising=False)
++
++    names = sorted(p.stem for p in (ROOT / "agents/recon_agent/data").glob("*") if p.is_file())
++    script = [
++        ("fetch_ledger", {"name": names[0]}),
++        ("fetch_ledger", {"name": names[1]}),
++        ("compare_entries", {"ledger_a": names[0], "ledger_b": names[1]}),
++        ("propose_adjustment", {"break_id": "1", "reason": "timing"}),
++    ]
++    state = {"i": 0}
++
++    def fake_create_message(*args, **kwargs):
++        i = state["i"]
++        state["i"] += 1
++        if i < len(script):
++            name, inp = script[i]
++            return {"stop_reason": "tool_use",
++                    "content": [{"type": "tool_use", "id": f"tu{i}", "name": name, "input": inp}]}
++        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]}
++
++    llm = importlib.import_module("agents.recon_agent.llm")
++    monkeypatch.setattr(llm, "create_message", fake_create_message)
++    agent = importlib.import_module("agents.recon_agent.agent")
++    if hasattr(agent, "create_message"):
++        monkeypatch.setattr(agent, "create_message", fake_create_message)
++
++    result = agent.run("Reconcile the two ledgers")
++    assert isinstance(result, dict)
++    act.shutdown()
++    tok.shutdown()
++
++    assert posts, "no POST reached ACT"
++    assert any(h.get("Authorization") == f"Bearer {TOKEN}" for _, h, _ in posts)
++    spans = []
++    for _, _, body in posts:
++        doc = json.loads(body)
++        assert "resourceSpans" in doc
++        for rs in doc["resourceSpans"]:
++            for ss in rs.get("scopeSpans", []):
++                spans.extend(ss.get("spans", []))
++    attrs = [_attrs(s) for s in spans]
++    invoke = [a for a in attrs if a.get("gen_ai.operation.name") == "invoke_agent"]
++    assert invoke and any(a.get("gen_ai.agent.id") for a in invoke)
++    tools = {a.get("gen_ai.tool.name") for a in attrs if a.get("gen_ai.operation.name") == "execute_tool"}
++    assert {"fetch_ledger", "compare_entries", "propose_adjustment"} <= tools
++
++
++@pytest.mark.live
++@pytest.mark.skipif(not os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL"), reason="BREAK_CLASSIFIER_ENDPOINT_URL not set")
++def test_t7_live_endpoint_returns_class():
++    import requests
++    r = requests.post(os.environ["BREAK_CLASSIFIER_ENDPOINT_URL"],
++                      json={"data": {"amount_diff": 12.5, "days_diff": 2, "missing_side": 0}},
++                      headers={"Authorization": f"Bearer {os.environ.get('BREAK_CLASSIFIER_TOKEN', '')}"},
++                      timeout=30)
++    assert r.status_code == 200
++    assert "class" in json.dumps(r.json())
++
++
++@pytest.mark.live
++@pytest.mark.skipif(not os.environ.get("ACT_LIVE_URL"), reason="ACT_LIVE_URL not set")
++def test_t7_live_agent_spans_at_act():
++    """Placeholder: run the deployed agent once, then assert ACT shows events for it.
++    Verified manually/by ui-tester until a stable ACT events query route exists."""
++    pytest.skip("placeholder: query ACT events for the agent after a live run")
+diff --git a/tracing_setup.py b/tracing_setup.py
+new file mode 100644
+index 0000000..d1d59c4
+--- /dev/null
++++ b/tracing_setup.py
+@@ -0,0 +1,36 @@
++"""MLflow tracing for the recon agent via the Domino agents SDK (@add_tracing).
++
++The agent calls the gateway with requests (not the Anthropic SDK), so LLM calls are traced by
++decorating create_message / tool functions with @add_tracing rather than by autologging.
++ACT export is separate (agents/recon_agent/act_export.py).
++
++    from tracing_setup import add_tracing, agent_run
++    with agent_run() as run:      # sets the experiment, starts a Domino agent run
++        traced_fn(...)
++"""
++import os
++from contextlib import contextmanager
++
++import mlflow
++from domino.agents.logging import DominoAgentContext
++from domino.agents.tracing import add_tracing  # noqa: F401  (re-exported)
++
++from experiment_setup import setup_experiment
++
++CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents", "recon_agent", "config.yaml")
++BASE = "act-recon"
++
++
++def span_evaluator(span):
++    """Numeric score only when the output carries one; never invent defaults."""
++    out = span.outputs if isinstance(span.outputs, dict) else {}
++    return {"output_chars": float(len(str(out.get("text", out))))} if span.outputs is not None else {}
++
++
++@contextmanager
++def agent_run(summary_metrics=None, config_path=CONFIG):
++    """Set experiment act-recon-<project>-<user>, then yield the Domino agent MLflow run."""
++    setup_experiment(BASE)
++    with DominoAgentContext(agent_config_path=config_path,
++                            custom_summary_metrics=summary_metrics or []) as run:
++        yield run

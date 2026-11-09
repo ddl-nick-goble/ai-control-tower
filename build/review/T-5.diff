@@ -1,0 +1,988 @@
+diff --git a/backend/chain.py b/backend/chain.py
+new file mode 100644
+index 0000000..0f78b37
+--- /dev/null
++++ b/backend/chain.py
+@@ -0,0 +1,60 @@
++"""Append-only hash chain over the events table."""
++import hashlib
++import json
++import threading
++
++from sqlalchemy import insert, select
++
++from . import db
++
++GENESIS = "0" * 64
++_lock = threading.Lock()
++
++
++def canonical_json(event) -> str:
++    return json.dumps(event, sort_keys=True, separators=(",", ":"))
++
++
++def compute_hash(prev_hash: str, event) -> str:
++    return hashlib.sha256((prev_hash + canonical_json(event)).encode()).hexdigest()
++
++
++def begin_write(conn) -> None:
++    """Take the SQLite write lock (BEGIN IMMEDIATE) so the prev_hash read and the insert
++    happen in one write transaction, safe across processes. Must be the first statement
++    on a fresh connection; the caller's commit/rollback ends it."""
++    conn.exec_driver_sql("BEGIN IMMEDIATE")
++
++
++def append_events(conn, items: list[dict]) -> None:
++    """items: dicts with run_id, agent_id, ts, kind, raw_span, event. Caller holds a write
++    txn on conn (see begin_write) and `with chain.lock:` around the whole transaction."""
++    prev = conn.execute(select(db.events.c.hash).order_by(db.events.c.id.desc()).limit(1)).scalar() or GENESIS
++    rows = []
++    for it in items:
++        h = compute_hash(prev, it["event"])
++        rows.append({**it, "prev_hash": prev, "hash": h})
++        prev = h
++    if rows:
++        conn.execute(insert(db.events), rows)
++
++
++lock = _lock
++
++
++def verify() -> dict:
++    prev = GENESIS
++    n = 0
++    ok = True
++    with db.engine.connect() as conn:
++        for r in conn.execute(select(db.events.c.event, db.events.c.prev_hash, db.events.c.hash)
++                              .order_by(db.events.c.id)):
++            ev = r.event
++            if isinstance(ev, str):
++                ev = json.loads(ev)
++            if r.prev_hash != prev or compute_hash(prev, ev) != r.hash:
++                ok = False
++                break
++            prev = r.hash
++            n += 1
++    return {"ok": ok, "events": n}
+diff --git a/backend/db.py b/backend/db.py
+index 8c239e0..08f7359 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -3,7 +3,7 @@ import logging
+ import os
+ from pathlib import Path
+ 
+-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer,
++from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
+                         MetaData, String, Table, Text, create_engine, event, inspect, text)
+ from sqlalchemy.pool import QueuePool
+ 
+@@ -119,10 +119,12 @@ events = Table(
+     Column("agent_id", String, index=True),
+     Column("ts", String),
+     Column("kind", String),
++    Column("span_id", String),  # nullable; unique with run_id for idempotent ingest
+     Column("raw_span", JSON),
+     Column("event", JSON),
+     Column("prev_hash", String),
+     Column("hash", String, unique=True),
++    Index("ux_events_run_span", "run_id", "span_id", unique=True),
+ )
+ 
+ findings = Table(
+@@ -136,6 +138,13 @@ findings = Table(
+     Column("status", String, default="open"),
+     Column("created_at", String),
+     Column("detail", JSON),
++    Column("type", String),
++    Column("tool", String),
++    Column("span_id", String),
++    Column("ts", String),
++    Column("reason", Text),
++    Column("observed_value", String),
++    Column("limit", String),
+ )
+ 
+ approvals = Table(
+@@ -198,6 +207,9 @@ def _migrate() -> None:
+                     continue
+                 ctype = col.type.compile(engine.dialect)
+                 conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ctype}'))
++        if insp.has_table("events"):
++            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_events_run_span "
++                              "ON events (run_id, span_id)"))
+ 
+ 
+ def init_db() -> None:
+diff --git a/backend/normalize_span.py b/backend/normalize_span.py
+new file mode 100644
+index 0000000..b254f00
+--- /dev/null
++++ b/backend/normalize_span.py
+@@ -0,0 +1,131 @@
++"""Normalize OTel GenAI / OpenInference / MLflow spans to the canonical event."""
++import json
++import re
++from datetime import datetime, timezone
++from pathlib import Path
++
++import yaml
++
++_CFG = Path(__file__).resolve().parent.parent / "config" / "redaction.yaml"
++_cfg_cache = None
++
++
++def _config():
++    global _cfg_cache
++    if _cfg_cache is None:
++        c = yaml.safe_load(_CFG.read_text()) or {}
++        _cfg_cache = {
++            "replacement": c.get("replacement", "[REDACTED]"),
++            "keys": {k.lower() for k in c.get("keys", []) if k.lower() != "amount"},
++            "key_patterns": [re.compile(p) for p in c.get("key_patterns", [])],
++            "patterns": [re.compile(p["regex"]) for p in c.get("patterns", [])],
++        }
++    return _cfg_cache
++
++
++def redact(obj, key=None):
++    c = _config()
++    if key is not None and str(key).lower() != "amount":
++        k = str(key)
++        if k.lower() in c["keys"] or any(p.search(k) for p in c["key_patterns"]):
++            return c["replacement"]
++    if isinstance(obj, dict):
++        return {k: redact(v, k) for k, v in obj.items()}
++    if isinstance(obj, list):
++        return [redact(v) for v in obj]
++    if isinstance(obj, str):
++        for p in c["patterns"]:
++            obj = p.sub(c["replacement"], obj)
++    return obj
++
++
++def _maybe_json(v):
++    if isinstance(v, str):
++        try:
++            return json.loads(v)
++        except ValueError:
++            return v
++    return v
++
++
++def iso(ns: int) -> str:
++    dt = datetime.fromtimestamp(ns / 1e9, tz=timezone.utc)
++    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond:06d}Z"
++
++
++AGENT_KEYS = ("gen_ai.agent.id", "agent.id", "openinference.agent.id", "mlflow.agent.id")
++
++
++def native_agent_id(attrs: dict, resource: dict):
++    """Return (native_id, explicit) where explicit is False if only service.name was found."""
++    for src in (attrs, resource):
++        for k in AGENT_KEYS:
++            if src.get(k):
++                return str(src[k]), True
++    if resource.get("service.name"):
++        return str(resource["service.name"]), False
++    return None, False
++
++
++def _kind(name: str, a: dict) -> str:
++    explicit = a.get("act.event.kind")
++    if explicit in ("input", "model_call", "tool_call", "output", "approval", "override"):
++        return explicit
++    op = str(a.get("gen_ai.operation.name") or "").lower()
++    if op:
++        if op in ("invoke_agent", "create_agent"):
++            return "input"
++        if op == "execute_tool":
++            return "tool_call"
++        if op in ("approval", "override"):
++            return op
++        return "model_call"
++    oi = str(a.get("openinference.span.kind") or "").upper()
++    if oi:
++        return {"AGENT": "input", "CHAIN": "input", "LLM": "model_call", "EMBEDDING": "model_call",
++                "TOOL": "tool_call"}.get(oi, "tool_call")
++    ml = str(a.get("mlflow.spanType") or "").strip('"').upper()
++    if ml:
++        return {"AGENT": "input", "CHAIN": "input", "LLM": "model_call", "CHAT_MODEL": "model_call",
++                "TOOL": "tool_call"}.get(ml, "tool_call")
++    n = name.lower()
++    if n.startswith("invoke_agent"):
++        return "input"
++    if n.startswith("execute_tool"):
++        return "tool_call"
++    if n.startswith("chat") or n.startswith("text_completion"):
++        return "model_call"
++    return "tool_call"
++
++
++def normalize_span(span: dict, agent_id: str | None, native_id: str | None = None) -> dict:
++    a = span.get("attributes", {})
++    kind = _kind(span.get("name", ""), a)
++    name = a.get("gen_ai.tool.name") or a.get("tool.name") or span.get("name") or kind
++    if kind == "model_call":
++        name = a.get("gen_ai.request.model") or span.get("name") or name
++    raw_args = None
++    for k in ("gen_ai.tool.call.arguments", "tool.parameters", "mlflow.spanInputs", "input.value",
++              "gen_ai.prompt"):
++        if k in a:
++            raw_args = _maybe_json(a[k])
++            break
++    skip = set(AGENT_KEYS) | {"gen_ai.tool.call.arguments", "tool.parameters", "mlflow.spanInputs"}
++    attrs = {k: _maybe_json(v) for k, v in a.items() if k not in skip}
++    attrs["service.name"] = (span.get("resource") or {}).get("service.name")
++    if native_id:
++        attrs["native_agent_id"] = native_id
++    if span.get("end_ns") and span.get("start_ns"):
++        attrs["duration_ns"] = span["end_ns"] - span["start_ns"]
++    ev = {
++        "run_id": span["trace_id"],
++        "agent_id": agent_id or "unknown",
++        "ts": iso(span.get("start_ns", 0)),
++        "kind": kind,
++        "name": str(name),
++        "span_id": span.get("span_id", ""),
++        "parent_span_id": span.get("parent_span_id"),
++        "args_redacted": redact(raw_args),
++        "attrs": redact({k: v for k, v in attrs.items() if v is not None}),
++    }
++    return ev
+diff --git a/backend/otlp.py b/backend/otlp.py
+new file mode 100644
+index 0000000..b940f48
+--- /dev/null
++++ b/backend/otlp.py
+@@ -0,0 +1,93 @@
++"""OTLP/HTTP request decoding (JSON and protobuf) into plain span dicts."""
++import json
++
++
++def _anyvalue(v: dict):
++    if not isinstance(v, dict):
++        return v
++    if "stringValue" in v:
++        return v["stringValue"]
++    if "boolValue" in v:
++        return v["boolValue"]
++    if "intValue" in v:
++        try:
++            return int(v["intValue"])
++        except (TypeError, ValueError):
++            return v["intValue"]
++    if "doubleValue" in v:
++        return v["doubleValue"]
++    if "arrayValue" in v:
++        return [_anyvalue(x) for x in v["arrayValue"].get("values", [])]
++    if "kvlistValue" in v:
++        return attrs_to_dict(v["kvlistValue"].get("values", []))
++    if "bytesValue" in v:
++        return v["bytesValue"]
++    return None
++
++
++def attrs_to_dict(attrs) -> dict:
++    return {a.get("key"): _anyvalue(a.get("value", {})) for a in (attrs or []) if a.get("key")}
++
++
++def _flatten(doc: dict) -> list[dict]:
++    out = []
++    for rs in doc.get("resourceSpans", []) or []:
++        res = attrs_to_dict((rs.get("resource") or {}).get("attributes"))
++        for ss in rs.get("scopeSpans", rs.get("instrumentationLibrarySpans", [])) or []:
++            for sp in ss.get("spans", []) or []:
++                out.append({
++                    "trace_id": sp.get("traceId", ""),
++                    "span_id": sp.get("spanId", ""),
++                    "parent_span_id": sp.get("parentSpanId") or None,
++                    "name": sp.get("name", ""),
++                    "start_ns": int(sp.get("startTimeUnixNano") or 0),
++                    "end_ns": int(sp.get("endTimeUnixNano") or 0),
++                    "attributes": attrs_to_dict(sp.get("attributes")),
++                    "resource": res,
++                    "status": sp.get("status"),
++                })
++    return out
++
++
++def parse_json(body: bytes) -> list[dict]:
++    return _flatten(json.loads(body or b"{}"))
++
++
++def parse_protobuf(body: bytes) -> list[dict]:
++    from google.protobuf.json_format import MessageToDict
++    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
++    req = ExportTraceServiceRequest()
++    req.ParseFromString(body)
++    out = []
++    for rs in req.resource_spans:
++        res = attrs_to_dict(MessageToDict(rs.resource).get("attributes"))
++        for ss in rs.scope_spans:
++            for sp in ss.spans:
++                d = MessageToDict(sp)
++                out.append({
++                    "trace_id": sp.trace_id.hex(),
++                    "span_id": sp.span_id.hex(),
++                    "parent_span_id": sp.parent_span_id.hex() or None,
++                    "name": sp.name,
++                    "start_ns": sp.start_time_unix_nano,
++                    "end_ns": sp.end_time_unix_nano,
++                    "attributes": attrs_to_dict(d.get("attributes")),
++                    "resource": res,
++                    "status": d.get("status"),
++                })
++    return out
++
++
++def parse_request(body: bytes, content_type: str) -> list[dict]:
++    """Raises ValueError for any malformed payload or a span with an empty traceId."""
++    try:
++        if "protobuf" in (content_type or "").lower():
++            spans = parse_protobuf(body)
++        else:
++            spans = parse_json(body)
++    except Exception as e:
++        raise ValueError(str(e)) from e
++    for sp in spans:
++        if not sp["trace_id"] or not set(sp["trace_id"]) - {"0"}:
++            raise ValueError("span with empty traceId")
++    return spans
+diff --git a/backend/routes/runs.py b/backend/routes/runs.py
+new file mode 100644
+index 0000000..faab57d
+--- /dev/null
++++ b/backend/routes/runs.py
+@@ -0,0 +1,28 @@
++"""Run reconstruction."""
++import json
++
++from fastapi import APIRouter, HTTPException
++from sqlalchemy import select
++
++from .. import db
++from ..normalize_span import redact
++
++router = APIRouter()
++
++
++@router.get("/api/runs/{run_id}/timeline")
++def timeline(run_id: str):
++    with db.engine.connect() as conn:
++        rows = conn.execute(select(db.events.c.event).where(db.events.c.run_id == run_id)
++                            .order_by(db.events.c.ts, db.events.c.id)).all()
++        run = conn.execute(select(db.runs).where(db.runs.c.id == run_id)).first()
++    if not rows:
++        raise HTTPException(404, "run not found")
++    events = []
++    for (ev,) in rows:
++        ev = json.loads(ev) if isinstance(ev, str) else ev
++        ev["args_redacted"] = redact(ev.get("args_redacted"))
++        events.append(ev)
++    return {"run_id": run_id, "agent_id": run.agent_id if run else events[0]["agent_id"],
++            "started_at": run.started_at if run else None, "ended_at": run.ended_at if run else None,
++            "events": events}
+diff --git a/backend/routes/traces.py b/backend/routes/traces.py
+new file mode 100644
+index 0000000..b81e1cc
+--- /dev/null
++++ b/backend/routes/traces.py
+@@ -0,0 +1,173 @@
++"""OTLP/HTTP trace ingest and audit-chain verification."""
++import hashlib
++import logging
++import os
++import zlib
++from datetime import datetime, timezone
++
++from fastapi import APIRouter, HTTPException, Request
++from fastapi.concurrency import run_in_threadpool
++from fastapi.responses import JSONResponse
++from sqlalchemy import insert, select, update
++
++from .. import chain, db
++from ..normalize_span import iso, native_agent_id, normalize_span
++from ..otlp import parse_request
++
++router = APIRouter()
++
++# Hooks called with run_id after a run's new spans are committed (T-6 drift detector registers here).
++run_ingested_hooks: list = []
++
++log = logging.getLogger(__name__)
++DEFAULT_MAX_BYTES = 10 * 1024 * 1024
++
++
++def register_run_hook(fn) -> None:
++    """Register fn(run_id), called after commit for each run that gained new spans.
++
++    A run may arrive in several batches, so a hook can fire more than once per run_id
++    and must be idempotent. Exceptions are logged and never fail the ingest."""
++    run_ingested_hooks.append(fn)
++
++
++def _now() -> str:
++    return datetime.now(timezone.utc).isoformat()
++
++
++def shadow_id(native: str) -> str:
++    return "act:shadow:" + hashlib.sha256(native.encode()).hexdigest()[:16]
++
++
++def _max_bytes() -> int:
++    try:
++        return int(os.environ.get("ACT_OTLP_MAX_BYTES", DEFAULT_MAX_BYTES))
++    except ValueError:
++        return DEFAULT_MAX_BYTES
++
++
++def ingest(spans: list[dict]) -> dict:
++    # Normalize before taking the lock.
++    prepared = []
++    for sp in spans:
++        native, explicit = native_agent_id(sp["attributes"], sp["resource"])
++        prepared.append((sp, native, explicit, normalize_span(sp, None, native)))
++
++    matched_spans = 0
++    runs: dict[str, dict] = {}
++    items = []
++    shadow: dict[str, dict] = {}
++    with chain.lock, db.engine.begin() as conn:
++        chain.begin_write(conn)
++        amap = {r.native_id: r.id for r in conn.execute(select(db.agents.c.id, db.agents.c.native_id))}
++        seen = {(r.run_id, r.span_id) for r in conn.execute(
++            select(db.events.c.run_id, db.events.c.span_id).where(
++                db.events.c.run_id.in_({p[3]["run_id"] for p in prepared}),
++                db.events.c.span_id.is_not(None)))}
++        for sp, native, explicit, ev in prepared:
++            key = (ev["run_id"], sp.get("span_id") or None)
++            if key[1] is not None:
++                if key in seen:
++                    continue
++                seen.add(key)
++            act_id = amap.get(native) if native else None
++            if act_id:
++                matched_spans += 1
++            elif native and explicit:
++                act_id = shadow_id(native)
++                if native not in shadow:
++                    shadow[native] = {"id": act_id, "ev": ev}
++            ev["agent_id"] = act_id or "unknown"
++            items.append({"run_id": ev["run_id"], "agent_id": ev["agent_id"], "ts": ev["ts"],
++                          "kind": ev["kind"], "span_id": key[1], "raw_span": sp, "event": ev})
++            r = runs.setdefault(ev["run_id"], {"agent_id": act_id, "start": ev["ts"], "end": ev["ts"], "n": 0})
++            r["agent_id"] = r["agent_id"] or act_id
++            r["start"] = min(r["start"], ev["ts"])
++            end = sp.get("end_ns") and iso(sp["end_ns"])
++            r["end"] = max(r["end"], end or ev["ts"])
++            r["n"] += 1
++        for native, sh in shadow.items():
++            pid = sh["id"]
++            if conn.execute(select(db.agents.c.id).where(db.agents.c.id == pid)).first() is None:
++                conn.execute(insert(db.agents).values(
++                    id=pid, source_platform="shadow", native_id=native, name=native,
++                    status="shadow", last_seen=sh["ev"]["ts"]))
++        # agents rows must exist before runs/events reference them
++        chain.append_events(conn, items)
++        for rid, r in runs.items():
++            cur = conn.execute(select(db.runs).where(db.runs.c.id == rid)).first()
++            if cur is None:
++                conn.execute(insert(db.runs).values(
++                    id=rid, agent_id=r["agent_id"], status="completed", started_at=r["start"],
++                    ended_at=r["end"], record={"span_count": r["n"]}))
++            else:
++                rec = dict(cur.record or {})
++                rec["span_count"] = rec.get("span_count", 0) + r["n"]
++                conn.execute(update(db.runs).where(db.runs.c.id == rid).values(
++                    agent_id=cur.agent_id or r["agent_id"],
++                    started_at=min(cur.started_at or r["start"], r["start"]),
++                    ended_at=max(cur.ended_at or r["end"], r["end"]), record=rec))
++        for native, sh in shadow.items():
++            pid, ev = sh["id"], sh["ev"]
++            if conn.execute(select(db.findings.c.id).where(
++                    db.findings.c.rule == "shadow_agent", db.findings.c.agent_id == pid)).first():
++                continue
++            conn.execute(insert(db.findings).values(
++                agent_id=pid, run_id=ev["run_id"], severity="high", rule="shadow_agent",
++                type="shadow_agent", message=f"Traces received from unregistered agent id {native}",
++                status="open", created_at=_now(), span_id=ev["span_id"], ts=ev["ts"],
++                detail={"native_agent_id": native, "run_id": ev["run_id"],
++                        "explanation": "gen_ai.agent.id not found in agent inventory"}))
++    for rid in runs:
++        for fn in list(run_ingested_hooks):
++            try:
++                fn(rid)
++            except Exception:  # hooks must not break ingest
++                log.exception("run hook failed")
++    return {"accepted": len(spans), "agents_matched": matched_spans}
++
++
++async def _read_body(request: Request, limit: int) -> bytes:
++    cl = request.headers.get("content-length")
++    if cl and cl.isdigit() and int(cl) > limit:
++        raise HTTPException(413, "request body too large")
++    buf = bytearray()
++    async for chunk in request.stream():
++        buf += chunk
++        if len(buf) > limit:
++            raise HTTPException(413, "request body too large")
++    body = bytes(buf)
++    enc = request.headers.get("content-encoding", "").strip().lower()
++    if enc == "gzip":
++        d = zlib.decompressobj(16 + zlib.MAX_WBITS)
++        try:
++            out = d.decompress(body, limit + 1)
++            if d.unconsumed_tail:
++                raise HTTPException(413, "request body too large")
++            out += d.flush()
++        except zlib.error as e:
++            raise HTTPException(400, f"invalid gzip body: {e}")
++        if len(out) > limit:
++            raise HTTPException(413, "request body too large")
++        return out
++    if enc not in ("", "identity"):
++        raise HTTPException(415, f"unsupported Content-Encoding {enc}")
++    return body
++
++
++@router.post("/v1/traces")
++async def post_traces(request: Request):
++    body = await _read_body(request, _max_bytes())
++    try:
++        spans = parse_request(body, request.headers.get("content-type", ""))
++    except ValueError as e:
++        return JSONResponse({"detail": f"invalid OTLP payload: {e}"}, status_code=400)
++    try:
++        return await run_in_threadpool(ingest, spans)
++    except (KeyError, TypeError, AttributeError) as e:
++        return JSONResponse({"detail": f"invalid span: {e}"}, status_code=400)
++
++
++@router.get("/api/audit/verify")
++def audit_verify():
++    return chain.verify()
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+index cc52e8c..f53fe65 100644
+--- a/requirements-dev.txt
++++ b/requirements-dev.txt
+@@ -1 +1,2 @@
+ pytest>=8
++jsonschema>=4
+diff --git a/requirements.txt b/requirements.txt
+index 78c2aa3..a5d973c 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -4,3 +4,6 @@ sqlalchemy>=2.0
+ httpx>=0.27
+ PyJWT[crypto]>=2.8
+ jupyter-server-proxy
++opentelemetry-proto>=1.20
++protobuf>=4.21
++pyyaml>=6.0
+diff --git a/tests/test_t5_traces.py b/tests/test_t5_traces.py
+new file mode 100644
+index 0000000..797a20b
+--- /dev/null
++++ b/tests/test_t5_traces.py
+@@ -0,0 +1,399 @@
++import json
++import sqlite3
++import time
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++ROOT = Path(__file__).resolve().parent.parent
++HDR = {"X-Domino-User-Id": "u1", "X-Domino-User": "tester"}
++ACT_ID = "act:test:0123456789abcdef"
++NATIVE = "native-agent-1"
++T0 = 1_760_000_000_000_000_000
++
++
++def _kv(k, v):
++    if isinstance(v, bool):
++        return {"key": k, "value": {"boolValue": v}}
++    if isinstance(v, int):
++        return {"key": k, "value": {"intValue": str(v)}}
++    if isinstance(v, (dict, list)):
++        v = json.dumps(v)
++    return {"key": k, "value": {"stringValue": str(v)}}
++
++
++def span(name, attrs, i=0, trace="a" * 32, parent=None):
++    s = {
++        "traceId": trace,
++        "spanId": f"{i + 1:016x}",
++        "name": name,
++        "kind": 1,
++        "startTimeUnixNano": str(T0 + i * 1_000_000),
++        "endTimeUnixNano": str(T0 + i * 1_000_000 + 500_000),
++        "attributes": [_kv(k, v) for k, v in attrs.items()],
++    }
++    if parent:
++        s["parentSpanId"] = parent
++    return s
++
++
++def otlp(spans):
++    return {"resourceSpans": [{
++        "resource": {"attributes": [_kv("service.name", "svc")]},
++        "scopeSpans": [{"scope": {"name": "t"}, "spans": spans}],
++    }]}
++
++
++@pytest.fixture
++def client(db_env, db_mod):
++    import importlib
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        yield c
++
++
++@pytest.fixture
++def db_path(db_env):
++    return str(db_env)
++
++
++def seed_agent(db_path, native=NATIVE):
++    con = sqlite3.connect(db_path)
++    con.execute(
++        "insert into agents (id, source_platform, native_id, name, status) values (?,?,?,?,?)",
++        (ACT_ID, "test", native, "Test Agent", "discovered"),
++    )
++    con.commit()
++    con.close()
++
++
++def post(client, spans, headers=HDR):
++    return client.post("/v1/traces", json=otlp(spans), headers=headers)
++
++
++def rows(db_path, sql, args=()):
++    con = sqlite3.connect(db_path)
++    con.row_factory = sqlite3.Row
++    try:
++        return [dict(r) for r in con.execute(sql, args)]
++    finally:
++        con.close()
++
++
++def canon(row):
++    ev = row["event"]
++    return json.loads(ev) if isinstance(ev, str) else ev
++
++
++def validate(ev):
++    import jsonschema
++    schema = json.loads((ROOT / "schemas" / "canonical-event.json").read_text())
++    jsonschema.validate(ev, schema, format_checker=jsonschema.FormatChecker())
++
++
++def ingest_one(client, db_path, name, attrs):
++    seed_agent(db_path)
++    r = post(client, [span(name, attrs)])
++    assert r.status_code == 200, r.text
++    evs = rows(db_path, "select * from events")
++    assert len(evs) == 1
++    return r, evs[0]
++
++
++# ---------------- AC-4 ----------------
++
++def test_ac4_anonymous_post_returns_401(client):
++    r = client.post("/v1/traces", json=otlp([span("x", {})]))
++    assert r.status_code == 401
++
++
++def test_ac4_otel_genai_tool_span_canonical(client, db_path):
++    r, row = ingest_one(client, db_path, "execute_tool lookup", {
++        "gen_ai.operation.name": "execute_tool",
++        "gen_ai.tool.name": "lookup",
++        "gen_ai.agent.id": NATIVE,
++    })
++    assert r.json() == {"accepted": 1, "agents_matched": 1}
++    ev = canon(row)
++    validate(ev)
++    assert ev["kind"] == "tool_call"
++    assert ev["name"] == "lookup"
++    assert ev["agent_id"] == ACT_ID
++    assert row["agent_id"] == ACT_ID
++    assert row["raw_span"]
++
++
++def test_ac4_otel_genai_chat_is_model_call(client, db_path):
++    _, row = ingest_one(client, db_path, "chat gpt", {
++        "gen_ai.operation.name": "chat", "gen_ai.agent.id": NATIVE})
++    ev = canon(row)
++    validate(ev)
++    assert ev["kind"] == "model_call"
++
++
++def test_ac4_openinference_tool_span_canonical(client, db_path):
++    _, row = ingest_one(client, db_path, "my_tool", {
++        "openinference.span.kind": "TOOL",
++        "tool.name": "search_db",
++        "gen_ai.agent.id": NATIVE,
++    })
++    ev = canon(row)
++    validate(ev)
++    assert ev["kind"] == "tool_call"
++    assert ev["name"] == "search_db"
++    assert ev["agent_id"] == ACT_ID
++
++
++def test_ac4_openinference_llm_is_model_call(client, db_path):
++    _, row = ingest_one(client, db_path, "llm", {
++        "openinference.span.kind": "LLM", "gen_ai.agent.id": NATIVE})
++    ev = canon(row)
++    validate(ev)
++    assert ev["kind"] == "model_call"
++
++
++def test_ac4_mlflow_tool_span_canonical(client, db_path):
++    _, row = ingest_one(client, db_path, "mlflow_tool", {
++        "mlflow.spanType": "TOOL",
++        "gen_ai.agent.id": NATIVE,
++    })
++    ev = canon(row)
++    validate(ev)
++    assert ev["kind"] == "tool_call"
++    assert "mlflow_tool" in ev["name"]
++    assert ev["agent_id"] == ACT_ID
++
++
++def test_ac4_mlflow_chat_model_is_model_call(client, db_path):
++    _, row = ingest_one(client, db_path, "chat", {
++        "mlflow.spanType": "CHAT_MODEL", "gen_ai.agent.id": NATIVE})
++    assert canon(row)["kind"] == "model_call"
++
++
++def test_ac4_protobuf_ingest(client, db_path):
++    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
++    from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
++    from opentelemetry.proto.common.v1.common_pb2 import KeyValue, AnyValue
++    seed_agent(db_path)
++    sp = Span(trace_id=bytes.fromhex("b" * 32), span_id=bytes.fromhex("0000000000000001"),
++              name="execute_tool pb", start_time_unix_nano=T0, end_time_unix_nano=T0 + 1000)
++    for k, v in {"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "pbtool",
++                 "gen_ai.agent.id": NATIVE}.items():
++        sp.attributes.append(KeyValue(key=k, value=AnyValue(string_value=v)))
++    req = ExportTraceServiceRequest(resource_spans=[ResourceSpans(scope_spans=[ScopeSpans(spans=[sp])])])
++    r = client.post("/v1/traces", content=req.SerializeToString(),
++                    headers={**HDR, "Content-Type": "application/x-protobuf"})
++    assert r.status_code == 200, r.text
++    assert r.json() == {"accepted": 1, "agents_matched": 1}
++    ev = canon(rows(db_path, "select * from events")[0])
++    validate(ev)
++    assert ev["kind"] == "tool_call" and ev["name"] == "pbtool" and ev["agent_id"] == ACT_ID
++
++
++def test_ac4_unmatched_agent_creates_shadow_finding(client, db_path):
++    r = post(client, [span("execute_tool x", {
++        "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "x",
++        "gen_ai.agent.id": "unknown-agent"})])
++    assert r.status_code == 200, r.text
++    assert r.json() == {"accepted": 1, "agents_matched": 0}
++    assert len(rows(db_path, "select * from events")) == 1  # still stored
++    fs = rows(db_path, "select * from findings")
++    assert any("shadow_agent" in json.dumps(f, default=str) for f in fs), fs
++
++
++def test_ac4_hash_chain_verifies(client, db_path):
++    seed_agent(db_path)
++    spans = [span(f"execute_tool t{i}", {"gen_ai.operation.name": "execute_tool",
++             "gen_ai.tool.name": f"t{i}", "gen_ai.agent.id": NATIVE}, i) for i in range(5)]
++    assert post(client, spans).status_code == 200
++    n = len(rows(db_path, "select * from events"))
++    assert n == 5
++    r = client.get("/api/audit/verify")
++    assert r.status_code == 200
++    assert r.json() == {"ok": True, "events": n}
++
++
++def test_ac4_hash_chain_links_sha256(client, db_path):
++    import hashlib
++    seed_agent(db_path)
++    spans = [span(f"execute_tool t{i}", {"gen_ai.operation.name": "execute_tool",
++             "gen_ai.tool.name": f"t{i}", "gen_ai.agent.id": NATIVE}, i) for i in range(3)]
++    post(client, spans)
++    evs = rows(db_path, "select * from events order by id")
++    for prev, cur in zip(evs, evs[1:]):
++        assert cur["prev_hash"] == prev["hash"]
++    assert all(len(e["hash"]) == 64 for e in evs)
++    assert len({e["hash"] for e in evs}) == 3
++    # hash depends on prev_hash: sha256(prev_hash || canonical_json) over some serialization
++    cur = evs[1]
++    ev = cur["event"] if isinstance(cur["event"], str) else json.dumps(cur["event"])
++    cands = {json.dumps(json.loads(ev), sort_keys=True, separators=(",", ":")),
++             json.dumps(json.loads(ev), sort_keys=True), json.dumps(json.loads(ev)),
++             json.dumps(json.loads(ev), separators=(",", ":")), ev}
++    assert any(hashlib.sha256((cur["prev_hash"] + c).encode()).hexdigest() == cur["hash"]
++               for c in cands)
++
++
++def test_ac4_tamper_detected(client, db_path):
++    seed_agent(db_path)
++    spans = [span(f"execute_tool t{i}", {"gen_ai.operation.name": "execute_tool",
++             "gen_ai.tool.name": f"t{i}", "gen_ai.agent.id": NATIVE}, i) for i in range(4)]
++    post(client, spans)
++    assert client.get("/api/audit/verify").json()["ok"] is True
++    evs = rows(db_path, "select * from events order by id")
++    ev = canon(evs[1])
++    ev["name"] = "tampered"
++    con = sqlite3.connect(db_path)
++    con.execute("update events set event=? where id=?", (json.dumps(ev), evs[1]["id"]))
++    con.commit()
++    con.close()
++    assert client.get("/api/audit/verify").json()["ok"] is False
++
++
++# ---------------- AC-5 ----------------
++
++def test_ac5_timeline_ordered_and_redacted(client, db_path):
++    seed_agent(db_path)
++    trace = "c" * 32
++    spans = [
++        span("execute_tool pay", {
++            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "pay",
++            "gen_ai.agent.id": NATIVE,
++            "gen_ai.tool.call.arguments": {"amount": 4200, "password": "hunter2-secret-value",
++                                           "ssn": "123-45-6789"}}, 2, trace),
++        span("chat m", {"gen_ai.operation.name": "chat", "gen_ai.agent.id": NATIVE}, 1, trace),
++        span("invoke_agent a", {"gen_ai.operation.name": "invoke_agent",
++                                "gen_ai.agent.id": NATIVE}, 0, trace),
++    ]
++    assert post(client, spans).status_code == 200
++    r = client.get(f"/api/runs/{trace}/timeline")
++    assert r.status_code == 200, r.text
++    body = r.text
++    assert "hunter2-secret-value" not in body
++    assert "123-45-6789" not in body
++    assert "4200" in body
++    data = r.json()
++    items = data if isinstance(data, list) else (data.get("events") or data.get("timeline"))
++    assert len(items) == 3
++    ts = [e["ts"] for e in items]
++    assert ts == sorted(ts)
++    assert [e["kind"] for e in items if e["kind"] == "tool_call"] == ["tool_call"]
++
++
++def test_ac5_timeline_500_spans_under_2s(client, db_path):
++    seed_agent(db_path)
++    trace = "d" * 32
++    spans = [span(f"execute_tool t{i}", {
++        "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": f"t{i}",
++        "gen_ai.agent.id": NATIVE,
++        "gen_ai.tool.call.arguments": {"amount": i, "token": f"tok-{i}"}}, i, trace)
++        for i in range(500)]
++    r = post(client, spans)
++    assert r.status_code == 200, r.text
++    assert r.json()["accepted"] == 500
++    t = time.perf_counter()
++    r = client.get(f"/api/runs/{trace}/timeline")
++    dt = time.perf_counter() - t
++    assert r.status_code == 200
++    data = r.json()
++    items = data if isinstance(data, list) else (data.get("events") or data.get("timeline"))
++    assert len(items) == 500
++    assert dt < 2.0
++
++
++# ---------------- Round 2 contracts ----------------
++
++def _tool_span(i, agent, trace="a" * 32, name=None):
++    return span(f"execute_tool {name or i}", {
++        "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name or f"t{i}",
++        "gen_ai.agent.id": agent}, i, trace)
++
++
++def test_ac4_idempotent_ingest(client, db_path):
++    seed_agent(db_path)
++    trace = "e" * 32
++    payload = otlp([_tool_span(i, NATIVE, trace) for i in range(3)])
++    assert client.post("/v1/traces", json=payload, headers=HDR).status_code == 200
++    n_events = len(rows(db_path, "select * from events"))
++    runs_before = rows(db_path, "select * from runs order by id")
++    tl_before = client.get(f"/api/runs/{trace}/timeline").json()
++    tl_before = tl_before if isinstance(tl_before, list) else (tl_before.get("events") or tl_before.get("timeline"))
++    assert n_events == 3
++    r = client.post("/v1/traces", json=payload, headers=HDR)
++    assert r.status_code == 200, r.text
++    assert len(rows(db_path, "select * from events")) == n_events
++    tl = client.get(f"/api/runs/{trace}/timeline").json()
++    tl = tl if isinstance(tl, list) else (tl.get("events") or tl.get("timeline"))
++    assert len(tl) == len(tl_before) == 3
++    assert rows(db_path, "select * from runs order by id") == runs_before
++    assert client.get("/api/audit/verify").json() == {"ok": True, "events": n_events}
++
++
++def _finding_dict(row):
++    f = {k: v for k, v in row.items() if v is not None and k != "id"}
++    if isinstance(f.get("detail"), str):
++        f["detail"] = json.loads(f["detail"])
++    return f
++
++
++def test_ac4_shadow_agent_placeholder_and_finding(client, db_path):
++    import hashlib
++    import jsonschema
++    from datetime import datetime
++    seed_agent(db_path)
++    unknown = "unknown-agent-xyz"
++    spans = [_tool_span(0, NATIVE, "f" * 32, "a"), _tool_span(1, unknown, "f" * 32, "b")]
++    r = post(client, spans)
++    assert r.status_code == 200, r.text
++    ph = "act:shadow:" + hashlib.sha256(unknown.encode()).hexdigest()[:16]
++    ags = rows(db_path, "select * from agents where id=?", (ph,))
++    assert len(ags) == 1 and ags[0]["status"] == "shadow"
++    fs = rows(db_path, "select * from findings where type='shadow_agent'")
++    assert len(fs) == 1
++    assert fs[0]["agent_id"] == ph
++    f = _finding_dict(fs[0])
++    schema = json.loads((ROOT / "schemas" / "finding.json").read_text())
++    jsonschema.validate(f, schema, format_checker=jsonschema.FormatChecker())
++    assert unknown in json.dumps(f["detail"])
++    want = datetime.fromtimestamp((T0 + 1_000_000) / 1e9, tz=__import__("datetime").timezone.utc)
++    got = datetime.fromisoformat(f["ts"].replace("Z", "+00:00"))
++    if got.tzinfo is None:
++        got = got.replace(tzinfo=want.tzinfo)
++    assert got == want
++    # second run from same unmatched agent: no second placeholder
++    assert post(client, [_tool_span(0, unknown, "9" * 32, "c")]).status_code == 200
++    assert len(rows(db_path, "select * from agents where status='shadow'")) == 1
++    assert len(rows(db_path, "select * from agents where id=?", (ph,))) == 1
++
++
++def test_ac4_invalid_json_returns_400(client):
++    r = client.post("/v1/traces", content=b"{not json",
++                    headers={**HDR, "Content-Type": "application/json"})
++    assert r.status_code == 400
++
++
++def test_ac4_empty_trace_id_returns_400(client, db_path):
++    seed_agent(db_path)
++    s = _tool_span(0, NATIVE, "")
++    r = post(client, [s])
++    assert r.status_code == 400
++
++
++def test_ac4_gzip_accepted(client, db_path):
++    import gzip
++    seed_agent(db_path)
++    spans = [_tool_span(i, NATIVE, "7" * 32) for i in range(2)]
++    body = gzip.compress(json.dumps(otlp(spans)).encode())
++    r = client.post("/v1/traces", content=body, headers={
++        **HDR, "Content-Type": "application/json", "Content-Encoding": "gzip"})
++    assert r.status_code == 200, r.text
++    assert r.json()["accepted"] == 2
++
++
++def test_ac4_oversize_body_returns_413(client, monkeypatch):
++    monkeypatch.setenv("ACT_OTLP_MAX_BYTES", "1000")
++    body = b" " * 2000
++    r = client.post("/v1/traces", content=body,
++                    headers={**HDR, "Content-Type": "application/json"})
++    assert r.status_code == 413
