@@ -1,0 +1,697 @@
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+new file mode 100644
+index 0000000..bf27e48
+--- /dev/null
++++ b/frontend/src/api.js
+@@ -0,0 +1,32 @@
++// Relative API paths only: keeps the Domino proxy prefix.
++export class ApiError extends Error {
++  constructor(status, message) { super(message); this.status = status }
++}
++
++async function request(path, opts) {
++  const res = await fetch('api/' + path, opts)
++  let body = null
++  try { body = await res.json() } catch { /* non-JSON body */ }
++  if (!res.ok) {
++    const detail = body && (typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail))
++    throw new ApiError(res.status, detail || res.statusText || 'Request failed')
++  }
++  return body
++}
++
++export const api = {
++  agents: (params = {}) => {
++    const q = new URLSearchParams()
++    Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) q.set(k, v) })
++    const s = q.toString()
++    return request('agents' + (s ? '?' + s : ''))
++  },
++  agent: (id) => request(`agents/${encodeURIComponent(id)}`),
++  findings: (id) => request(`agents/${encodeURIComponent(id)}/findings`),
++  governance: (id) => request(`agents/${encodeURIComponent(id)}/governance`),
++  dependencies: (id) => request(`agents/${encodeURIComponent(id)}/dependencies`),
++  approve: (id, body) => request(`agents/${encodeURIComponent(id)}/approve`, {
++    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
++  }),
++  timeline: (runId) => request(`runs/${encodeURIComponent(runId)}/timeline`),
++}
+diff --git a/frontend/src/components/Markdown.jsx b/frontend/src/components/Markdown.jsx
+new file mode 100644
+index 0000000..152aec2
+--- /dev/null
++++ b/frontend/src/components/Markdown.jsx
+@@ -0,0 +1,53 @@
++import React from 'react'
++
++// Minimal safe markdown renderer (no raw HTML): paragraphs, lists, headings, bold, italic, code, links.
++function inline(text, key) {
++  const out = []
++  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\[[^\]]+\]\(https?:[^)\s]+\))/g
++  let last = 0, m, i = 0
++  while ((m = re.exec(text))) {
++    if (m.index > last) out.push(text.slice(last, m.index))
++    const t = m[0]
++    if (t.startsWith('**')) out.push(<strong key={`${key}-${i}`}>{t.slice(2, -2)}</strong>)
++    else if (t.startsWith('`')) out.push(<code key={`${key}-${i}`}>{t.slice(1, -1)}</code>)
++    else if (t.startsWith('[')) {
++      const mm = /\[([^\]]+)\]\(([^)]+)\)/.exec(t)
++      out.push(<a key={`${key}-${i}`} href={mm[2]} target="_blank" rel="noreferrer">{mm[1]}</a>)
++    } else out.push(<em key={`${key}-${i}`}>{t.slice(1, -1)}</em>)
++    last = m.index + t.length
++    i++
++  }
++  if (last < text.length) out.push(text.slice(last))
++  return out
++}
++
++export default function Markdown({ text }) {
++  if (!text) return null
++  const lines = String(text).split(/\r?\n/)
++  const blocks = []
++  let para = [], list = null
++  const flushPara = () => { if (para.length) { blocks.push({ t: 'p', v: para.join(' ') }); para = [] } }
++  const flushList = () => { if (list) { blocks.push(list); list = null } }
++  for (const line of lines) {
++    let m
++    if (!line.trim()) { flushPara(); flushList() }
++    else if ((m = /^(#{1,4})\s+(.*)/.exec(line))) { flushPara(); flushList(); blocks.push({ t: 'h', v: m[2] }) }
++    else if ((m = /^\s*([-*]|\d+\.)\s+(.*)/.exec(line))) {
++      flushPara()
++      const ordered = /\d/.test(m[1])
++      if (!list || list.ordered !== ordered) { flushList(); list = { t: 'l', ordered, items: [] } }
++      list.items.push(m[2])
++    } else { flushList(); para.push(line.trim()) }
++  }
++  flushPara(); flushList()
++  return (
++    <div className="markdown">
++      {blocks.map((b, i) => {
++        if (b.t === 'p') return <p key={i}>{inline(b.v, i)}</p>
++        if (b.t === 'h') return <h4 key={i}>{inline(b.v, i)}</h4>
++        const Tag = b.ordered ? 'ol' : 'ul'
++        return <Tag key={i}>{b.items.map((it, j) => <li key={j}>{inline(it, `${i}-${j}`)}</li>)}</Tag>
++      })}
++    </div>
++  )
++}
+diff --git a/frontend/src/components/ui.jsx b/frontend/src/components/ui.jsx
+new file mode 100644
+index 0000000..c112d6b
+--- /dev/null
++++ b/frontend/src/components/ui.jsx
+@@ -0,0 +1,50 @@
++import React from 'react'
++import { Link } from 'react-router-dom'
++
++export function TierBadge({ tier }) {
++  if (tier == null) return <span className="badge tier-none" data-testid="tier-badge" data-tier="">Unrated</span>
++  return <span className={`badge tier-${tier}`} data-testid="tier-badge" data-tier={tier}>Tier {tier}</span>
++}
++
++export function StatusPill({ status, testid }) {
++  return <span className={`pill status-${status}`} data-testid={testid}>{status || 'unknown'}</span>
++}
++
++export function Panel({ title, children, testid, aside }) {
++  return (
++    <section className="panel" data-testid={testid}>
++      <header className="panel-head"><h2>{title}</h2>{aside}</header>
++      <div className="panel-body">{children}</div>
++    </section>
++  )
++}
++
++export function Loading({ what }) { return <p className="muted">Loading {what}...</p> }
++export function ErrorBox({ error }) {
++  return <div className="alert error" role="alert">{error?.status ? `${error.status}: ` : ''}{error?.message || String(error)}</div>
++}
++
++export function Shell({ children }) {
++  return (
++    <div className="app">
++      <nav className="topbar">
++        <Link to="/" className="brand">Agent Control Tower</Link>
++        <span className="muted">Agent system of record</span>
++      </nav>
++      <main className="content">{children}</main>
++    </div>
++  )
++}
++
++export function useAsync(fn, deps) {
++  const [state, setState] = React.useState({ loading: true, data: null, error: null })
++  React.useEffect(() => {
++    let live = true
++    setState((s) => ({ loading: true, data: s.data, error: null }))
++    fn().then((data) => live && setState({ loading: false, data, error: null }),
++              (error) => live && setState((s) => ({ loading: false, data: s.data, error })))
++    return () => { live = false }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, deps)
++  return state
++}
+diff --git a/frontend/src/format.js b/frontend/src/format.js
+new file mode 100644
+index 0000000..13a7438
+--- /dev/null
++++ b/frontend/src/format.js
+@@ -0,0 +1,34 @@
++// "2026-11-07T02:14:00.000000Z" -> "2026-11-07 02:14 UTC"
++export function fmtTs(ts) {
++  if (!ts) return '-'
++  const d = new Date(ts)
++  if (isNaN(d)) return String(ts)
++  return d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
++}
++
++export function fmtJson(v) {
++  if (v == null) return ''
++  return typeof v === 'string' ? v : JSON.stringify(v, null, 2)
++}
++
++// Never show provider/model ids from trace or finding data.
++const MODEL_RE = /[\w.:/-]*(?:claude|anthropic|sonnet|haiku|opus)[\w.:/-]*/gi
++export function clean(v) {
++  if (v == null) return v
++  return String(v).replace(MODEL_RE, 'frontier model')
++}
++
++export function cleanText(v, max = 600) {
++  const s = clean(fmtJson(v))
++  return s.length > max ? s.slice(0, max) + '...' : s
++}
++
++// Message arrays ([{role, content}]) -> readable lines; anything else -> JSON.
++export function fmtMessages(v) {
++  if (v == null || v === '') return ''
++  if (Array.isArray(v)) {
++    return v.map((m) => (m && typeof m === 'object' && 'content' in m
++      ? `${m.role ? m.role + ': ' : ''}${fmtJson(m.content)}` : fmtJson(m))).join('\n')
++  }
++  return fmtJson(v)
++}
+diff --git a/frontend/src/main.jsx b/frontend/src/main.jsx
+index f90df7e..dc160f1 100644
+--- a/frontend/src/main.jsx
++++ b/frontend/src/main.jsx
+@@ -1,20 +1,23 @@
+ import React from 'react'
+ import { createRoot } from 'react-dom/client'
+ import { HashRouter, Routes, Route } from 'react-router-dom'
+-
+-function Home() {
+-  return (
+-    <main style={{ fontFamily: 'sans-serif', padding: 24 }}>
+-      <h1>Agent Control Tower</h1>
+-      <p>Placeholder. Screens arrive in a later task.</p>
+-    </main>
+-  )
+-}
++import './styles.css'
++import { Shell } from './components/ui'
++import Fleet from './pages/Fleet'
++import Agent from './pages/Agent'
++import Run from './pages/Run'
++import Register from './pages/Register'
+ 
+ createRoot(document.getElementById('root')).render(
+   <HashRouter>
+-    <Routes>
+-      <Route path="*" element={<Home />} />
+-    </Routes>
++    <Shell>
++      <Routes>
++        <Route path="/" element={<Fleet />} />
++        <Route path="/agents/:id" element={<Agent />} />
++        <Route path="/runs/:runId" element={<Run />} />
++        <Route path="/register" element={<Register />} />
++        <Route path="*" element={<Fleet />} />
++      </Routes>
++    </Shell>
+   </HashRouter>
+ )
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+new file mode 100644
+index 0000000..2a22d20
+--- /dev/null
++++ b/frontend/src/pages/Agent.jsx
+@@ -0,0 +1,219 @@
++import React from 'react'
++import { Link, useParams } from 'react-router-dom'
++import { api } from '../api'
++import { clean, fmtTs } from '../format'
++import Markdown from '../components/Markdown'
++import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
++
++const CRITERIA = [
++  ['decision_impact', 'Decision impact'], ['financial_exposure', 'Financial exposure'],
++  ['customer_impact', 'Customer impact'], ['autonomy', 'Autonomy'],
++  ['data_sensitivity', 'Data sensitivity'], ['reversibility', 'Reversibility'],
++  ['regulatory_exposure', 'Regulatory exposure'],
++]
++
++function TierCard({ agent }) {
++  const c = agent.criteria || {}
++  return (
++    <Panel title="Tier and criteria" testid="tier-card">
++      <p><TierBadge tier={agent.tier} /> <span className="muted">OCC Bulletin 2026-54, seven criteria scored 1-5</span></p>
++      <ul className="criteria">
++        {CRITERIA.map(([k, name]) => (
++          <li key={k} data-testid="criteria-item"><span>{name}</span><strong>{c[k] ?? 'n/a'}</strong></li>
++        ))}
++      </ul>
++      <div data-testid="tier-reasoning" className="reasoning">{agent.tier_reasoning || 'No reasoning recorded.'}</div>
++    </Panel>
++  )
++}
++
++function Identity({ agent }) {
++  const id = agent.identity || {}
++  const noDistinct = !agent.identity || !id.type || id.type === 'none' || id.distinct === false
++  return (
++    <Panel title="Identity binding" testid="identity-panel">
++      {noDistinct && (
++        <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
++      )}
++      <dl className="kv">
++        <dt>Type</dt><dd>{id.type || '-'}</dd>
++        <dt>Issuer</dt><dd>{id.issuer || '-'}</dd>
++        <dt>Principal id</dt><dd>{id.principal || id.subject || '-'}</dd>
++      </dl>
++    </Panel>
++  )
++}
++
++function Manifest({ agent }) {
++  const m = agent.manifest || {}
++  const limits = m.value_limits_detail || m.value_limits || {}
++  const list = (xs) => (xs && xs.length ? xs.join(', ') : 'none')
++  return (
++    <Panel title="Permitted-action manifest">
++      <h3>Tools</h3>
++      <ul className="tags tool-chips">
++        {(m.tools || []).map((t) => <li key={t} data-testid="manifest-tool" className="chip">{t}</li>)}
++        {!(m.tools || []).length && <li className="muted">none declared</li>}
++      </ul>
++      <dl className="kv">
++        <dt>Data scopes</dt><dd>{list(m.data_scopes)}</dd>
++        <dt>Systems</dt><dd>{list(m.systems)}</dd>
++        <dt>Value limits</dt>
++        <dd>{Object.keys(limits).length ? Object.entries(limits).map(([t, v]) => (
++          <div key={t}>{t}: {typeof v === 'object' ? `${v.amount} ${v.currency || ''}` : v}</div>)) : 'none'}</dd>
++      </dl>
++    </Panel>
++  )
++}
++
++function Dependencies({ id }) {
++  const { data, error, loading } = useAsync(() => api.dependencies(id), [id])
++  return (
++    <Panel title="Dependencies">
++      {error && <ErrorBox error={error} />}
++      {loading && <Loading what="dependencies" />}
++      {data && (
++        <div>
++          <h3>Models</h3>
++          <ul className="plain">
++            {data.models.map((m, i) => (
++              <li key={i} data-testid="dependency-model">{m.name} <span className="chip">registry version {m.registry_version ?? '-'}</span></li>
++            ))}
++            {!data.models.length && <li className="muted">none</li>}
++          </ul>
++          <h3>MCP servers</h3>
++          <ul className="plain">
++            {data.mcp_servers.map((m, i) => <li key={i} data-testid="dependency-mcp">{m.name}{m.target ? ` (${m.target})` : ''}</li>)}
++            {!data.mcp_servers.length && <li className="muted">none</li>}
++          </ul>
++          <h3>Tools</h3>
++          <ul className="plain">
++            {data.tools.map((m, i) => <li key={i} data-testid="dependency-tool">{m.name}</li>)}
++            {!data.tools.length && <li className="muted">none recorded as dependencies</li>}
++          </ul>
++        </div>
++      )}
++    </Panel>
++  )
++}
++
++function Governance({ gov }) {
++  return (
++    <Panel title="Governance bundle">
++      <dl className="kv">
++        <dt>Bundle</dt><dd data-testid="bundle-id">{gov.bundle_id || 'not yet created'}</dd>
++        <dt>Stage</dt><dd>{gov.stage || '-'}</dd>
++      </dl>
++      <h3>{gov.bundle_id ? 'Policies attached to this bundle' : 'Policies the bundle will carry'}</h3>
++      <ul className="plain" data-testid={gov.bundle_id ? 'policies-attached' : 'policies-expected'}>
++        {(gov.policies || []).map((p, i) => <li key={i} data-testid="policy-name">{p.name}</li>)}
++      </ul>
++    </Panel>
++  )
++}
++
++function approveError(err) {
++  if (err.status === 401) return 'Not signed in: sign in to Domino to approve this agent.'
++  if (err.status === 403) return `Refused: the user who registered this agent cannot approve it. ${err.message || ''}`
++  if (err.status === 409) return `Not awaiting approval, or it has no registrant on record. ${err.message || ''}`
++  return `Error ${err.status || ''}: ${err.message}`
++}
++
++function Approvals({ id, gov, onChanged }) {
++  const [busy, setBusy] = React.useState(false)
++  const [err, setErr] = React.useState(null)
++  const [ok, setOk] = React.useState(null)
++  const approve = async () => {
++    setBusy(true); setErr(null); setOk(null)
++    try {
++      const r = await api.approve(id)
++      setOk(`Approved. Expires ${fmtTs(r.expires_at)}.`)
++      onChanged()
++    } catch (e) { setErr(e) } finally { setBusy(false) }
++  }
++  return (
++    <Panel title="Approvals" testid="approvals-panel"
++           aside={<button className="btn primary" onClick={approve} disabled={busy}>Approve</button>}>
++      {err && <div className="alert error" role="alert" data-testid="approve-error">{approveError(err)}</div>}
++      {ok && <div className="alert ok" role="status" data-testid="approve-success">{ok}</div>}
++      {gov && gov.approvals.length ? (
++        <table className="table compact"><thead><tr><th>Approver</th><th>Decision</th><th>When</th><th>Expires</th></tr></thead>
++          <tbody>{gov.approvals.map((a) => (
++            <tr key={a.id}><td>{a.approver}</td><td>{a.decision}</td><td>{fmtTs(a.created_at)}</td><td>{fmtTs(a.expires_at)}</td></tr>
++          ))}</tbody></table>
++      ) : <p className="muted">No approvals recorded.</p>}
++    </Panel>
++  )
++}
++
++function Findings({ findings }) {
++  return (
++    <Panel title="Findings">
++      {!findings.length && <p className="muted">No findings.</p>}
++      <ul className="plain findings">
++        {findings.map((f) => (
++          <li key={f.id} data-testid="finding-item" data-finding-type={f.type} data-status={f.status} className={`sev-${f.severity}`}>
++            <div className="f-head">
++              <span className="chip">{f.type}</span>
++              <span className={`pill sev-${f.severity}`}>{f.severity}</span>
++              <span className="pill">{f.status}</span>
++              <strong>{clean(f.tool)}</strong>
++              <span className="muted">{fmtTs(f.ts)}</span>
++            </div>
++            <Markdown text={clean(f.explanation)} />
++            {f.run_id && <Link data-testid="finding-timeline-link" to={`/runs/${encodeURIComponent(f.run_id)}`}>View run timeline</Link>}
++          </li>
++        ))}
++      </ul>
++    </Panel>
++  )
++}
++
++function Runs({ findings }) {
++  // No runs-by-agent endpoint yet: list the runs referenced by this agent's findings.
++  const ids = [...new Set(findings.map((f) => f.run_id).filter(Boolean))]
++  return (
++    <Panel title="Runs">
++      {!ids.length && <p className="muted">No runs with findings.</p>}
++      <ul className="plain">
++        {ids.map((r) => <li key={r} data-testid="run-item"><Link to={`/runs/${encodeURIComponent(r)}`}>{r}</Link></li>)}
++      </ul>
++    </Panel>
++  )
++}
++
++export default function Agent() {
++  const { id } = useParams()
++  return <AgentView key={id} id={id} />
++}
++
++function AgentView({ id }) {
++  const [rev, setRev] = React.useState(0)
++  const agent = useAsync(() => api.agent(id), [id, rev])
++  const gov = useAsync(() => api.governance(id), [id, rev])
++  const fnd = useAsync(() => api.findings(id), [id])
++  if (agent.error) return <ErrorBox error={agent.error} />
++  if (!agent.data) return <Loading what="agent" />
++  const a = agent.data
++  return (
++    <div>
++      <p><Link to="/">Fleet</Link> / {a.name}</p>
++      <div className="page-head">
++        <h1>{a.name}</h1>
++        {/* SLOT: "Generate evidence pack" button (added by a later task) */}
++        <div id="evidence-pack-slot" data-slot="evidence-pack" />
++      </div>
++      <p className="muted"><span className="chip">{a.source_platform}</span> owner {a.owner || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
++      <div className="grid">
++        <TierCard agent={a} />
++        <Identity agent={a} />
++        <Manifest agent={a} />
++        <Dependencies id={id} />
++        {gov.data ? <Governance gov={gov.data} /> : <Panel title="Governance bundle">{gov.error ? <ErrorBox error={gov.error} /> : <Loading what="governance" />}</Panel>}
++        <Approvals id={id} gov={gov.data} onChanged={() => setRev((r) => r + 1)} />
++      </div>
++      {fnd.error ? <ErrorBox error={fnd.error} /> : <Findings findings={fnd.data || []} />}
++      <Runs findings={fnd.data || []} />
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/Fleet.jsx b/frontend/src/pages/Fleet.jsx
+new file mode 100644
+index 0000000..ed7f806
+--- /dev/null
++++ b/frontend/src/pages/Fleet.jsx
+@@ -0,0 +1,62 @@
++import React from 'react'
++import { Link, useNavigate } from 'react-router-dom'
++import { api } from '../api'
++import { fmtTs } from '../format'
++import { ErrorBox, Loading, StatusPill, TierBadge, useAsync } from '../components/ui'
++
++export default function Fleet() {
++  const nav = useNavigate()
++  const [source, setSource] = React.useState('')
++  const [tier, setTier] = React.useState('')
++  const all = useAsync(() => api.agents(), [])
++  const list = useAsync(() => api.agents({ source, tier }), [source, tier])
++  const sources = React.useMemo(
++    () => [...new Set((all.data || []).map((a) => a.source_platform))].sort(), [all.data])
++
++  return (
++    <div>
++      <div className="page-head">
++        <h1>Fleet</h1>
++        <button className="btn primary" data-testid="register-external-button" onClick={() => nav('/register')}>
++          Register external agent
++        </button>
++      </div>
++      <div className="filters">
++        <label>Source{' '}
++          <select data-testid="source-filter" value={source} onChange={(e) => setSource(e.target.value)}>
++            <option value="">All</option>
++            {sources.map((s) => <option key={s} value={s}>{s}</option>)}
++          </select>
++        </label>
++        <label>Tier{' '}
++          <select data-testid="tier-filter" value={tier} onChange={(e) => setTier(e.target.value)}>
++            <option value="">All</option>
++            {[1, 2, 3, 4].map((t) => <option key={t} value={t}>Tier {t}</option>)}
++          </select>
++        </label>
++      </div>
++      {list.error && <ErrorBox error={list.error} />}
++      {list.loading && !list.data && <Loading what="agents" />}
++      {list.data && (
++        <table className="table">
++          <thead>
++            <tr><th>Source</th><th>Name</th><th>Owner</th><th>Tier</th><th>Status</th><th>Open findings</th><th>Last seen</th></tr>
++          </thead>
++          <tbody>
++            {list.data.map((a) => (
++              <tr key={a.id} data-testid="fleet-row" data-agent-id={a.id}>
++                <td data-testid="fleet-source"><span className="chip">{a.source_platform}</span></td>
++                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{a.name}</Link></td>
++                <td data-testid="fleet-owner">{a.owner || '-'}</td>
++                <td><TierBadge tier={a.tier} /></td>
++                <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
++                <td><span data-testid="open-findings" className={a.open_findings ? 'count hot' : 'count'}>{a.open_findings}</span></td>
++                <td data-testid="fleet-last-seen">{fmtTs(a.last_seen)}</td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      )}
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+new file mode 100644
+index 0000000..6169b40
+--- /dev/null
++++ b/frontend/src/pages/Register.jsx
+@@ -0,0 +1,12 @@
++import React from 'react'
++import { Link } from 'react-router-dom'
++
++export default function Register() {
++  return (
++    <div>
++      <h1>Register external agent</h1>
++      <p className="muted">Registration form arrives in a later task.</p>
++      <Link to="/">Back to fleet</Link>
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/Run.jsx b/frontend/src/pages/Run.jsx
+new file mode 100644
+index 0000000..3f38b6d
+--- /dev/null
++++ b/frontend/src/pages/Run.jsx
+@@ -0,0 +1,94 @@
++import React from 'react'
++import { Link, useParams } from 'react-router-dom'
++import { api } from '../api'
++import { clean, cleanText, fmtMessages, fmtTs } from '../format'
++import { ErrorBox, Loading, useAsync } from '../components/ui'
++
++// Never show provider/model ids from trace data.
++function label(ev) {
++  if (ev.kind === 'model_call') return 'LLM call · frontier model via gateway'
++  return clean(ev.name)
++}
++
++const REASONS = {
++  tool_not_in_manifest: 'Outside manifest',
++  value_limit_exceeded: 'Over limit',
++  value_unverifiable: 'Unverifiable value',
++}
++
++function content(ev) {
++  const a = ev.attrs || {}
++  const keys = ev.kind === 'output'
++    ? ['gen_ai.output.messages', 'output.value', 'gen_ai.input.messages', 'input.value']
++    : ['gen_ai.input.messages', 'input.value', 'gen_ai.output.messages', 'output.value']
++  if (ev.content) return fmtMessages(ev.content)
++  for (const k of keys) if (a[k]) return fmtMessages(a[k])
++  return ''
++}
++
++export default function Run() {
++  const { runId } = useParams()
++  const tl = useAsync(() => api.timeline(runId), [runId])
++  const agentId = tl.data?.agent_id
++  const fnd = useAsync(() => (agentId ? api.findings(agentId) : Promise.resolve([])), [agentId])
++  const findingsFailed = !!fnd.error
++
++  const violations = React.useMemo(() => {
++    const m = new Map()
++    for (const f of fnd.data || []) {
++      if (f.run_id !== runId || f.status !== 'open') continue
++      for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest' })
++      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit })
++    }
++    return m
++  }, [fnd.data, runId])
++
++  if (tl.error) return <ErrorBox error={tl.error} />
++  if (tl.loading || fnd.loading) return <Loading what="timeline" />
++  const events = tl.data.events
++
++  return (
++    <div data-testid="timeline-page" data-event-count={events.length}>
++      <div className="page-head">
++        <h1>Run timeline</h1>
++        {agentId && <Link to={`/agents/${encodeURIComponent(agentId)}`}>Back to agent</Link>}
++      </div>
++      <p className="muted">Run {runId} · {fmtTs(tl.data.started_at)} to {fmtTs(tl.data.ended_at)} · {events.length} events</p>
++      {findingsFailed && <div className="alert error" role="alert" data-testid="findings-error">Could not load findings, so violations are not highlighted on this timeline.</div>}
++      <ol className="timeline">
++        {events.map((ev, i) => {
++          const v = violations.get(ev.span_id)
++          const isV = !!v && ev.kind === 'tool_call'
++          return (
++            <li key={`${ev.span_id || ev.kind}-${i}`} className={`tl-event kind-${ev.kind}${isV ? ' violation' : ''}`}
++                data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
++                data-violation={isV ? 'true' : 'false'}
++                data-violation-reason={isV ? (v.reason || 'tool_not_in_manifest') : undefined}>
++              <div className="tl-head">
++                <span className="tl-ts">{fmtTs(ev.ts)}</span>
++                <span className="chip">{ev.kind}</span>
++                <strong>{label(ev)}</strong>
++                {isV && <span className="badge violation-badge">
++                  {REASONS[v.reason] || 'Outside manifest'}
++                </span>}
++              </div>
++              {ev.kind === 'tool_call' && (
++                <pre data-testid="timeline-event-args">{cleanText(ev.args_redacted, 2000)}</pre>
++              )}
++              {isV && v.reason === 'value_limit_exceeded' && (
++                <div className="tl-note">Observed {v.observed_value}, limit {v.limit}</div>
++              )}
++              {isV && v.note && <div className="tl-note">{clean(v.note)}</div>}
++              {(ev.kind === 'input' || ev.kind === 'output') && content(ev) && (
++                <pre className="tl-content" data-testid="timeline-event-content">{cleanText(content(ev), 800)}</pre>
++              )}
++              {(ev.kind === 'approval' || ev.kind === 'override') && (
++                <div className="tl-note">{clean(ev.actor)}{ev.decision ? ` · ${clean(ev.decision)}` : ''}{ev.reason ? ` · ${clean(ev.reason)}` : ''}</div>
++              )}
++            </li>
++          )
++        })}
++      </ol>
++    </div>
++  )
++}
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+new file mode 100644
+index 0000000..ce5dd6f
+--- /dev/null
++++ b/frontend/src/styles.css
+@@ -0,0 +1,47 @@
++:root { --bg:#f6f7f9; --card:#fff; --ink:#1f2a37; --muted:#6b7280; --line:#e3e6ea; --brand:#543fde; --red:#c62828; --amber:#b26a00; --green:#2e7d32; }
++* { box-sizing: border-box }
++body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif }
++a { color:var(--brand); text-decoration:none } a:hover { text-decoration:underline }
++h1 { font-size:22px; margin:0 } h2 { font-size:15px; margin:0 } h3 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:12px 0 4px }
++.topbar { display:flex; gap:16px; align-items:center; padding:10px 24px; background:#fff; border-bottom:1px solid var(--line) }
++.brand { font-weight:700; color:var(--ink) }
++.content { max-width:1280px; margin:0 auto; padding:20px 24px 48px }
++.page-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px }
++.muted { color:var(--muted) }
++.btn { border:1px solid var(--line); background:#fff; padding:6px 14px; border-radius:6px; cursor:pointer; font:inherit }
++.btn.primary { background:var(--brand); color:#fff; border-color:var(--brand) } .btn:disabled { opacity:.6 }
++.filters { display:flex; gap:16px; margin-bottom:12px } select { padding:5px 28px 5px 10px; font:inherit; color:var(--ink); background:#fff; border:1px solid var(--line); border-radius:6px; cursor:pointer }
++select:focus { outline:2px solid var(--brand); outline-offset:1px }
++.filters label { display:flex; gap:8px; align-items:center; color:var(--muted) }
++.table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:6px }
++.table th, .table td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line) }
++.table th { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em }
++.chip { display:inline-block; padding:1px 8px; border-radius:10px; background:#eef0f4; font-size:12px }
++.pill { display:inline-block; padding:1px 8px; border-radius:4px; background:#eef0f4; font-size:12px }
++.badge { display:inline-block; padding:2px 10px; border-radius:4px; font-weight:600; font-size:12px; color:#fff; background:#6b7280 }
++.tier-1 { background:var(--red) } .tier-2 { background:var(--amber) } .tier-3 { background:#1565c0 } .tier-4 { background:var(--green) }
++.count.hot { color:var(--red); font-weight:700 }
++.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; margin-bottom:16px; align-items:start }
++.panel { background:var(--card); border:1px solid var(--line); border-radius:6px; margin-bottom:16px }
++.grid .panel { margin-bottom:0 }
++.panel-head { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line) }
++.panel-body { padding:12px 16px }
++.criteria, .plain, .tags { list-style:none; padding:0; margin:0 }
++.criteria li { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px dashed var(--line) }
++.tags { display:flex; flex-wrap:wrap; gap:6px } .plain li { padding:3px 0 }
++.reasoning { margin-top:10px; color:var(--muted) }
++.kv { display:grid; grid-template-columns:120px 1fr; gap:4px 12px; margin:0 } .kv dt { color:var(--muted) } .kv dd { margin:0; word-break:break-all }
++.alert { padding:8px 12px; border-radius:6px; margin-bottom:8px } .alert.error { background:#fdecea; color:var(--red); border:1px solid #f5c2c0 } .alert.ok { background:#e8f5e9; color:var(--green) }
++.findings li { border:1px solid var(--line); border-left:4px solid var(--amber); border-radius:6px; padding:8px 12px; margin-bottom:8px }
++.findings li.sev-critical { border-left-color:var(--red) }
++.f-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
++.markdown p { margin:4px 0 } .markdown code { background:#eef0f4; padding:0 4px; border-radius:3px }
++.timeline { list-style:none; padding:0; margin:12px 0; border-left:2px solid var(--line) }
++.tl-event { background:var(--card); border:1px solid var(--line); border-radius:6px; margin:0 0 8px 12px; padding:8px 12px }
++.tl-event.violation { border-color:var(--red); background:#fff5f5; border-left:4px solid var(--red) }
++.tl-head { display:flex; gap:10px; align-items:center; flex-wrap:wrap } .tl-ts { color:var(--muted); font-variant-numeric:tabular-nums }
++.violation-badge { background:var(--red) } .tl-note { color:var(--red); margin-top:4px }
++pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:6px 0 0; font-size:12px }
++.tool-chips { margin-bottom:14px }
++.kv { margin-top:4px }
++.tl-content { white-space:pre-wrap }
