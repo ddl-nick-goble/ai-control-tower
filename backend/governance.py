@@ -118,6 +118,7 @@ def ensure_bundle(agent_id: str) -> str:
                     break
         except GovernanceError:
             log.exception("bundle lookup failed")
+            raise  # do not create on a failed lookup: avoids duplicate bundles
         if bundle is None:
             ids = policy_ids()
             want_model = bool(a is not None and (a.source_platform == "domino"
@@ -193,14 +194,23 @@ def attach_evidence(bundle_id: str, kind: str, payload: dict):
         "bundleId": bundle_id, "policyId": pid, "evidenceId": ev["id"], "content": {target["id"]: text}})
 
 
+def expected_policy_names() -> list:
+    return [AGENTIC_NAME, MODEL_NAME]
+
+
 def mirror_approval(agent_id: str, approver: str) -> str:
     """Best-effort RequestSubmitted then RequestApproved. Returns 'synced' | 'skipped'. Raises GovernanceError."""
-    bid = ensure_bundle(agent_id)
+    a, _ = _agent(agent_id)
+    bid = a.bundle_id
+    if not bid:  # mirror never creates bundles (POST /api/agents/{id}/governance does)
+        raise GovernanceError("no governance bundle for this agent yet; approval not mirrored")
     project = os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
     aps = [x for x in _items(_call("GET", f"/bundles/{bid}/approvals")) if isinstance(x, dict) and x.get("id")]
     ap = next((x for x in aps if x.get("name") == "Approval to operate"), None)
     if ap is None:
         return "skipped"
+    if not ap.get("policyId"):
+        raise GovernanceError("approval has no policy id; mirror event skipped")
     for ev in ("RequestSubmitted", "RequestApproved"):
         _call("POST", "/rpc/publish-approval-event", {
             "bundleId": bid, "policyId": ap.get("policyId"), "projectId": project, "eventType": ev,

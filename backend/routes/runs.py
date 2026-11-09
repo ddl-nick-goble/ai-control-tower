@@ -19,7 +19,7 @@ def _key(ts):
         d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
         return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
     except ValueError:
-        return 0.0
+        return float("inf")
 
 
 @router.post("/api/runs/{run_id}/override")
