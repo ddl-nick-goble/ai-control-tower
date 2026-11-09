@@ -5,10 +5,13 @@ import pkgutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, routes
+from .domino_identity import get_user
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "frontend" / "dist"
@@ -24,6 +27,17 @@ async def lifespan(_app):
 app = FastAPI(title="Agent Control Tower", lifespan=lifespan)
 
 
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+@app.middleware("http")
+async def write_guard(request, call_next):
+    """Reject unauthenticated writes on every path (incl. /v1/*) before routing."""
+    if request.method in WRITE_METHODS and await run_in_threadpool(get_user, request) is None:
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -33,6 +47,14 @@ for _m in pkgutil.iter_modules(routes.__path__):
     _mod = importlib.import_module(f"{routes.__name__}.{_m.name}")
     if hasattr(_mod, "router"):
         app.include_router(_mod.router)
+
+@app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+               include_in_schema=False)
+@app.api_route("/v1/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+               include_in_schema=False)
+def _unmatched(rest: str):
+    raise HTTPException(status_code=404, detail="Not found")
+
 
 if DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(DIST), html=True), name="frontend")

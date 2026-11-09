@@ -1,4 +1,5 @@
 """SQLite storage for ACT (single DB, WAL, pooled connections)."""
+import logging
 import os
 from pathlib import Path
 
@@ -18,11 +19,12 @@ def _db_path() -> str:
     return "./act.db"
 
 
+log = logging.getLogger(__name__)
 DB_PATH = _db_path()
 try:
     Path(DB_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 except OSError:
-    pass
+    log.exception("could not create DB directory for %s", DB_PATH)
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
@@ -113,14 +115,14 @@ runs = Table(
 events = Table(
     "events", metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("run_id", String, ForeignKey("runs.id"), index=True),
+    Column("run_id", String, index=True),  # no FK: shadow-agent spans have no run row
     Column("agent_id", String, index=True),
     Column("ts", String),
     Column("kind", String),
     Column("raw_span", JSON),
     Column("event", JSON),
     Column("prev_hash", String),
-    Column("hash", String, index=True),
+    Column("hash", String, unique=True),
 )
 
 findings = Table(
@@ -189,6 +191,10 @@ def _migrate() -> None:
             have = {c["name"] for c in insp.get_columns(table.name)}
             for col in table.columns:
                 if col.name in have or col.primary_key:
+                    continue
+                if not col.nullable and col.default is None and col.server_default is None:
+                    log.warning("skipping migration of NOT NULL column %s.%s without default",
+                                table.name, col.name)
                     continue
                 ctype = col.type.compile(engine.dialect)
                 conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ctype}'))
