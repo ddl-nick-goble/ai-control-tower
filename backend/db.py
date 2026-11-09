@@ -124,6 +124,7 @@ events = Table(
     Column("kind", String),
     Column("span_id", String),  # nullable; unique with run_id for idempotent ingest
     Column("parent_span_id", String),  # additive: span tree for ancestor agent inheritance
+    Column("agent_source", String),  # additive: explicit | ancestor | run_fallback | unknown
     Column("raw_span", JSON),
     Column("event", JSON),
     Column("prev_hash", String),

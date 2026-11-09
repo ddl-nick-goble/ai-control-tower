@@ -73,12 +73,23 @@ def ingest(spans: list[dict], actor: tuple | None = None) -> dict:
         seen = {(r.run_id, r.span_id) for r in conn.execute(
             select(db.events.c.run_id, db.events.c.span_id).where(
                 db.events.c.run_id.in_(run_ids), db.events.c.span_id.is_not(None)))}
-        # spans stored earlier: span tree links and the agent they carry
-        stored_spans: dict[tuple, tuple] = {}
-        for r in conn.execute(select(db.events.c.run_id, db.events.c.span_id, db.events.c.parent_span_id,
-                                     db.events.c.agent_id).where(
-                db.events.c.run_id.in_(run_ids), db.events.c.span_id.is_not(None))):
-            stored_spans[(r.run_id, r.span_id)] = (r.parent_span_id, r.agent_id)
+        # rows stored earlier: span tree links, the agent they carry and how it was resolved
+        stored_rows = list(conn.execute(select(
+            db.events.c.id, db.events.c.run_id, db.events.c.span_id, db.events.c.parent_span_id,
+            db.events.c.agent_id, db.events.c.agent_source).where(db.events.c.run_id.in_(run_ids))))
+        parent_of: dict[tuple, str | None] = {}
+        expl: dict[tuple, str] = {}   # (run, span) -> explicit agent id
+
+        def src_of(r):
+            if r.agent_source:
+                return r.agent_source
+            return "unknown" if (not r.agent_id or r.agent_id == "unknown") else "explicit"
+
+        for r in stored_rows:
+            if r.span_id is not None:
+                parent_of[(r.run_id, r.span_id)] = r.parent_span_id
+                if src_of(r) == "explicit":
+                    expl[(r.run_id, r.span_id)] = r.agent_id
         # only new spans are processed further (duplicates never become findings or events)
         new = []
         for sp, native, explicit, ev in prepared:
@@ -89,36 +100,25 @@ def ingest(spans: list[dict], actor: tuple | None = None) -> dict:
                 seen.add(key)
             own = amap.get(native) or (shadow_id(native) if native and explicit else None)
             new.append((sp, native, explicit, ev, key, own))
-        req = {}
-        for sp, native, explicit, ev, key, own in new:
             if key[1] is not None:
-                req[key] = (sp.get("parent_span_id") or None, own)
+                parent_of[key] = sp.get("parent_span_id") or None
+                if own:
+                    expl[key] = own
 
-        def resolve(rid, sid):
-            """Own agent id of the span, else its nearest ancestor's; None if no ancestor carries one."""
-            cur, hops = sid, set()
-            while cur and cur not in hops:
-                hops.add(cur)
-                if (rid, cur) in req:
-                    parent, own_id = req[(rid, cur)]
-                elif (rid, cur) in stored_spans:
-                    parent, own_id = stored_spans[(rid, cur)]
-                    if own_id == "unknown":
-                        own_id = None
-                else:
-                    break
-                if own_id:
-                    return own_id
-                cur = parent
+        def walk(rid, sid):
+            """Nearest span from sid upward (inclusive) with an explicit agent; None if none."""
+            hops = set()
+            while sid and sid not in hops:
+                hops.add(sid)
+                if (rid, sid) in expl:
+                    return expl[(rid, sid)]
+                sid = parent_of.get((rid, sid))
             return None
 
         def is_root(rid, parent):
-            return not parent or ((rid, parent) not in req and (rid, parent) not in stored_spans)
+            return not parent or (rid, parent) not in parent_of
 
-        resolved = {}
-        for sp, native, explicit, ev, key, own in new:
-            resolved[id(sp)] = own or (resolve(ev["run_id"], sp.get("parent_span_id") or None))
-        # run agent: what is stored; else the root span's resolved agent; else explicit carrier,
+        # run agent: what is stored; else the earliest root span's agent; else explicit carrier,
         # then service.name match in this request
         stored: dict[str, str] = {}
         for r in conn.execute(select(db.runs.c.id, db.runs.c.agent_id).where(db.runs.c.id.in_(run_ids))):
@@ -140,26 +140,36 @@ def ingest(spans: list[dict], actor: tuple | None = None) -> dict:
                 rid = ev["run_id"]
                 if rid not in run_agent and native and explicit == tier and own:
                     run_agent[rid] = own
+        final_agent = {rid: stored.get(rid) or run_agent.get(rid) for rid in run_ids}
         for sp, native, explicit, ev, key, own in roots:
             rid = ev["run_id"]
-            if own and rid in stored and own != stored[rid] and \
+            if own and not sp.get("parent_span_id") and final_agent.get(rid) and own != final_agent[rid] and \
                     not any(c["rid"] == rid and c["claimed"] == own for c in conflicts):
-                conflicts.append({"rid": rid, "claimed": own, "span_id": key[1]})
-        to_relink = [rid for rid in run_ids if rid in run_agent and stored.get(rid) is None]
-        run_agent.update({rid: a for rid, a in stored.items() if rid in run_ids})
+                conflicts.append({"rid": rid, "claimed": own, "span_id": key[1], "kept": final_agent[rid]})
+        run_agent = {rid: a for rid, a in final_agent.items() if a}
         for sp, native, explicit, ev, key, own in new:
             if native and explicit and not amap.get(native) and native not in shadow:
                 shadow[native] = {"id": shadow_id(native), "ev": ev}
         for sp, native, explicit, ev, key, own in new:
-            act_id = resolved[id(sp)] or run_agent.get(ev["run_id"])
+            rid = ev["run_id"]
+            if own:
+                act_id, source = own, "explicit"
+            else:
+                anc = walk(rid, sp.get("parent_span_id") or None)
+                if anc:
+                    act_id, source = anc, "ancestor"
+                elif run_agent.get(rid):
+                    act_id, source = run_agent[rid], "run_fallback"
+                else:
+                    act_id, source = None, "unknown"
             if act_id and amap.get(native) == act_id:
                 matched_spans += 1
             ev["agent_id"] = act_id or "unknown"
-            items.append({"run_id": ev["run_id"], "agent_id": ev["agent_id"], "ts": ev["ts"],
+            items.append({"run_id": rid, "agent_id": ev["agent_id"], "agent_source": source, "ts": ev["ts"],
                           "kind": ev["kind"], "span_id": key[1], "raw_span": sp, "event": ev,
                           "parent_span_id": sp.get("parent_span_id") or None})
-            r = runs.setdefault(ev["run_id"], {"agent_id": run_agent.get(ev["run_id"]),
-                                               "start": ev["ts"], "end": ev["ts"], "n": 0})
+            r = runs.setdefault(rid, {"agent_id": run_agent.get(rid),
+                                      "start": ev["ts"], "end": ev["ts"], "n": 0})
             r["start"] = min(r["start"], ev["ts"])
             end = sp.get("end_ns") and iso(sp["end_ns"])
             r["end"] = max(r["end"], end or ev["ts"])
@@ -171,13 +181,29 @@ def ingest(spans: list[dict], actor: tuple | None = None) -> dict:
                     id=pid, source_platform="shadow", native_id=native, name=native,
                     status="shadow", last_seen=sh["ev"]["ts"]))
         # agents rows must exist before runs/events reference them
-        if to_relink:
-            # link column only; canonical JSON, hash and prev_hash stay untouched
-            for rid in to_relink:
+        # re-resolve stored rows still unknown / run_fallback; link columns only, canonical JSON,
+        # hash and prev_hash stay untouched
+        batches: dict[tuple, list] = {}
+        for r in stored_rows:
+            cur_src = src_of(r)
+            if cur_src not in ("unknown", "run_fallback"):
+                continue
+            anc = walk(r.run_id, r.parent_span_id)
+            if anc:
+                tgt = (anc, "ancestor")
+            elif cur_src == "unknown" and run_agent.get(r.run_id):
+                tgt = (run_agent[r.run_id], "run_fallback")
+            else:
+                tgt = (r.agent_id, cur_src)
+            if tgt != (r.agent_id, r.agent_source):
+                batches.setdefault((r.run_id,) + tgt, []).append(r.id)
+        for (rid, agent, source), ids in batches.items():
+            for i in range(0, len(ids), 500):
                 conn.execute(update(db.events).where(
-                    db.events.c.run_id == rid,
-                    (db.events.c.agent_id == "unknown") | db.events.c.agent_id.is_(None)
-                ).values(agent_id=run_agent[rid]))
+                    db.events.c.run_id == rid, db.events.c.id.in_(ids[i:i + 500])
+                ).values(agent_id=agent, agent_source=source))
+        for rid in run_ids:
+            if rid in run_agent and stored.get(rid) is None:
                 conn.execute(update(db.runs).where(
                     db.runs.c.id == rid, (db.runs.c.agent_id.is_(None)) | (db.runs.c.agent_id == "unknown")
                 ).values(agent_id=run_agent[rid]))
@@ -195,13 +221,14 @@ def ingest(spans: list[dict], actor: tuple | None = None) -> dict:
                     agent_id=(cur.agent_id if cur.agent_id and cur.agent_id != "unknown" else r["agent_id"]),
                     started_at=min(cur.started_at or r["start"], r["start"]),
                     ended_at=max(cur.ended_at or r["end"], r["end"]), record=rec))
-        actor = actor or default_actor()
+        caller = actor or default_actor()
         for c in conflicts:
             conn.execute(insert(db.audit_events).values(
-                actor_user_id=actor[0], actor_username=actor[1], action="run_agent_conflict",
+                actor_user_id="system:ingest", actor_username="system:ingest", action="run_agent_conflict",
                 target=c["rid"], ts=_now(),
-                detail={"run_id": c["rid"], "stored_agent_id": stored[c["rid"]],
-                        "claimed_agent_id": c["claimed"], "span_id": c["span_id"]}))
+                detail={"run_id": c["rid"], "stored_agent_id": c["kept"], "kept_agent_id": c["kept"],
+                        "claimed_agent_id": c["claimed"], "span_id": c["span_id"],
+                        "caller_user_id": caller[0], "caller_username": caller[1]}))
         for native, sh in shadow.items():
             pid, ev = sh["id"], sh["ev"]
             if conn.execute(select(db.findings.c.id).where(
