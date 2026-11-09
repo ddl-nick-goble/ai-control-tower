@@ -110,3 +110,76 @@ def test_pack_preview_has_no_claude(page, shot, seeded):
     assert len(txt) > 200
     assert "claude" not in txt.lower()
     shot("then")
+
+
+# ---- round 2: rendering contracts (no raw Markdown, identifiers intact, card styling, runs, counts) ----
+def _api(page, path):
+    r = page.request.get(path)
+    assert r.status == 200, f"GET {path} -> {r.status}"
+    return r.json()
+
+
+def _runs(page, seeded):
+    data = _api(page, f"api/agents/{seeded['treasury_id']}/runs")
+    return data["runs"] if isinstance(data, dict) else data
+
+
+def _span_count(run):
+    for k in ("span_count", "spans_count", "event_count", "events", "spans"):
+        if k in run:
+            v = run[k]
+            return v if isinstance(v, int) else len(v)
+    raise AssertionError(f"no span count in run {run}")
+
+
+def test_preview_lists_render_as_lists(page, shot, seeded):
+    _generate(page, seeded)
+    prev = page.get_by_test_id("evidence-pack-preview")
+    lines = [l.strip() for l in prev.inner_text().splitlines() if l.strip()]
+    bad = [l for l in lines if l.startswith("- ") or l.startswith("* ")]
+    assert not bad, f"raw list markers visible: {bad}"
+    expect(prev.locator("li").first).to_be_visible()
+    mon = prev.locator("li").filter(has_text=re.compile("transfer_funds|list_credentials"))
+    assert mon.count() >= 1, "finding sub-items are not <li> elements"
+    shot("then")
+
+
+def test_preview_identifiers_not_split(page, shot, seeded):
+    agent = _api(page, f"api/agents/{seeded['treasury_id']}")
+    scopes = [s for s in (agent.get("data_scopes") or (agent.get("manifest") or {}).get("data_scopes") or []) if "." in s]
+    assert scopes, f"no dotted data scope on agent: {agent.get('manifest')}"
+    _generate(page, seeded)
+    txt = page.get_by_test_id("evidence-pack-preview").inner_text()
+    for s in scopes:
+        assert s in txt, f"{s!r} not contiguous in preview"
+    assert "decision_impact =" not in txt
+    assert "` " not in txt and "`" not in txt, "stray backticks in preview"
+    shot("then")
+
+
+def test_evidence_panel_has_card_header(page, shot, seeded):
+    page.goto(f"./#/agents/{seeded['treasury_id']}")
+    card = page.get_by_test_id("evidence-pack-card")
+    expect(card).to_be_visible()
+    expect(card.get_by_role("heading", name="Evidence pack")).to_be_visible()
+    shot("then")
+
+
+def test_runs_card_lists_all_runs(page, shot, seeded):
+    runs = _runs(page, seeded)
+    assert len(runs) >= 2, runs
+    page.goto(f"./#/agents/{seeded['treasury_id']}")
+    expect(page.get_by_test_id("run-item")).to_have_count(len(runs))
+    shot("then")
+
+
+def test_records_section_event_total_matches_api(page, shot, seeded):
+    total = sum(_span_count(r) for r in _runs(page, seeded))
+    _generate(page, seeded)
+    prev = page.get_by_test_id("evidence-pack-preview")
+    txt = prev.inner_text()
+    m = re.search(r"records.*", txt[re.search(r"records and retention|records", txt, re.I).start():], re.I | re.S)
+    sect = m.group(0)
+    nums = [int(n) for n in re.findall(r"\b(\d+)\s+(?:events?|spans?)\b", sect, re.I)]
+    assert total in nums, f"API total {total} not in records section counts {nums}:\n{sect[:500]}"
+    shot("then")
