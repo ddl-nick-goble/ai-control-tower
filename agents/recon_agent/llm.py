@@ -69,6 +69,10 @@ def create_message(model_alias, messages, tools=None, system=None, max_tokens=10
     Returns {"stop_reason", "content": [{"type": "text"|"tool_use", ...}], "model", "usage", "id"}.
     "model" is the model id the gateway reports having served (alias resolved upstream).
     """
+    if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
+        from act_llm_mock import create_message as _mock  # deterministic offline stand-in, model "mock-llm"
+        return _mock(model_alias, messages, tools=tools, system=system, max_tokens=max_tokens, tags=tags,
+                     timeout=timeout, **extra)
     body = {"model": model_alias, "messages": messages, "max_tokens": max_tokens}
     if tools:
         body["tools"] = tools
