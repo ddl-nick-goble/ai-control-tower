@@ -209,7 +209,7 @@ def test_ac7_attaches_to_governance_bundle(client, fake, monkeypatch):
     body = subs[-1][2]
     assert body["bundleId"] == bid
     blob = json.dumps(body)
-    assert str(b["pack_id"]) in blob or "evidence" in blob.lower(), blob
+    assert str(b["pack_id"]) in blob or "act/evidence/" in blob, blob
     assert not any(x[0] in ("POST", "PUT", "PATCH") and "/attachments" in x[1] for x in new), new
     from backend import db
     with db.engine.connect() as cx:
