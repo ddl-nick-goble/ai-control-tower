@@ -54,6 +54,8 @@ def classify_break(br: dict):
     r = requests.post(url, json={"data": payload}, auth=(key, key), timeout=30)
     r.raise_for_status()
     res = r.json().get("result")
+    if isinstance(res, (list, tuple)):  # registry (MLflow pyfunc) endpoints return {"result": ["<class>"]}
+        res = res[0] if res else None
     return str(res["class"] if isinstance(res, dict) else res), "endpoint"
 
 

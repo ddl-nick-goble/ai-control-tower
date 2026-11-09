@@ -14,3 +14,16 @@ breaks are classified by the registered `break_classifier` model.
 | `BREAK_CLASSIFIER_ACCESS_KEY` | Endpoint access key, sent as HTTP Basic user and password (`endpoint` source). The platform bearer token is never sent to the endpoint. |
 
 Experiment: `act-recon-<DOMINO_PROJECT_NAME>-<DOMINO_STARTING_USERNAME>` (root `experiment_setup.py`, `tracing_setup.py`).
+
+## break_classifier endpoint (live)
+
+Published as Domino sync endpoint `break-classifier` from registry model `break_classifier` version 2
+(alias `champion`), model ID `6af239a468f40b2f5611dd6c`, hardware tier `small-model-api`.
+
+| Variable | Value |
+|---|---|
+| `BREAK_CLASSIFIER_ENDPOINT_URL` | `https://se-demo.domino.tech/models/6af239a468f40b2f5611dd6c/latest/model` |
+| `BREAK_CLASSIFIER_ACCESS_KEY` | Project environment variable (secret, not recorded here). It is the endpoint access key named `BREAK_CLASSIFIER_ACCESS_KEY (agent-created)` under the endpoint's Settings > Invocation. |
+
+The registry endpoint answers `{"result": ["<class>"]}`; `classify_break` unwraps the list.
+
