@@ -239,10 +239,31 @@ def test_ac9_override_requires_identity(client):
 
 # ---------------- live ----------------
 
+_LIVE_PROXY = os.environ.get("DOMINO_API_PROXY")
+
+
 @pytest.mark.live
 @pytest.mark.skipif(os.environ.get("ACT_GOVERNANCE_LIVE") != "1", reason="ACT_GOVERNANCE_LIVE not set")
-def test_ac8_live_ensure_bundle_attaches_both_policies(db_env):
+def test_ac8_live_ensure_bundle_attaches_both_policies(db_mod, monkeypatch):
+    import requests
+    if _LIVE_PROXY:
+        monkeypatch.setenv("DOMINO_API_PROXY", _LIVE_PROXY)
+    db_mod.init_db()
+    aid = "act:test:live-governance"
+    with db_mod.engine.begin() as cx:
+        cx.execute(db_mod.agents.insert().values(
+            id=aid, source_platform="domino", native_id=aid, name=aid, owner="test-user",
+            tier="2", status="pending_review", registered_by="test-user", record={}))
+        cx.execute(db_mod.dependencies.insert().values(
+            agent_id=aid, kind="model", name="break_classifier", target="2",
+            record={"name": "break_classifier", "registry_version": "2"}))
     g = importlib.import_module("backend.governance")
-    bid = g.ensure_bundle("act:test:live-governance")
-    assert bid
-    assert g.ensure_bundle("act:test:live-governance") == bid
+    bid = None
+    try:
+        bid = g.ensure_bundle(aid)
+        assert bid
+        assert g.ensure_bundle(aid) == bid
+    finally:
+        if bid and _LIVE_PROXY:
+            r = requests.patch(f"{_LIVE_PROXY}/api/governance/v1/bundles/{bid}", json={"state": "Archived"}, timeout=30)
+            print("ARCHIVED", bid, r.status_code, r.text[:200])
