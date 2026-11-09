@@ -2,8 +2,10 @@
 import itertools, os, sys
 import requests
 
-URL = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL",
-                     "https://se-demo.domino.tech/models/6af239a468f40b2f5611dd6c/latest/model")
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+URL = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL") or (ARGS[0] if ARGS else None)
+if not URL:
+    sys.exit("error: endpoint URL required: set BREAK_CLASSIFIER_ENDPOINT_URL or pass it as an argument")
 KEY = os.environ["BREAK_CLASSIFIER_ACCESS_KEY"]
 
 

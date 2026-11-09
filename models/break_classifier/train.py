@@ -15,6 +15,50 @@ FEATURES = ["amount_diff", "days_diff", "missing_side"]
 MODEL_FILE = "break_classifier.joblib"
 
 
+def validate_features(payload):
+    """Validate a payload into (float64 ndarray [n, len(FEATURES)], is_list). Raises ValueError.
+
+    Shared by the pyfunc wrapper and predict.py. Self-contained (local imports) so it survives
+    being pickled by value into the logged model.
+    """
+    import numpy as np
+    import pandas as pd
+    feats = ["amount_diff", "days_diff", "missing_side"]
+    if isinstance(payload, dict) and "data" in payload and isinstance(payload["data"], (dict, list)):
+        payload = payload["data"]
+    is_list = not isinstance(payload, dict)
+    if isinstance(payload, pd.DataFrame):
+        df = payload
+    elif isinstance(payload, dict):
+        if not payload:
+            raise ValueError("empty input")
+        if any(isinstance(v, (list, tuple)) for v in payload.values()):
+            df = pd.DataFrame(payload)
+            is_list = True
+        else:
+            df = pd.DataFrame([payload])
+    elif isinstance(payload, (list, tuple)):
+        if len(payload) == 0:
+            raise ValueError("empty input")
+        df = pd.DataFrame(list(payload))
+    else:
+        raise ValueError("unsupported input type %s" % type(payload).__name__)
+    if len(df) == 0:
+        raise ValueError("empty input")
+    missing = [f for f in feats if f not in df.columns]
+    if missing:
+        raise ValueError("missing required feature(s): %s" % ", ".join(missing))
+    x = df[feats]
+    try:
+        x = x.apply(pd.to_numeric, errors="raise")
+    except (ValueError, TypeError) as e:
+        raise ValueError("non-numeric feature value: %s" % e) from e
+    arr = x.to_numpy(dtype="float64")
+    if not np.isfinite(arr).all():
+        raise ValueError("feature values must be finite (no NaN/inf)")
+    return arr, is_list
+
+
 def _data(n=300, seed=0):
     r = np.random.default_rng(seed)
     t = np.c_[np.zeros(n), r.integers(1, 6, n), np.zeros(n)]
@@ -53,17 +97,10 @@ def _wrapper_cls():
             self.model = joblib.load(context.artifacts["model"])
 
         def predict(self, context, model_input, params=None):
-            import pandas as pd
-            if isinstance(model_input, dict):  # harness passes {"data": {...}} as a dict of scalars
-                model_input = model_input.get("data", model_input)
-                model_input = [model_input] if isinstance(model_input, dict) and not any(
-                    isinstance(v, (list, tuple)) for v in model_input.values()) else model_input
-            df = pd.DataFrame(model_input)
-            x = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce").fillna(0.0)
-            labels = [str(c) for c in self.model.predict(x.to_numpy(dtype="float64"))]
-            # Same shape as models/break_classifier/predict.py: {"class": str}; one row -> one dict.
+            x, is_list = validate_features(model_input)
+            labels = [str(c) for c in self.model.predict(x)]
             out = [{"class": c} for c in labels]
-            return out[0] if len(out) == 1 else out
+            return out if is_list else out[0]
 
     return BreakClassifierPyfunc
 

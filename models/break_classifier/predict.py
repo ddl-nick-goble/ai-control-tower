@@ -15,7 +15,7 @@ def _model():
 
 
 def predict(payload: dict = None, **kw) -> dict:
-    d = payload if payload is not None else kw
-    d = d.get("data", d)
-    x = [[float(d.get(f, 0)) for f in FEATURES]]
-    return {"class": str(_model().predict(x)[0])}
+    from models.break_classifier.train import validate_features
+    x, is_list = validate_features(payload if payload is not None else kw)
+    out = [{"class": str(c)} for c in _model().predict(x)]
+    return out if is_list else out[0]
