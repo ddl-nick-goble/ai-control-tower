@@ -34,7 +34,7 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 |----|-----|-----------|---------|---------|----|--------|---------------|--------|
 | T-1 | enables all (health, DB init, anon write rejected) | — | app.sh, requirements.txt, package.json, vite.config.js, backend/db.py, backend/domino_identity.py, backend/main.py, frontend/ scaffold, .gitignore, .env.example | domino-deploy (sonnet) | test-author, code-reviewer | task/T-1 | a14d50d | merged (822a54b) |
 | T-2 | AC-2, AC-3 (scorer) | — | schemas/, config/, backend/tiering.py, docs/BORROWED.md | builder | test-author, code-reviewer | task/T-2 | 4a50153 | merged (8998f25) |
-| T-3 | AC-1, AC-12 (data) | T-2 | fixtures/ | builder | test-author, code-reviewer | task/T-3 | f167f88 | building |
+| T-3 | AC-1, AC-12 (data) | T-2 | fixtures/ | builder | test-author, code-reviewer | task/T-3 | fe4c551 | building (round 2) |
 | T-5 | AC-4, AC-5 (backend) | T-1, T-2 | backend/otlp.py, backend/normalize_span.py, backend/chain.py, backend/routes/traces.py, backend/routes/runs.py, backend/db.py (findings columns, granted in Wave 2) | builder | test-author, code-reviewer | task/T-5 | 446af59 | building (round 2) |
 | T-7 | AC-8 (data), AC-10 (agent) | T-1 | models/, agents/, tracing_setup.py, experiment_setup.py | domino-setup (sonnet) + domino-deploy (sonnet) + builder | test-author, code-reviewer | task/T-7 | 1c2e4ea | building |
 | T-4 | AC-1, AC-2 (routes), AC-3 (re-tier) | T-1, T-2, T-3 | adapters/, backend/normalize.py, backend/routes/agents.py, jobs/intake.py | builder | test-author, code-reviewer | task/T-4 | — | pending |
