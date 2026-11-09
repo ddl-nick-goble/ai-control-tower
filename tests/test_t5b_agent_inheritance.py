@@ -356,3 +356,92 @@ def test_ac4_fallback_uses_runs_row_agent_when_stored_events_have_several_agents
     for s in late:
         assert link_of(client, s) == a
     assert_verify(client)
+
+
+# ---- round 3: late parents, relink scope, multiple roots ----
+def snap(client, spans):
+    ids = [s["spanId"] for s in spans]
+    rows = q(client, "select span_id, event, hash, prev_hash from events")
+    return {r["span_id"]: (r["event"], r["hash"], r["prev_hash"]) for r in rows if r["span_id"] in ids}
+
+
+def _late_parent_setup(trace):
+    root = mk(trace, native=NA, op="invoke_agent", t=0)
+    cb = mk(trace, root, native=NB, op="invoke_agent", t=3)   # not sent until later
+    tb = [mk(trace, cb, t=4), mk(trace, cb, t=5)]
+    ta = mk(trace, root, t=1)
+    return root, ta, cb, tb
+
+
+def test_ac1_late_parent_relinks_orphans_when_run_already_resolved(client):
+    _intake()
+    a, b = agent_for(client, NA), agent_for(client, NB)
+    root, ta, cb, tb = _late_parent_setup(secrets.token_hex(16))
+    post(client, wrap([root, ta]))
+    rid = run_id_of(client, root)
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    post(client, wrap(tb))
+    before = snap(client, [root, ta])
+    post(client, wrap([cb]))
+    for s in tb + [cb]:
+        assert link_of(client, s) == b, s["name"]
+    assert link_of(client, root) == a and link_of(client, ta) == a
+    assert snap(client, [root, ta]) == before
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    assert_verify(client)
+
+
+def test_ac2_multi_agent_relink_orphans_then_root_then_child_agent_span(client):
+    _intake()
+    a, b = agent_for(client, NA), agent_for(client, NB)
+    root, ta, cb, tb = _late_parent_setup(secrets.token_hex(16))
+    post(client, wrap(tb))
+    post(client, wrap([root, ta]))
+    rid = run_id_of(client, root)
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    before = snap(client, [root, ta])
+    post(client, wrap([cb]))
+    for s in tb + [cb]:
+        assert link_of(client, s) == b, s["name"]
+    assert link_of(client, root) == a and link_of(client, ta) == a
+    assert snap(client, [root, ta]) == before
+    assert_verify(client)
+
+
+def test_ac4_relink_scope_leaves_explicit_ids_alone(client):
+    _intake()
+    a, b, c = agent_for(client, NA), agent_for(client, NB), agent_for(client, NC)
+    trace = secrets.token_hex(16)
+    root = mk(trace, native=NA, op="invoke_agent", t=0)
+    late = mk(trace, root, native=NC, op="invoke_agent", t=3)   # arrives last, claims C
+    explicit = mk(trace, late, native=NB, op="invoke_agent", t=4)  # carries its own id B
+    inherit = mk(trace, late, t=5)                                  # id-less orphan -> relinks to C
+    post(client, wrap([root]))
+    post(client, wrap([explicit, inherit]))
+    assert link_of(client, explicit) == b
+    post(client, wrap([late]))
+    assert link_of(client, late) == c
+    assert link_of(client, inherit) == c
+    assert link_of(client, explicit) == b, "explicit id must not be re-resolved"
+    assert link_of(client, root) == a
+    assert_verify(client)
+
+
+def test_ac3_multiple_roots_in_one_request_earliest_wins_and_conflict_recorded(client):
+    _intake()
+    a, c = agent_for(client, NA), agent_for(client, NC)
+    trace = secrets.token_hex(16)
+    r1 = mk(trace, native=NA, op="invoke_agent", t=0)
+    r2 = mk(trace, native=NC, op="invoke_agent", t=5)
+    k1, k2 = mk(trace, r1, t=1), mk(trace, r2, t=6)
+    post(client, wrap([r1, k1, r2, k2]))
+    rid = run_id_of(client, r1)
+    assert run_id_of(client, r2) == rid
+    assert q(client, "select agent_id from runs where id = ?", (rid,))[0]["agent_id"] == a
+    cs = [x for x in conflicts(client) if rid in json.dumps(x)]
+    assert cs, "no run_agent_conflict audit event"
+    blob = json.dumps(cs[0]["detail"]) + (cs[0]["target"] or "")
+    assert a in blob and c in blob, blob
+    assert link_of(client, r1) == a and link_of(client, k1) == a
+    assert link_of(client, r2) == c and link_of(client, k2) == c
+    assert_verify(client)
