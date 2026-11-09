@@ -15,7 +15,7 @@
       "identity": {
         "type": "service_principal",
         "principal": "sp-liquidity-forecast",
-        "application_id": "15d4c3b2a1f0-e9c8-d6a4-f5b3-4c2d1e7a",
+        "application_id": "15d4c3b2-a1f0-4e9c-86a4-f5b34c2d1e7a",
         "distinct": true
       },
       "tags": [

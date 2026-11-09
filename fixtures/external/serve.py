@@ -4,7 +4,8 @@ import argparse
 import http.server
 from pathlib import Path
 
-CARD = Path(__file__).resolve().parent / "agent-card.json"
+HERE = Path(__file__).resolve().parent
+CARD = HERE / "agent-card.json"
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -26,5 +27,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--signed", action="store_true", help="serve agent-card-signed.json")
     args = ap.parse_args()
+    if args.signed:
+        CARD = HERE / "agent-card-signed.json"
     http.server.ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()

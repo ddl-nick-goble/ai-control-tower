@@ -1,18 +1,26 @@
 {
-  "protocolVersion": "1.0",
   "name": "Meridian Corp Treasury Bot",
   "description": "Client-side treasury agent operated by Meridian Industrial Corp. Requests balances, initiates payment instructions and reconciles statements with partner banks.",
   "version": "2.3.1",
-  "url": "http://localhost:8765/a2a",
-  "preferredTransport": "JSONRPC",
+  "supportedInterfaces": [
+    {
+      "url": "http://localhost:8765/a2a",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    },
+    {
+      "url": "http://localhost:8765/a2a/rest",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
   "provider": {
     "organization": "Meridian Industrial Corp",
     "url": "https://treasury.meridian-corp.example.com"
   },
   "capabilities": {
     "streaming": true,
-    "pushNotifications": false,
-    "stateTransitionHistory": false
+    "pushNotifications": false
   },
   "defaultInputModes": [
     "text/plain",
@@ -23,13 +31,20 @@
   ],
   "securitySchemes": {
     "bearer": {
-      "type": "http",
-      "scheme": "bearer"
+      "httpAuthSecurityScheme": {
+        "scheme": "Bearer",
+        "bearerFormat": "JWT",
+        "description": "Bearer token issued to the client."
+      }
     }
   },
-  "security": [
+  "securityRequirements": [
     {
-      "bearer": []
+      "schemes": {
+        "bearer": {
+          "list": []
+        }
+      }
     }
   ],
   "skills": [

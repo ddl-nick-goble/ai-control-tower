@@ -1,0 +1,9 @@
+{
+  "kty": "EC",
+  "crv": "P-256",
+  "x": "EZRmnfx-wSCN7n4HVE74EmguTc7drBe5NvljiJHX3rg",
+  "y": "-bnuN8NVWHfcbG8UjAtlVHA9l7NAkf7nMROQ4CqJjjg",
+  "kid": "act-fixture-key-1",
+  "alg": "ES256",
+  "use": "sig"
+}

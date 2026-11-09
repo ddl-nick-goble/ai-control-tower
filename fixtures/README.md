@@ -23,3 +23,22 @@ platform's free-form slot. Exactly one agent per platform has `identity.type == 
 treasury-sweep-agent manifest: tools get_balance, sweep_plan, get_fx_rate, transfer_funds, post_journal_entry (no list_credentials);
 `value_limits.transfer_funds = {amount: 250000, currency: USD}`; criteria autonomous / moves_money (Tier 1).
 `gen_ai.agent.id` in OTel runs is the AWS `agentRuntimeId`.
+
+## Matching rule and synthetic extensions
+
+Matching rule (all dialects): `gen_ai.agent.id` on the agent-level span equals the platform-native id of the agent
+(AWS `agentRuntimeId`, Google service/agent engine id, Microsoft package `id`, Databricks `agent_service_id`).
+The OpenInference and MLflow runs also keep their dialect-native name attributes (`agent.name`, span name) next to it.
+`openinference-credit-memo` carries the Microsoft package id; `mlflow-liquidity-forecast` carries the Databricks agent service id.
+
+Synthetic fixture extensions (not real platform fields):
+- `identity` (all platforms) stands in for the real identity objects: Microsoft Entra `agentIdentity`, AgentCore workload identity,
+  Google agent identity (IAM principal), Databricks service principal.
+- AWS `metadata` stands in for real AgentCore resource tags / runtime metadata.
+- Microsoft `principalId` and Databricks `application_id` are canonical 8-4-4-4-12 UUIDs.
+
+## External card (A2A 1.0)
+
+`external/agent-card.json` is unsigned (default served). `external/agent-card-signed.json` is the same card plus a `signatures`
+entry (JWS ES256, protected header + signature over the base64url of the canonical JSON of the card without `signatures`),
+verifiable with `external/signing-key.pub.jwk.json`. `serve.py --signed` serves the signed card.

@@ -39,6 +39,12 @@
                   }
                 },
                 {
+                  "key": "gen_ai.agent.id",
+                  "value": {
+                    "stringValue": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51"
+                  }
+                },
+                {
                   "key": "mlflow.traceRequestId",
                   "value": {
                     "stringValue": "tr-a7196b50ac2f8670"

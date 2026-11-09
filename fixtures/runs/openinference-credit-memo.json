@@ -39,6 +39,12 @@
                   }
                 },
                 {
+                  "key": "gen_ai.agent.id",
+                  "value": {
+                    "stringValue": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11"
+                  }
+                },
+                {
                   "key": "agent.name",
                   "value": {
                     "stringValue": "credit-memo-drafter"

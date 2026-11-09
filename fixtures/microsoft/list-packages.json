@@ -19,7 +19,7 @@
       "identity": {
         "type": "managed_identity",
         "clientId": "0c7d1e34-5a2b-4c88-b1f0-7e9a3d4c5b02",
-        "principalId": "20b5c4d3a9e7-0f1b-88c4-b2a5-43e1d7c0",
+        "principalId": "20b5c4d3-a9e7-4f1b-88c4-b2a543e1d7c0",
         "distinct": true
       },
       "customMetadata": {
@@ -64,7 +64,7 @@
       "identity": {
         "type": "managed_identity",
         "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
-        "principalId": "31c6d5e4baf8-1a2a-99d4-c3b6-54f2e8d1",
+        "principalId": "31c6d5e4-baf8-4a2a-99d4-c3b654f2e8d1",
         "distinct": true
       },
       "customMetadata": {
