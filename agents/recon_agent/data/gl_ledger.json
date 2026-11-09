@@ -1,0 +1,86 @@
+[
+ {
+  "ref": "TXN-001",
+  "date": "2026-10-01",
+  "amount": 1000.0,
+  "description": "Trade settlement TXN-001"
+ },
+ {
+  "ref": "TXN-002",
+  "date": "2026-10-02",
+  "amount": 1137.5,
+  "description": "Trade settlement TXN-002"
+ },
+ {
+  "ref": "TXN-003",
+  "date": "2026-10-03",
+  "amount": 1275.0,
+  "description": "Trade settlement TXN-003"
+ },
+ {
+  "ref": "TXN-004",
+  "date": "2026-10-04",
+  "amount": 1412.5,
+  "description": "Trade settlement TXN-004"
+ },
+ {
+  "ref": "TXN-005",
+  "date": "2026-10-05",
+  "amount": 1550.0,
+  "description": "Trade settlement TXN-005"
+ },
+ {
+  "ref": "TXN-006",
+  "date": "2026-10-06",
+  "amount": 1687.5,
+  "description": "Trade settlement TXN-006"
+ },
+ {
+  "ref": "TXN-007",
+  "date": "2026-10-07",
+  "amount": 1825.0,
+  "description": "Trade settlement TXN-007"
+ },
+ {
+  "ref": "TXN-008",
+  "date": "2026-10-08",
+  "amount": 1962.5,
+  "description": "Trade settlement TXN-008"
+ },
+ {
+  "ref": "TXN-009",
+  "date": "2026-10-09",
+  "amount": 2100.0,
+  "description": "Trade settlement TXN-009"
+ },
+ {
+  "ref": "TXN-010",
+  "date": "2026-10-10",
+  "amount": 2237.5,
+  "description": "Trade settlement TXN-010"
+ },
+ {
+  "ref": "TXN-011",
+  "date": "2026-10-11",
+  "amount": 2375.0,
+  "description": "Trade settlement TXN-011"
+ },
+ {
+  "ref": "TXN-012",
+  "date": "2026-10-12",
+  "amount": 2512.5,
+  "description": "Trade settlement TXN-012"
+ },
+ {
+  "ref": "TXN-013",
+  "date": "2026-10-13",
+  "amount": 2650.0,
+  "description": "Trade settlement TXN-013"
+ },
+ {
+  "ref": "TXN-015",
+  "date": "2026-10-15",
+  "amount": 2925.0,
+  "description": "Trade settlement TXN-015"
+ }
+]
