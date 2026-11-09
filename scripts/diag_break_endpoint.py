@@ -25,5 +25,8 @@ if "--sweep" in sys.argv:
     vals = [(5, "int"), (5.5, "float")]
     for (a, an), (d, dn), (m, mn) in itertools.product(vals, vals, [(0, "int"), (1.0, "float")]):
         cases.append({"amount_diff": a, "days_diff": d, "missing_side": m})
+if "--negative" in sys.argv:  # bad payloads must come back as 4xx/5xx, never a class
+    cases = [{"amount_diff": 12, "missing_side": 0},
+             {"amount_diff": "abc", "days_diff": 2, "missing_side": 0}]
 for c in cases:
     print(c, "->", *call(c))
