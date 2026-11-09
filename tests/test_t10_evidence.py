@@ -159,15 +159,62 @@ def test_ac7_validation_section_states_absence_and_cites_agent(client):
     assert f"agents:{aid}" in json.dumps(sec["citations"])
 
 
-def test_ac7_attaches_to_governance_bundle(client, fake):
+POLICY_ID = "pol-agentic-1"
+POLICY = {"id": POLICY_ID, "name": "ACT 2026-54 Agentic Governance", "stages": [{"evidenceSet": [
+    {"id": "ev-records", "externalId": "act-records",
+     "artifacts": [{"id": "art-records", "artifactType": "input", "details": {"type": "textarea"}}]}]}]}
+
+
+def test_ac7_attaches_to_governance_bundle(client, fake, monkeypatch):
+    """Evidence reaches the bundle only via /rpc/submit-result-to-policy (bundle id in the body)."""
+    import requests
+    bodies = []
+    base_call = fake.__call__
+
+    from test_t8_governance import _Resp
+
+    def serve2(*a, **k):
+        args = [x for x in a if isinstance(x, str)]
+        url = next((x for x in args if x.startswith("http")), "")
+        method = next((x for x in args if x.upper() in ("GET", "POST", "PUT", "PATCH")), "GET").upper()
+        if "/api/governance/v1" in url:
+            bodies.append((method, url, k.get("json")))
+            if method == "GET" and url.endswith("/policy-overviews"):
+                return _Resp({"items": [{"id": POLICY_ID, "name": POLICY["name"], "status": "Published"}]})
+            if method == "GET" and url.endswith(f"/policies/{POLICY_ID}"):
+                return _Resp(POLICY)
+            if method == "POST" and url.endswith("/rpc/submit-result-to-policy"):
+                return _Resp({"ok": True})
+        return base_call(*a, **k)
+
+    monkeypatch.delenv("ACT_POLICY_AGENTIC_ID", raising=False)
+    monkeypatch.setattr(requests, "get", lambda u, *a, **k: serve2(u, **k))
+    monkeypatch.setattr(requests, "post", lambda u, *a, **k: serve2("POST", u, **k))
+    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: serve2(m, u, **k))
+    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: serve2(m, u, **k))
+    from backend import governance
+    governance._policy_cache.clear()
+
     aid = _agent(client, "domino-deployed-agent")
     bid = client.post(f"/api/agents/{aid}/governance", headers=ALICE).json()["bundle_id"]
-    n = len(fake.calls)
+    governance._policy_cache.clear()
+    n = len(bodies)
     r = _gen(client, aid)
     assert r.status_code == 200, r.text
-    assert r.json()["bundle_id"] == bid
-    new = fake.calls[n:]
-    assert any(m in ("POST", "PUT", "PATCH") and bid in u for m, u in new), new
+    b = r.json()
+    assert b["bundle_id"] == bid
+    new = bodies[n:]
+    subs = [x for x in new if x[0] == "POST" and x[1].endswith("/rpc/submit-result-to-policy")]
+    assert subs, new
+    body = subs[-1][2]
+    assert body["bundleId"] == bid
+    blob = json.dumps(body)
+    assert str(b["pack_id"]) in blob or "evidence" in blob.lower(), blob
+    assert not any(x[0] in ("POST", "PUT", "PATCH") and "/attachments" in x[1] for x in new), new
+    from backend import db
+    with db.engine.connect() as cx:
+        acts = [r.action for r in cx.execute(db.audit_events.select()).fetchall()]
+    assert "evidence_pack_attached" in acts
 
 
 def test_ac7_no_bundle_falls_back_to_dataset_note(client, evdir):
