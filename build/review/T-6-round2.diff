@@ -1,0 +1,328 @@
+diff --git a/backend/db.py b/backend/db.py
+index 08f7359..d1b5f6f 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -145,6 +145,8 @@ findings = Table(
+     Column("reason", Text),
+     Column("observed_value", String),
+     Column("limit", String),
++    Index("ux_findings_run_drift", "run_id", "type", unique=True,
++          sqlite_where=text("type = 'scope_drift'"), postgresql_where=text("type = 'scope_drift'")),
+ )
+ 
+ approvals = Table(
+@@ -212,9 +214,24 @@ def _migrate() -> None:
+                               "ON events (run_id, span_id)"))
+ 
+ 
++def _ensure_findings_index() -> None:
++    """Unique partial index for one scope_drift finding per run; never crash on legacy duplicates."""
++    try:
++        with engine.begin() as conn:
++            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_findings_run_drift "
++                              "ON findings (run_id, type) WHERE type = 'scope_drift'"))
++    except Exception:
++        log.warning("could not create ux_findings_run_drift (existing duplicate scope_drift findings?)",
++                    exc_info=True)
++
++
+ def init_db() -> None:
+-    metadata.create_all(engine)
++    try:
++        metadata.create_all(engine)
++    except Exception:
++        log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
+     _migrate()
++    _ensure_findings_index()
+ 
+ 
+ def prewarm(n: int) -> None:
+diff --git a/backend/drift.py b/backend/drift.py
+index 15b0510..d09f19c 100644
+--- a/backend/drift.py
++++ b/backend/drift.py
+@@ -4,7 +4,10 @@ ACT detects and records only; it never blocks anything in the agent's runtime.
+ """
+ import json
+ import logging
++import math
++import re
+ import threading
++import time
+ from datetime import datetime, timezone
+ 
+ from sqlalchemy import insert, select, update
+@@ -15,6 +18,9 @@ log = logging.getLogger(__name__)
+ SEVERITY = {1: "critical", 2: "high", 3: "medium", 4: "low"}
+ LLM_WAIT_SECONDS = 2.0
+ _lock = threading.Lock()
++_inflight: set[int] = set()  # finding ids with an explanation thread running
++_batch = threading.local()  # per-ingest-request LLM wait budget (hooks run in the request thread)
++BATCH_GAP_SECONDS = 1.0
+ 
+ 
+ def _now() -> str:
+@@ -28,18 +34,55 @@ def _tier(v) -> int:
+         return 4
+ 
+ 
++_NUM_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
++_ISO_PRE = re.compile(r"^([A-Za-z]{3})\s*(?=[\d.+-])")
++_ISO_SUF = re.compile(r"(?<=[\d.])\s*([A-Za-z]{3})$")
++_SYMBOLS = "$\u20ac\u00a3\u00a5\u20b9\u20a9\u20bd\u00a2"
++_MISSING = object()
++
++
++class Unverifiable(Exception):
++    def __init__(self, note: str):
++        super().__init__(note)
++        self.note = note
++
++
++def parse_amount(v):
++    """Return (number, iso_currency_or_None). Raise Unverifiable for anything not a finite number."""
++    ccy = None
++    try:
++        if isinstance(v, bool) or v is None:
++            raise Unverifiable("amount is not a number")
++        if isinstance(v, str):
++            t = v.strip()
++            m = _ISO_PRE.match(t)
++            if m:
++                ccy, t = m.group(1).upper(), t[m.end():]
++            else:
++                m = _ISO_SUF.search(t)
++                if m:
++                    ccy, t = m.group(1).upper(), t[:m.start()]
++            t = t.strip().lstrip(_SYMBOLS).strip().replace(",", "")
++            if not _NUM_RE.match(t):
++                raise Unverifiable("amount could not be parsed as a number")
++            f = float(t)
++        elif isinstance(v, (int, float)):
++            f = float(v)
++        else:
++            raise Unverifiable("amount is not a number")
++    except (ValueError, OverflowError, TypeError):
++        raise Unverifiable("amount could not be parsed as a number")
++    if not math.isfinite(f):
++        raise Unverifiable("amount is not finite")
++    return (int(f) if f == int(f) else f), ccy
++
++
+ def _num(v):
+-    if isinstance(v, bool):
++    """Lenient numeric read for stored limits; None when unusable."""
++    try:
++        return parse_amount(v)[0]
++    except Unverifiable:
+         return None
+-    if isinstance(v, (int, float)):
+-        return v
+-    if isinstance(v, str):
+-        try:
+-            f = float(v)
+-            return int(f) if f == int(f) else f
+-        except ValueError:
+-            return None
+-    return None
+ 
+ 
+ def _limit(v):
+@@ -48,7 +91,14 @@ def _limit(v):
+     return _num(v)
+ 
+ 
+-def _amount(ev: dict, raw: dict):
++def _limit_ccy(v):
++    if isinstance(v, dict) and isinstance(v.get("currency"), str):
++        return v["currency"].strip().upper() or None
++    return None
++
++
++def _amount_args(ev: dict, raw: dict):
++    """Return (amount_raw_or__MISSING, currency_or_None) from the first source carrying an amount key."""
+     srcs = [ev.get("args_redacted"), ev.get("attrs")]
+     a = (raw or {}).get("attributes") or {}
+     for k in ("gen_ai.tool.call.arguments", "tool.parameters", "mlflow.spanInputs", "input.value"):
+@@ -60,25 +110,65 @@ def _amount(ev: dict, raw: dict):
+                 v = None
+         srcs.append(v)
+     for s in srcs:
+-        if isinstance(s, dict):
+-            n = _num(s.get("amount"))
+-            if n is not None:
+-                return n
+-    return None
++        if isinstance(s, dict) and "amount" in s:
++            return s["amount"], s.get("currency")
++    return _MISSING, None
++
++
++def _jsonable(v):
++    if isinstance(v, (str, int, dict, list)) or v is None:
++        return v
++    return str(v)
+ 
+ 
+ def _manifest(conn, agent_id: str) -> dict | None:
+-    row = conn.execute(select(db.agents.c.record).where(db.agents.c.id == agent_id)).first()
+-    m = ((row.record or {}) if row else {}).get("manifest")
+-    if not m:
+-        r = conn.execute(select(db.manifests.c.content).where(db.manifests.c.agent_id == agent_id)
+-                         .order_by(db.manifests.c.created_at.desc())).first()
+-        m = r.content if r else None
+-        if isinstance(m, str):
++    r = conn.execute(select(db.manifests.c.content).where(db.manifests.c.agent_id == agent_id)
++                     .order_by(db.manifests.c.created_at.desc(), db.manifests.c.id.desc())).first()
++    m = r.content if r else None
++    if isinstance(m, str):
++        try:
+             m = json.loads(m)
++        except ValueError:
++            m = None
++    if not m:
++        row = conn.execute(select(db.agents.c.record).where(db.agents.c.id == agent_id)).first()
++        m = ((row.record or {}) if row else {}).get("manifest")
++    if not m:
++        log.warning("no manifest found for agent %s; drift not evaluated", agent_id)
++        return None
+     return m
+ 
+ 
++def _span_violations(e, allowed, limits) -> list[dict]:
++    ev = e.event or {}
++    if ev.get("kind") != "tool_call":
++        return []
++    tool = ev.get("name")
++    base = {"tool": tool, "span_id": e.span_id or ev.get("span_id"), "ts": e.ts or ev.get("ts")}
++    if tool not in allowed:
++        return [{**base, "reason": "tool_not_in_manifest", "observed_value": None, "limit": None}]
++    lim_raw = limits.get(tool)
++    lim = _limit(lim_raw)
++    if lim is None:
++        return []
++    raw, call_ccy = _amount_args(ev, e.raw_span)
++    if raw is _MISSING:
++        return []
++    unv = {**base, "reason": "value_unverifiable", "observed_value": None, "limit": lim,
++           "raw_value": _jsonable(raw) if not (isinstance(raw, float) and not math.isfinite(raw)) else str(raw)}
++    try:
++        amt, str_ccy = parse_amount(raw)
++    except Unverifiable as u:
++        return [{**unv, "note": u.note}]
++    lccy = _limit_ccy(lim_raw)
++    for c in (call_ccy, str_ccy):
++        if isinstance(c, str) and c.strip() and lccy and c.strip().upper() != lccy:
++            return [{**unv, "note": f"currency {c.strip().upper()} differs from limit currency {lccy}"}]
++    if amt > lim:
++        return [{**base, "reason": "value_limit_exceeded", "observed_value": amt, "limit": lim}]
++    return []
++
++
+ def find_violations(events, manifest: dict) -> list[dict]:
+     allowed = set(manifest.get("tools") or [])
+     limits = dict(manifest.get("value_limits") or {})
+@@ -86,18 +176,15 @@ def find_violations(events, manifest: dict) -> list[dict]:
+         limits.setdefault(k, v)
+     out = []
+     for e in events:
+-        ev = e.event or {}
+-        if ev.get("kind") != "tool_call":
+-            continue
+-        tool = ev.get("name")
+-        base = {"tool": tool, "span_id": e.span_id or ev.get("span_id"), "ts": e.ts or ev.get("ts")}
+-        if tool not in allowed:
+-            out.append({**base, "reason": "tool_not_in_manifest", "observed_value": None, "limit": None})
+-            continue
+-        lim = _limit(limits.get(tool))
+-        amt = _amount(ev, e.raw_span)
+-        if lim is not None and amt is not None and amt > lim:
+-            out.append({**base, "reason": "value_limit_exceeded", "observed_value": amt, "limit": lim})
++        try:
++            out.extend(_span_violations(e, allowed, limits))
++        except Exception:  # one bad span must never drop the run's other violations
++            log.warning("drift check failed for span %s", getattr(e, "span_id", None), exc_info=True)
++            ev = e.event or {}
++            if ev.get("kind") == "tool_call":
++                out.append({"tool": ev.get("name"), "span_id": e.span_id or ev.get("span_id"),
++                            "ts": e.ts or ev.get("ts"), "reason": "value_unverifiable",
++                            "observed_value": None, "limit": None, "note": "detector error"})
+     out.sort(key=lambda v: (v["ts"] or "", v["span_id"] or ""))
+     return out
+ 
+@@ -107,6 +194,9 @@ def fallback_explanation(v: dict, agent_name: str, tier: int) -> str:
+     if v["reason"] == "value_limit_exceeded":
+         return (f"{who} called {v['tool']} with value {v['observed_value']}, above its approved "
+                 f"limit of {v['limit']}.")
++    if v["reason"] == "value_unverifiable":
++        return (f"{who} called {v['tool']} with a value that could not be verified against its "
++                f"approved limit of {v['limit']} ({v.get('note', 'unverifiable')}).")
+     return f"{who} called {v['tool']}, which is not in its approved manifest."
+ 
+ 
+@@ -136,6 +226,8 @@ def _fill_explanation(fid: int, v: dict, agent_name: str, tier: int, fb: str, do
+     except Exception:
+         log.warning("drift explanation LLM failed; keeping fallback", exc_info=True)
+     finally:
++        with _lock:
++            _inflight.discard(fid)
+         done.set()
+ 
+ 
+@@ -187,8 +279,23 @@ def detect_run(run_id: str) -> int | None:
+             conn.execute(update(db.findings).where(db.findings.c.id == fid)
+                          .values(**vals, detail=detail, message=detail["explanation"]))
+     if need_llm:
++        with _lock:
++            if fid in _inflight:
++                return fid
++            _inflight.add(fid)
+         done = threading.Event()
+-        threading.Thread(target=_fill_explanation, daemon=True,
+-                         args=(fid, first, ag.name or agent_id, tier, fb, done)).start()
+-        done.wait(LLM_WAIT_SECONDS)
++        try:
++            threading.Thread(target=_fill_explanation, daemon=True,
++                             args=(fid, first, ag.name or agent_id, tier, fb, done)).start()
++        except Exception:
++            with _lock:
++                _inflight.discard(fid)
++            raise
++        now = time.monotonic()
++        if now - getattr(_batch, "last", -1e9) > BATCH_GAP_SECONDS:
++            _batch.spent = 0.0  # new ingest request on this thread
++        remaining = max(0.0, LLM_WAIT_SECONDS - getattr(_batch, "spent", 0.0))
++        done.wait(remaining)
++        _batch.last = time.monotonic()
++        _batch.spent = getattr(_batch, "spent", 0.0) + (_batch.last - now)
+     return fid
+diff --git a/backend/routes/findings.py b/backend/routes/findings.py
+index 3355742..380f4b3 100644
+--- a/backend/routes/findings.py
++++ b/backend/routes/findings.py
+@@ -13,9 +13,8 @@ def _num(v):
+     if v is None:
+         return None
+     try:
+-        f = float(v)
+-        return int(f) if f == int(f) else f
+-    except ValueError:
++        return drift._num(v)
++    except Exception:
+         return None
+ 
+ 
+diff --git a/schemas/finding.json b/schemas/finding.json
+index 49f4d4b..c3e509a 100644
+--- a/schemas/finding.json
++++ b/schemas/finding.json
+@@ -55,7 +55,8 @@
+     "reason": {
+       "enum": [
+         "tool_not_in_manifest",
+-        "value_limit_exceeded"
++        "value_limit_exceeded",
++        "value_unverifiable"
+       ]
+     },
+     "observed_value": {

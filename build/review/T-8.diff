@@ -1,0 +1,715 @@
+diff --git a/backend/db.py b/backend/db.py
+index 08f7359..1bf5d41 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -61,6 +61,8 @@ agents = Table(
+     Column("registered_by", String),
+     Column("last_seen", String),
+     Column("record", JSON),
++    Column("bundle_id", String),
++    Column("governance", JSON),
+ )
+ 
+ agent_versions = Table(
+@@ -156,6 +158,19 @@ approvals = Table(
+     Column("created_at", String),
+     Column("expires_at", String),
+     Column("note", Text),
++    Column("run_id", String),
++    Column("governance_sync", String),
++)
++
++overrides = Table(
++    "overrides", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("run_id", String, index=True),
++    Column("agent_id", String, index=True),
++    Column("actor_user_id", String),
++    Column("actor_username", String),
++    Column("reason", Text),
++    Column("ts", String),
+ )
+ 
+ validation_records = Table(
+diff --git a/backend/governance.py b/backend/governance.py
+new file mode 100644
+index 0000000..8b17595
+--- /dev/null
++++ b/backend/governance.py
+@@ -0,0 +1,209 @@
++"""Domino Governance sync: one bundle per agent, agentic policy plus model policy, evidence and approval mirroring.
++
++ACT never pushes to git; generated content is recorded as policy evidence answers.
++"""
++import logging
++import os
++import threading
++
++import requests
++from sqlalchemy import select
++
++from . import db
++
++log = logging.getLogger(__name__)
++TIMEOUT = 15
++AGENTIC_NAME = "ACT 2026-54 Agentic Governance"
++MODEL_NAME = "SR 26-2 Model Risk (slim)"
++KIND_TO_EXTERNAL = {"identity": "act-identity", "tier": "act-tier", "manifest": "act-manifest",
++                    "actions": "act-actions", "validation": "act-validation", "drift": "act-monitoring",
++                    "findings": "act-monitoring", "override": "act-overrides", "approval": "act-overrides",
++                    "evidence_pack": "act-records", "records": "act-records"}
++_lock = threading.Lock()
++_policy_cache: dict = {}
++
++
++class GovernanceError(RuntimeError):
++    pass
++
++
++def _base_and_headers():
++    proxy = os.environ.get("DOMINO_API_PROXY")
++    if proxy:
++        return proxy.rstrip("/") + "/api/governance/v1", {}
++    host = (os.environ.get("DOMINO_API_HOST") or os.environ.get("DOMINO_USER_HOST") or "").rstrip("/")
++    if not host:
++        raise GovernanceError("no Domino host configured (DOMINO_API_PROXY or DOMINO_API_HOST)")
++    tok = requests.get("http://localhost:8899/access-token", timeout=5).text.strip().strip('"')
++    return host + "/api/governance/v1", {"Authorization": f"Bearer {tok}"}
++
++
++def _call(method, path, body=None, params=None):
++    base, headers = _base_and_headers()
++    try:
++        r = requests.request(method, base + path, json=body, params=params, headers=headers, timeout=TIMEOUT)
++    except requests.RequestException as e:
++        raise GovernanceError(f"{method} {path}: {e}") from e
++    code = getattr(r, "status_code", 200)
++    if code >= 400:
++        raise GovernanceError(f"{method} {path} -> HTTP {code}: {str(getattr(r, 'text', ''))[:200]}")
++    try:
++        return r.json()
++    except ValueError:
++        return {}
++
++
++def _items(d):
++    if isinstance(d, list):
++        return d
++    if isinstance(d, dict):
++        for k in ("data", "items", "bundles", "approvals", "results"):
++            if isinstance(d.get(k), list):
++                return d[k]
++    return []
++
++
++def _pname(p):
++    if isinstance(p, str):
++        return p
++    return p.get("policyName") or p.get("name") or ""
++
++
++def policy_ids() -> dict:
++    """{'agentic': id|None, 'model': id|None}: env first, discovery by policy name as fallback."""
++    out = {"agentic": os.environ.get("ACT_POLICY_AGENTIC_ID"), "model": os.environ.get("ACT_POLICY_MODEL_ID")}
++    if all(out.values()):
++        return out
++    try:
++        overviews = _items(_call("GET", "/policy-overviews"))
++    except GovernanceError:
++        log.exception("policy discovery failed")
++        return out
++    for key, name in (("agentic", AGENTIC_NAME), ("model", MODEL_NAME)):
++        if not out[key]:
++            hit = [p for p in overviews if isinstance(p, dict) and p.get("name") == name
++                   and p.get("status", "Published") == "Published"]
++            if hit:
++                out[key] = hit[-1].get("id")
++            else:
++                log.warning("policy %r not found by discovery", name)
++    return out
++
++
++def _agent(agent_id):
++    with db.engine.connect() as cx:
++        a = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++        deps = cx.execute(select(db.dependencies).where(db.dependencies.c.agent_id == agent_id)).all()
++    if a is None:
++        raise GovernanceError(f"unknown agent {agent_id}")
++    return a, deps
++
++
++def ensure_bundle(agent_id: str) -> str:
++    """Idempotent: one bundle per agent. Stored on agents.bundle_id."""
++    with _lock:
++        try:
++            a, deps = _agent(agent_id)
++        except GovernanceError:
++            a, deps = None, []
++        if a is not None and a.bundle_id:
++            return a.bundle_id
++        name = f"ACT {agent_id}"
++        project = os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
++        bundle = None
++        try:
++            for b in _items(_call("GET", "/bundles", params={"projectId": project, "name": name})):
++                if isinstance(b, dict) and b.get("name") == name and b.get("id"):
++                    bundle = b
++                    break
++        except GovernanceError:
++            log.exception("bundle lookup failed")
++        if bundle is None:
++            ids = policy_ids()
++            want_model = bool(a is not None and (a.source_platform == "domino"
++                                                 or any(d.kind == "model" for d in deps)))
++            body = {"name": name, "projectId": project}
++            if ids["agentic"]:
++                body["policyId"] = ids["agentic"]
++            if want_model and ids["model"]:
++                body["additionalPolicyIds"] = [ids["model"]]
++            bundle = _call("POST", "/bundles", body)
++        bid = bundle.get("id") if isinstance(bundle, dict) else None
++        if not bid:
++            raise GovernanceError("bundle create returned no id")
++        names = [_pname(p) for p in bundle.get("policies") or []]
++        if a is not None:
++            with db.engine.begin() as cx:
++                cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
++                    bundle_id=bid, governance={"policies": names, "stage": bundle.get("stage")}))
++        return bid
++
++
++def get_bundle(bundle_id):
++    d = _call("GET", f"/bundles/{bundle_id}")
++    if isinstance(d, dict) and d.get("id") == bundle_id:
++        return d
++    for b in _items(d):
++        if isinstance(b, dict) and b.get("id") == bundle_id:
++            return b
++    return d if isinstance(d, dict) and "policies" in d else {}
++
++
++def _policy_struct(policy_id):
++    if policy_id not in _policy_cache:
++        _policy_cache[policy_id] = _call("GET", f"/policies/{policy_id}")
++    return _policy_cache[policy_id]
++
++
++def attach_evidence(bundle_id: str, kind: str, payload: dict):
++    """kind 'model_version' attaches a ModelVersion; any other kind is answered as policy evidence."""
++    payload = payload or {}
++    if kind == "model_version":
++        return _call("POST", f"/bundles/{bundle_id}/attachments", {
++            "type": "ModelVersion",
++            "identifier": {"name": payload["name"], "version": int(payload["version"])},
++            "name": payload.get("name"), "description": payload.get("summary", "")})
++    if kind == "report":  # only for files already committed
++        return _call("POST", f"/bundles/{bundle_id}/attachments", {
++            "type": "Report", "identifier": payload["identifier"],
++            "name": payload.get("name"), "description": payload.get("summary", "")})
++    ext = KIND_TO_EXTERNAL.get(kind)
++    if not ext:
++        raise GovernanceError(f"unknown evidence kind {kind}")
++    pid = payload.get("policy_id") or policy_ids()["agentic"]
++    if not pid:
++        raise GovernanceError("agentic policy id unknown")
++    ev = None
++    for st in _policy_struct(pid).get("stages") or []:
++        for e in st.get("evidenceSet") or []:
++            if e.get("externalId") == ext:
++                ev = e
++    if ev is None:
++        raise GovernanceError(f"evidence {ext} not in policy")
++    arts = ev.get("artifacts") or []
++    target = next((x for x in arts if (x.get("details") or {}).get("type") == "textarea"),
++                  next((x for x in arts if x.get("artifactType") == "input"), None))
++    if target is None:
++        raise GovernanceError(f"no input artifact in {ext}")
++    text = str(payload.get("summary", ""))
++    cite = payload.get("citation") or payload.get("path")
++    if cite:
++        text += f"\nSource record: {cite}"
++    return _call("POST", "/rpc/submit-result-to-policy", {
++        "bundleId": bundle_id, "policyId": pid, "evidenceId": ev["id"], "content": {target["id"]: text}})
++
++
++def mirror_approval(agent_id: str, approver: str) -> str:
++    """Best-effort RequestSubmitted then RequestApproved. Returns 'synced' | 'skipped'. Raises GovernanceError."""
++    bid = ensure_bundle(agent_id)
++    project = os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
++    aps = [x for x in _items(_call("GET", f"/bundles/{bid}/approvals")) if isinstance(x, dict) and x.get("id")]
++    ap = next((x for x in aps if x.get("name") == "Approval to operate"), None)
++    if ap is None:
++        return "skipped"
++    for ev in ("RequestSubmitted", "RequestApproved"):
++        _call("POST", "/rpc/publish-approval-event", {
++            "bundleId": bid, "policyId": ap.get("policyId"), "projectId": project, "eventType": ev,
++            "approvalId": ap["id"], "stageApprovalId": ap.get("stageApprovalId"),
++            "meta": {"approver": approver, "source": "ACT"}})
++    return "synced"
+diff --git a/backend/routes/approvals.py b/backend/routes/approvals.py
+new file mode 100644
+index 0000000..e0d62e8
+--- /dev/null
++++ b/backend/routes/approvals.py
+@@ -0,0 +1,87 @@
++"""Approvals with builder/approver separation, and the governance view."""
++import logging
++from datetime import datetime, timedelta, timezone
++
++from fastapi import APIRouter, Body, Depends, HTTPException
++from sqlalchemy import select
++
++from .. import db, governance
++from ..domino_identity import User, require_user
++from ..normalize import _audit
++
++router = APIRouter()
++log = logging.getLogger(__name__)
++EXPIRY_DAYS = {"1": 90, "2": 180, "3": 365, "4": 365}
++
++
++def _approvals(agent_id):
++    with db.engine.connect() as cx:
++        rows = cx.execute(select(db.approvals).where(db.approvals.c.agent_id == agent_id)
++                          .order_by(db.approvals.c.id)).all()
++    return [{"id": r.id, "approver": r.approver, "decision": r.decision, "created_at": r.created_at,
++             "expires_at": r.expires_at, "run_id": r.run_id, "governance_sync": r.governance_sync} for r in rows]
++
++
++@router.post("/api/agents/{agent_id}/approve")
++def approve(agent_id: str, body: dict | None = Body(None), user: User = Depends(require_user)):
++    run_id = (body or {}).get("run_id") if isinstance(body, dict) else None
++    now = datetime.now(timezone.utc)
++    with db.engine.begin() as cx:
++        a = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++        if a is None:
++            raise HTTPException(404, "agent not found")
++        if a.registered_by and a.registered_by == user.user_id:
++            _audit(cx, "approve_refused", agent_id,
++                   {"reason": "approver is the registrant"}, actor=(user.user_id, user.username))
++            refused = True
++        else:
++            refused = False
++            days = EXPIRY_DAYS.get(str(a.tier), 365)
++            expires = (now + timedelta(days=days)).isoformat()
++            res = cx.execute(db.approvals.insert().values(
++                agent_id=agent_id, approver=user.user_id, decision="approved", created_at=now.isoformat(),
++                expires_at=expires, run_id=run_id))
++            ap_id = res.inserted_primary_key[0]
++            cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
++                status="approved", record={**(a.record or {}), "status": "approved"}))
++            _audit(cx, "approved", agent_id, {"expires_at": expires, "tier": a.tier, "run_id": run_id},
++                   actor=(user.user_id, user.username))
++    if refused:
++        raise HTTPException(403, "the user who registered this agent cannot approve it")
++    try:
++        sync = governance.mirror_approval(agent_id, user.username)
++    except Exception as e:  # best-effort: never fail the ACT approval
++        log.exception("governance approval mirror failed")
++        sync = "failed"
++        with db.engine.begin() as cx:
++            _audit(cx, "governance_sync_failed", agent_id, {"error": str(e)[:300]},
++                   actor=(user.user_id, user.username))
++    with db.engine.begin() as cx:
++        cx.execute(db.approvals.update().where(db.approvals.c.id == ap_id).values(governance_sync=sync))
++    return {"id": agent_id, "status": "approved", "approver": user.user_id, "expires_at": expires,
++            "run_id": run_id, "governance_sync": sync}
++
++
++@router.get("/api/agents/{agent_id}/governance")
++def get_governance(agent_id: str):
++    with db.engine.connect() as cx:
++        a = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++    if a is None:
++        raise HTTPException(404, "agent not found")
++    stored = a.governance or {}
++    bundle_id, names, stage, error = a.bundle_id, list(stored.get("policies") or []), stored.get("stage"), None
++    try:
++        bundle_id = governance.ensure_bundle(agent_id)
++        b = governance.get_bundle(bundle_id)
++        live = [governance._pname(p) for p in b.get("policies") or []]
++        if live:
++            names = live
++            stage = b.get("stage") or stage
++            with db.engine.begin() as cx:
++                cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
++                    governance={"policies": names, "stage": stage}))
++    except Exception as e:
++        log.exception("governance read failed")
++        error = str(e)[:300]
++    return {"bundle_id": bundle_id, "policies": [{"id": None, "name": n} for n in names], "stage": stage,
++            "approvals": _approvals(agent_id), "error": error}
+diff --git a/backend/routes/dependencies.py b/backend/routes/dependencies.py
+new file mode 100644
+index 0000000..82336af
+--- /dev/null
++++ b/backend/routes/dependencies.py
+@@ -0,0 +1,25 @@
++"""Dependency graph from the dependencies table."""
++from fastapi import APIRouter, HTTPException
++from sqlalchemy import select
++
++from .. import db
++
++router = APIRouter()
++_KEYS = {"model": "models", "mcp_server": "mcp_servers", "mcp": "mcp_servers", "tool": "tools"}
++
++
++@router.get("/api/agents/{agent_id}/dependencies")
++def dependencies(agent_id: str):
++    out = {"models": [], "mcp_servers": [], "tools": []}
++    with db.engine.connect() as cx:
++        if cx.execute(select(db.agents.c.id).where(db.agents.c.id == agent_id)).first() is None:
++            raise HTTPException(404, "agent not found")
++        rows = cx.execute(select(db.dependencies).where(db.dependencies.c.agent_id == agent_id)
++                          .order_by(db.dependencies.c.id)).all()
++    for r in rows:
++        rec = dict(r.record or {})
++        item = {**rec, "name": r.name or rec.get("name"), "target": r.target, "kind": r.kind}
++        if r.kind == "model":
++            item["registry_version"] = rec.get("registry_version", r.target)
++        out[_KEYS.get(r.kind, "tools")].append(item)
++    return out
+diff --git a/backend/routes/runs.py b/backend/routes/runs.py
+index faab57d..81733cb 100644
+--- a/backend/routes/runs.py
++++ b/backend/routes/runs.py
+@@ -1,21 +1,51 @@
+ """Run reconstruction."""
+ import json
++from datetime import datetime, timezone
+ 
+-from fastapi import APIRouter, HTTPException
++from fastapi import APIRouter, Body, Depends, HTTPException
+ from sqlalchemy import select
+ 
+ from .. import db
++from ..domino_identity import User, require_user
++from ..normalize import _audit, now_iso
+ from ..normalize_span import redact
+ 
+ router = APIRouter()
+ 
+ 
++def _key(ts):
++    """Sortable UTC instant for mixed 'Z' and '+00:00' timestamps."""
++    try:
++        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
++        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
++    except ValueError:
++        return 0.0
++
++
++@router.post("/api/runs/{run_id}/override")
++def override(run_id: str, body: dict = Body(...), user: User = Depends(require_user)):
++    reason = (body or {}).get("reason")
++    if not reason or not isinstance(reason, str):
++        raise HTTPException(422, "body must be {\"reason\": \"...\"}")
++    ts = now_iso()
++    with db.engine.begin() as cx:
++        ev = cx.execute(select(db.events.c.agent_id).where(db.events.c.run_id == run_id).limit(1)).first()
++        if ev is None:
++            raise HTTPException(404, "run not found")
++        cx.execute(db.overrides.insert().values(run_id=run_id, agent_id=ev[0], actor_user_id=user.user_id,
++                                                actor_username=user.username, reason=reason, ts=ts))
++        _audit(cx, "override", run_id, {"reason": reason, "agent_id": ev[0]}, actor=(user.user_id, user.username))
++    return {"run_id": run_id, "kind": "override", "ts": ts, "reason": reason}
++
++
+ @router.get("/api/runs/{run_id}/timeline")
+ def timeline(run_id: str):
+     with db.engine.connect() as conn:
+         rows = conn.execute(select(db.events.c.event).where(db.events.c.run_id == run_id)
+                             .order_by(db.events.c.ts, db.events.c.id)).all()
+         run = conn.execute(select(db.runs).where(db.runs.c.id == run_id)).first()
++        ovs = conn.execute(select(db.overrides).where(db.overrides.c.run_id == run_id)).all()
++        aps = conn.execute(select(db.approvals).where(db.approvals.c.run_id == run_id)).all()
+     if not rows:
+         raise HTTPException(404, "run not found")
+     events = []
+@@ -23,6 +53,15 @@ def timeline(run_id: str):
+         ev = json.loads(ev) if isinstance(ev, str) else ev
+         ev["args_redacted"] = redact(ev.get("args_redacted"))
+         events.append(ev)
+-    return {"run_id": run_id, "agent_id": run.agent_id if run else events[0]["agent_id"],
++    agent_id = run.agent_id if run else events[0]["agent_id"]
++    for o in ovs:
++        events.append({"run_id": run_id, "agent_id": o.agent_id or agent_id, "ts": o.ts, "kind": "override",
++                       "name": "override", "actor": o.actor_user_id, "reason": o.reason})
++    for a in aps:
++        events.append({"run_id": run_id, "agent_id": a.agent_id, "ts": a.created_at, "kind": "approval",
++                       "name": "approval", "actor": a.approver, "decision": a.decision,
++                       "expires_at": a.expires_at})
++    events.sort(key=lambda e: _key(e.get("ts")))
++    return {"run_id": run_id, "agent_id": agent_id,
+             "started_at": run.started_at if run else None, "ended_at": run.ended_at if run else None,
+             "events": events}
+diff --git a/docs/governance-api.md b/docs/governance-api.md
+new file mode 100644
+index 0000000..4327bbd
+--- /dev/null
++++ b/docs/governance-api.md
+@@ -0,0 +1,58 @@
++# Governance API notes for backend/governance.py (T-8)
++
++Discovered live on this deployment on 2026-11-09 as the project owner (nick_goble), through the in-run proxy. Open question 10 is answered: yes, create bundle, attach policy, attach evidence, answer questions, approve and progress stages all work from the user's identity. Not yet verified with a separate service account token.
++
++## Base and auth
++- Base: `$DOMINO_API_PROXY/api/governance/v1`, no auth header (proxy adds the user). Fallback: `$DOMINO_API_HOST` plus bearer from `http://localhost:8899/access-token`. Never X-Domino-Api-Key.
++- `GET /policy-overviews` returns `{"data":[{id,name,status,version,...}],"meta":{}}` (332 policies on this deployment). `GET /bundles?projectId=` returns `{"data":[...]}`.
++
++## Policies (the policy API takes YAML)
++- Files: `policies/act-2026-54.yaml`, `policies/sr-26-2-model.yaml`. Top-level keys `name`, `description`, `stages[]`; each stage has `name`, `evidenceSet[]` (`id: Local.<externalId>`, `name`, `description`, `definition[]` of `{artifactType: input|metadata, details:{type,label,...}}`) and `approvals[]` (`name`, `approvers: [model-gov-org]`, `evidence{id,name,definition}`).
++- Create: `POST /policies {"name","description","labels":{}}` -> 200 `{id,status:"Draft",...}`. Then `PUT /policies/{id}/definition {"definition": "<yaml string>"}` -> 200 with the full parsed policy. Then `PUT /policies/{id}/status {"status":"Published"}` -> 200. Only Published policies can be put on a bundle. Published policies are immutable; to change one use `POST /policies/{id}/versions` and `PUT /policy-versions/{id}/definition`, then publish.
++- Policy ids (Published, v1.0):
++  - ACT 2026-54 Agentic Governance: `dbda3f71-df98-44fb-84f2-a7dcb14b8916`
++  - SR 26-2 Model Risk (slim): `8341eac0-8430-4d17-980c-e9af89cdaa83`
++- Approver `model-gov-org` resolved to organization id `671a9237a23252621980ba04` on this deployment. Other deployments need that org to exist or the YAML changed.
++- `GET /policies/{id}`: `stages[].evidenceSet[]{id (uuid), externalId, name, artifacts[]{id (uuid), artifactType, details{type,label,options}}}` and `stages[].approvals[]{id,name,approvers,evidence{id,externalId,artifacts[]}}`. Map the YAML id (`act-tier`) to uuids through `externalId`, and artifacts by order or `details.label`. Cache this per policy id.
++- ACT policy externalIds: act-identity, act-tier, act-manifest, act-actions, act-validation (approval evidence act-validation-signoff), act-monitoring, act-overrides (approval evidence act-approval), act-records. Stage names: Identity and ownership; Tier and criteria; Permitted actions; Validation; Monitoring and findings; Approvals and overrides; Records and retention. Approvals: "Validation sign-off" (in Validation), "Approval to operate" (in Approvals and overrides).
++- SR externalIds: sr-model-id, sr-use, sr-validation, sr-monitoring; approval "Model risk approval" (sr-approval) in stage Approval.
++
++## Bundles
++- Create: `POST /bundles {"name","projectId","policyId":ACT,"additionalPolicyIds":[SR]}` -> 200. Optional `attachments[]`, `resolveNameOnConflict`. Response fields: `id` (bundle id), `name`, `state` (Active|Archived|Complete), `policyId`, `policyVersionId`, `stage` (name of current primary-policy stage), `stages[]` (all stages of the primary policy: `{bundleId,stageId,stage{id,name},assignee,assignedAt}`), `policies[]` (one per policy: `policyId,policyName,policyVersionId,stage,compliantToCurrentStage,...`), `stageApprovals[]`, `projectId`, `attachments[]` (on GET).
++- Add a policy later: `POST /rpc/add-policies-to-bundle {"bundleId","policyIds":[...]}`.
++- Read: `GET /bundles/{id}`; list: `GET /bundles?projectId=...` (name filter works).
++- Delete: `DELETE /bundles/{id}` -> 204 works (used for cleanup). `PATCH /bundles/{id} {"state":"Archived"}` -> 200 also works.
++- PDF report: `GET /bundles/{id}/report` -> 200 application/pdf.
++
++## Attachments (references, not uploads)
++- `POST /bundles/{id}/attachments {"type","identifier":{...},"name","description"}` -> 200 `{id,type,identifier,source:"MANUAL",createdAt,createdBy}`. `DELETE .../attachments/{attachmentId}` -> 204.
++- Types accepted: Report, ModelVersion, DatasetSnapshotFile, Endpoint, NetAppVolumeSnapshotFile, FlowArtifact, FlowArtifactFile. Any other type (e.g. "File") -> 400.
++- Report: `identifier {"branch","commit","source":"git","filename":"<path in repo>"}`. It is a reference to a file at a commit. There is no content upload through this API. Commit and push the evidence file first, then attach with the commit sha. The API does NOT validate existence: a nonexistent filename and a branch/commit mismatch were both accepted (200). The builder must make sure the commit is pushed, or the UI link breaks.
++- ModelVersion: `{"name":"<registered model>","version":int}`. A nonexistent model was accepted (200); no validation.
++- Endpoint: requires `identifier.name`, `identifier.version`, `identifier.endpointVersionId` (400 otherwise, field-level messages). Not exercised with a live endpoint.
++- Attachments are bundle-wide and show in every approval's `approvalTimelineMap`.
++- Plan for ACT: tier reasoning, drift findings and validation record are best written as evidence answers (textarea artifacts) and also as a Report file in the evidence pack; manifest and pack files go as Report attachments at a pushed commit.
++
++## Evidence answers
++- `POST /rpc/submit-result-to-policy {"bundleId","policyId","evidenceId":<evidenceSet uuid>,"content":{"<artifactUuid>":"value"}}` -> 200 `{"bundle":{...},...}` (updated bundle and computed policy). Radio/text/select values are strings; checkbox/multiSelect arrays. All artifacts are `required:false` in our policies.
++- Read back: `GET /results/latest?bundleID=&policyID=` -> `[{id,evidenceId,artifactId,artifactContent,isLatest,createdBy,createdAt}]`.
++- Works for approval evidence too (same call with the approval's `evidence.id`).
++- `POST /rpc/compute-policy {"bundleId","policyId"}` -> 200.
++
++## Approvals and stages
++- `GET /bundles/{id}/approvals` -> `[{id (approval instance id), stageApprovalId, name, bundleId, policyId, policyVersionId, status, approvers[], updatedAt, updatedBy}]`; status PendingSubmission -> PendingReview -> Approved (also ConditionallyApproved, PendingExpiration, Expired). One entry per approval of all attached policies.
++- `POST /rpc/publish-approval-event {"bundleId","policyId","projectId","eventType","approvalId":<approval instance id>,"stageApprovalId"}`; eventType RequestSubmitted | RequestApproved | RequestConditionalApproved | RequestRejected | RequestCancelled | ... Returns the approval. Tested: RequestSubmitted -> PendingReview, RequestApproved -> Approved, both 200.
++- Separation NOT enforced by the API: the same user who built the bundle submitted and approved (200) even though that user is not shown as an approver. ACT must enforce builder/approver separation itself and mirror the result by publishing the events (use the approver's own token if available, otherwise the ACT service identity, and record the real approver in `meta`).
++- Progress: `PATCH /bundles/{id} {"stage":"<stage name>"}` -> 200 and `stage` changes (Identity and ownership -> Tier and criteria worked even with an approval pending). Unknown name -> 500 with message "stage ... not found". Stage moves are not gated by the API; ACT should gate. This moves the primary policy only.
++- `PATCH /bundles/{id}/stages/{stageId} {"assignee":{"id","name"}}` -> 200 (assignee only).
++- Policy `enforceSequentialOrder` is false in both policies, so no API-side ordering.
++
++## Limits and gotchas
++- No file upload to a bundle; Report attachments reference git commits. Files must be pushed first.
++- Attachments and model versions are not validated for existence.
++- `currentStageInfo` was absent on GET /bundles/{id} here; use `stage` and `GET /approvals`.
++- The discovery bundle "act-discovery-test" (id dfa45961-9270-46b6-97f9-b0c8b04051d6) was deleted (204). The two policies were kept (Published) and should be created once; do not recreate on every run. `GET /policy-overviews` and match by name to find them, or take ids from config.
++- Backend should use `resolveNameOnConflict` or one bundle per agent id with a stable name like `ACT <agent_id>`.
++
++## T-8b fallback
++Not needed for the Governance API itself. Needed only for: uploading evidence file bytes (use pushed git commit references), and a real second-person approval (ACT enforces and mirrors).
+diff --git a/policies/act-2026-54.yaml b/policies/act-2026-54.yaml
+new file mode 100644
+index 0000000..b812d91
+--- /dev/null
++++ b/policies/act-2026-54.yaml
+@@ -0,0 +1,131 @@
++# ACT 2026-54: agentic governance policy (stages mirror OCC 2026-54 order).
++# Evidence ids are stable externalIds; ACT writes answers by these ids.
++name: ACT 2026-54 Agentic Governance
++description: Governance policy for AI agents registered in Agent Control Tower, mirroring OCC 2026-54.
++enforceSequentialOrder: false
++stages:
++  - name: Identity and ownership
++    evidenceSet:
++      - id: Local.act-identity
++        name: Agent identity
++        description: Who the agent is and who owns it.
++        definition:
++          - artifactType: input
++            details: {type: textinput, label: "Agent name and id"}
++          - artifactType: input
++            details: {type: textinput, label: "Accountable owner"}
++          - artifactType: input
++            details: {type: textinput, label: "Agent identity (service principal or Domino user)"}
++          - artifactType: input
++            details: {type: textarea, label: "Business purpose", height: 4}
++  - name: Tier and criteria
++    evidenceSet:
++      - id: Local.act-tier
++        name: Risk tier
++        description: Tier assigned by ACT and the reasoning behind it.
++        definition:
++          - artifactType: input
++            details:
++              type: radio
++              label: "Assigned tier"
++              options: [Tier 1, Tier 2, Tier 3]
++          - artifactType: input
++            details: {type: textarea, label: "Tier reasoning", height: 8}
++      - id: Local.act-manifest
++        name: Agent manifest
++        description: Declared tools, data, models and permissions.
++        definition:
++          - artifactType: input
++            details: {type: textarea, label: "Manifest summary (tools, data, models)", height: 8}
++          - artifactType: metadata
++            details: {type: file, label: "Manifest file", description: "Manifest as registered in ACT."}
++  - name: Permitted actions
++    evidenceSet:
++      - id: Local.act-actions
++        name: Permitted and prohibited actions
++        description: What the agent may do, and what needs a human.
++        definition:
++          - artifactType: input
++            details: {type: textarea, label: "Permitted actions", height: 6}
++          - artifactType: input
++            details: {type: textarea, label: "Prohibited actions and human-in-the-loop points", height: 6}
++          - artifactType: input
++            details:
++              type: radio
++              label: "Does the agent take actions with external side effects?"
++              options: ["Yes", "No"]
++  - name: Validation
++    evidenceSet:
++      - id: Local.act-validation
++        name: Validation record
++        description: Independent validation of the agent.
++        definition:
++          - artifactType: input
++            details:
++              type: radio
++              label: "Validation outcome"
++              options: [Pass, Pass with conditions, Fail]
++          - artifactType: input
++            details: {type: textarea, label: "Validation summary", height: 8}
++          - artifactType: metadata
++            details: {type: file, label: "Validation report"}
++    approvals:
++      - name: Validation sign-off
++        approvers:
++          - model-gov-org
++        evidence:
++          id: Local.act-validation-signoff
++          name: Validation sign-off
++          description: Validator confirms the validation record.
++          definition:
++            - artifactType: input
++              details:
++                type: radio
++                label: "Validation accepted?"
++                options: ["Yes", "No"]
++  - name: Monitoring and findings
++    evidenceSet:
++      - id: Local.act-monitoring
++        name: Monitoring and drift
++        description: Drift findings and open issues.
++        definition:
++          - artifactType: input
++            details: {type: textarea, label: "Drift findings summary", height: 6}
++          - artifactType: input
++            details: {type: textarea, label: "Open findings and remediation plan", height: 6}
++          - artifactType: input
++            details: {type: date, label: "Next monitoring review date", format: ISO8601}
++  - name: Approvals and overrides
++    evidenceSet:
++      - id: Local.act-overrides
++        name: Overrides and exceptions
++        description: Any override of a gate, with reason.
++        definition:
++          - artifactType: input
++            details: {type: textarea, label: "Overrides granted and rationale", height: 6}
++    approvals:
++      - name: Approval to operate
++        approvers:
++          - model-gov-org
++        evidence:
++          id: Local.act-approval
++          name: Approval to operate
++          description: Final approver decision. The approver must differ from the builder.
++          definition:
++            - artifactType: input
++              details:
++                type: radio
++                label: "Decision"
++                options: [Approved, Approved with conditions, Rejected]
++            - artifactType: input
++              details: {type: textarea, label: "Conditions or comments", height: 4}
++  - name: Records and retention
++    evidenceSet:
++      - id: Local.act-records
++        name: Evidence pack and retention
++        description: Evidence pack files and retention period.
++        definition:
++          - artifactType: input
++            details: {type: textinput, label: "Evidence pack location"}
++          - artifactType: input
++            details: {type: select, label: "Retention period", options: [{label: "3 years", value: "3y"}, {label: "5 years", value: "5y"}, {label: "7 years", value: "7y"}]}
+diff --git a/policies/sr-26-2-model.yaml b/policies/sr-26-2-model.yaml
+new file mode 100644
+index 0000000..de9f2ce
+--- /dev/null
++++ b/policies/sr-26-2-model.yaml
+@@ -0,0 +1,62 @@
++# SR 26-2: slim model-risk template for the model an agent calls.
++name: SR 26-2 Model Risk (slim)
++description: Slim model-risk template for the model called by an ACT-governed agent.
++stages:
++  - name: Model identification
++    evidenceSet:
++      - id: Local.sr-model-id
++        name: Model identification
++        description: Which model, provider and version.
++        definition:
++          - artifactType: input
++            details: {type: textinput, label: "Model name and version"}
++          - artifactType: input
++            details: {type: textinput, label: "Provider or endpoint"}
++          - artifactType: input
++            details: {type: textinput, label: "Model owner"}
++  - name: Intended use
++    evidenceSet:
++      - id: Local.sr-use
++        name: Intended use and limits
++        description: Intended use of the model inside the agent.
++        definition:
++          - artifactType: input
++            details: {type: textarea, label: "Intended use", height: 5}
++          - artifactType: input
++            details: {type: textarea, label: "Known limitations", height: 5}
++  - name: Validation
++    evidenceSet:
++      - id: Local.sr-validation
++        name: Model validation
++        description: Evaluation of the model for this use.
++        definition:
++          - artifactType: input
++            details:
++              type: radio
++              label: "Validation outcome"
++              options: [Pass, Pass with conditions, Fail]
++          - artifactType: input
++            details: {type: textarea, label: "Validation summary", height: 6}
++  - name: Monitoring
++    evidenceSet:
++      - id: Local.sr-monitoring
++        name: Model monitoring
++        description: Ongoing performance and drift monitoring.
++        definition:
++          - artifactType: input
++            details: {type: textarea, label: "Monitoring plan and latest results", height: 6}
++  - name: Approval
++    approvals:
++      - name: Model risk approval
++        approvers:
++          - model-gov-org
++        evidence:
++          id: Local.sr-approval
++          name: Model risk approval
++          description: Model risk decision.
++          definition:
++            - artifactType: input
++              details:
++                type: radio
++                label: "Decision"
++                options: [Approved, Approved with conditions, Rejected]

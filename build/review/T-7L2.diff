@@ -1,0 +1,92 @@
+diff --git a/models/break_classifier/train.py b/models/break_classifier/train.py
+index 762f63d..decc1c0 100644
+--- a/models/break_classifier/train.py
++++ b/models/break_classifier/train.py
+@@ -38,19 +38,49 @@ def train(output_dir: str) -> str:
+     return path
+ 
+ 
++def _wrapper_cls():
++    import mlflow.pyfunc
++
++    class BreakClassifierPyfunc(mlflow.pyfunc.PythonModel):
++        """Coerces every feature to float64 so JSON ints and floats are both accepted.
++
++        MLflow schema enforcement rejects an int64 column when the signature says double
++        (HTTP 400 "Can not safely convert int64 to float64"), so the logged model carries no
++        enforcing column schema and casting happens here instead.
++        """
++
++        def load_context(self, context):
++            self.model = joblib.load(context.artifacts["model"])
++
++        def predict(self, context, model_input, params=None):
++            import pandas as pd
++            if isinstance(model_input, dict):  # harness passes {"data": {...}} as a dict of scalars
++                model_input = model_input.get("data", model_input)
++                model_input = [model_input] if isinstance(model_input, dict) and not any(
++                    isinstance(v, (list, tuple)) for v in model_input.values()) else model_input
++            df = pd.DataFrame(model_input)
++            x = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce").fillna(0.0)
++            labels = [str(c) for c in self.model.predict(x.to_numpy(dtype="float64"))]
++            # Same shape as models/break_classifier/predict.py: {"class": str}; one row -> one dict.
++            out = [{"class": c} for c in labels]
++            return out[0] if len(out) == 1 else out
++
++    return BreakClassifierPyfunc
++
++
+ def main(output_dir="/tmp/break_classifier"):
+     import mlflow
+-    import pandas as pd
+-    from mlflow.models import infer_signature
+     from experiment_setup import log_domino_context, setup_experiment
+     setup_experiment("break-classifier")
+     model, X, y = _fit()
+-    df = pd.DataFrame(X[:5], columns=FEATURES)
++    path = train(output_dir)
+     with mlflow.start_run(run_name="break-classifier-train"):
+         log_domino_context()
+         mlflow.log_metric("train_accuracy", float(model.score(X, y)))
+-        info = mlflow.sklearn.log_model(model, "model", signature=infer_signature(df, model.predict(df)),
+-                                        input_example=df, registered_model_name="break_classifier")
++        info = mlflow.pyfunc.log_model(
++            "model", python_model=_wrapper_cls()(), artifacts={"model": path},
++            pip_requirements=["mlflow", "scikit-learn", "joblib", "pandas", "numpy"],
++            registered_model_name="break_classifier")
+     client = mlflow.MlflowClient()
+     ver = max(int(v.version) for v in client.search_model_versions("name='break_classifier'"))
+     client.set_registered_model_alias("break_classifier", "champion", str(ver))
+diff --git a/scripts/diag_break_endpoint.py b/scripts/diag_break_endpoint.py
+new file mode 100644
+index 0000000..359d3e2
+--- /dev/null
++++ b/scripts/diag_break_endpoint.py
+@@ -0,0 +1,27 @@
++"""Diagnostic: POST variants to the break_classifier endpoint; print only status + body (never the key)."""
++import itertools, os, sys
++import requests
++
++URL = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL",
++                     "https://se-demo.domino.tech/models/6af239a468f40b2f5611dd6c/latest/model")
++KEY = os.environ["BREAK_CLASSIFIER_ACCESS_KEY"]
++
++
++def call(data):
++    r = requests.post(URL, json={"data": data}, auth=(KEY, KEY), timeout=60)
++    return r.status_code, r.text[:600]
++
++
++cases = [
++    {"amount_diff": 12.5, "days_diff": 2, "missing_side": 0},
++    {"amount_diff": 1200.0, "days_diff": 0, "missing_side": 0},
++    {"amount_diff": 12, "days_diff": 2, "missing_side": 0},
++    {"amount_diff": 12.5, "days_diff": 2.0, "missing_side": 0.0},
++    {"amount_diff": 12.5, "days_diff": 2, "missing_side": 1},
++]
++if "--sweep" in sys.argv:
++    vals = [(5, "int"), (5.5, "float")]
++    for (a, an), (d, dn), (m, mn) in itertools.product(vals, vals, [(0, "int"), (1.0, "float")]):
++        cases.append({"amount_diff": a, "days_diff": d, "missing_side": m})
++for c in cases:
++    print(c, "->", *call(c))

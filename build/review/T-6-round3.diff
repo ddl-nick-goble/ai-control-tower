@@ -1,0 +1,147 @@
+diff --git a/backend/db.py b/backend/db.py
+index d1b5f6f..9de994e 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -228,7 +228,9 @@ def _ensure_findings_index() -> None:
+ def init_db() -> None:
+     try:
+         metadata.create_all(engine)
+-    except Exception:
++    except Exception as e:
++        if "index" not in str(e).lower():
++            raise
+         log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
+     _migrate()
+     _ensure_findings_index()
+diff --git a/backend/drift.py b/backend/drift.py
+index d09f19c..97f24ab 100644
+--- a/backend/drift.py
++++ b/backend/drift.py
+@@ -35,20 +35,50 @@ def _tier(v) -> int:
+ 
+ 
+ _NUM_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
++_COMMA_RE = re.compile(r"^\d{1,3}(,\d{3})+(\.\d+)?$")
+ _ISO_PRE = re.compile(r"^([A-Za-z]{3})\s*(?=[\d.+-])")
+ _ISO_SUF = re.compile(r"(?<=[\d.])\s*([A-Za-z]{3})$")
+-_SYMBOLS = "$\u20ac\u00a3\u00a5\u20b9\u20a9\u20bd\u00a2"
++_SYMBOL_ISO = {"$": "USD", "\u20ac": "EUR", "\u00a3": "GBP", "\u00a5": "JPY"}
++# Fixed set of active ISO-4217 codes; anything else is not a currency.
++ISO_4217 = frozenset("""
++AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD
++CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD
++GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT
++LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR
++NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP
++STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XOF
++XPF YER ZAR ZMW ZWL
++""".split())
+ _MISSING = object()
++_MAX_TEXT = 200
++
++
++def _clip(s, n: int = _MAX_TEXT):
++    return s if not isinstance(s, str) or len(s) <= n else s[:n]
+ 
+ 
+ class Unverifiable(Exception):
+     def __init__(self, note: str):
++        note = _clip(note)
+         super().__init__(note)
+         self.note = note
+ 
+ 
++def _iso(code) -> str:
++    """Normalise a currency token to ISO-4217 or raise Unverifiable."""
++    c = code.strip().upper() if isinstance(code, str) else ""
++    if c in ISO_4217:
++        return c
++    raise Unverifiable("amount carries an unrecognised currency or unit token")
++
++
+ def parse_amount(v):
+-    """Return (number, iso_currency_or_None). Raise Unverifiable for anything not a finite number."""
++    """Return (number, iso_currency_or_None). Raise Unverifiable for anything not a finite number.
++
++    Commas are accepted only as thousands grouping (^\\d{1,3}(,\\d{3})+(\\.\\d+)?$). An optional
++    currency is an ISO-4217 code or one of $ EUR-sign GBP-sign JPY-sign; any other alphabetic token
++    (mil, k, M, XYZ ...) is unverifiable.
++    """
+     ccy = None
+     try:
+         if isinstance(v, bool) or v is None:
+@@ -57,12 +87,21 @@ def parse_amount(v):
+             t = v.strip()
+             m = _ISO_PRE.match(t)
+             if m:
+-                ccy, t = m.group(1).upper(), t[m.end():]
++                ccy, t = _iso(m.group(1)), t[m.end():]
+             else:
+                 m = _ISO_SUF.search(t)
+                 if m:
+-                    ccy, t = m.group(1).upper(), t[:m.start()]
+-            t = t.strip().lstrip(_SYMBOLS).strip().replace(",", "")
++                    ccy, t = _iso(m.group(1)), t[:m.start()]
++            t = t.strip()
++            if t and t[0] in _SYMBOL_ISO:
++                sym = _SYMBOL_ISO[t[0]]
++                if ccy and ccy != sym:
++                    raise Unverifiable("amount carries conflicting currency tokens")
++                ccy, t = sym, t[1:].strip()
++            if "," in t:
++                if not _COMMA_RE.match(t):
++                    raise Unverifiable("amount has an invalid comma form")
++                t = t.replace(",", "")
+             if not _NUM_RE.match(t):
+                 raise Unverifiable("amount could not be parsed as a number")
+             f = float(t)
+@@ -92,6 +131,8 @@ def _limit(v):
+ 
+ 
+ def _limit_ccy(v):
++    """Currency of a stored limit. A bare limit (number/string without currency) carries none and is
++    compared numerically against any call currency."""
+     if isinstance(v, dict) and isinstance(v.get("currency"), str):
+         return v["currency"].strip().upper() or None
+     return None
+@@ -121,6 +162,14 @@ def _jsonable(v):
+     return str(v)
+ 
+ 
++def _raw_text(raw):
++    r = _jsonable(raw) if not (isinstance(raw, float) and not math.isfinite(raw)) else str(raw)
++    if isinstance(r, (dict, list)):
++        j = json.dumps(r, default=str)
++        return r if len(j) <= _MAX_TEXT else j[:_MAX_TEXT]
++    return _clip(r)
++
++
+ def _manifest(conn, agent_id: str) -> dict | None:
+     r = conn.execute(select(db.manifests.c.content).where(db.manifests.c.agent_id == agent_id)
+                      .order_by(db.manifests.c.created_at.desc(), db.manifests.c.id.desc())).first()
+@@ -155,15 +204,21 @@ def _span_violations(e, allowed, limits) -> list[dict]:
+     if raw is _MISSING:
+         return []
+     unv = {**base, "reason": "value_unverifiable", "observed_value": None, "limit": lim,
+-           "raw_value": _jsonable(raw) if not (isinstance(raw, float) and not math.isfinite(raw)) else str(raw)}
++           "raw_value": _raw_text(raw)}
+     try:
+         amt, str_ccy = parse_amount(raw)
+     except Unverifiable as u:
+         return [{**unv, "note": u.note}]
+     lccy = _limit_ccy(lim_raw)
+-    for c in (call_ccy, str_ccy):
+-        if isinstance(c, str) and c.strip() and lccy and c.strip().upper() != lccy:
+-            return [{**unv, "note": f"currency {c.strip().upper()} differs from limit currency {lccy}"}]
++    try:
++        cc = _iso(call_ccy) if isinstance(call_ccy, str) and call_ccy.strip() else None
++        if cc and str_ccy and cc != str_ccy:
++            raise Unverifiable("currency tokens in the call disagree")
++    except Unverifiable as u:
++        return [{**unv, "note": u.note}]
++    for c in (cc, str_ccy):
++        if c and lccy and c != lccy:
++            return [{**unv, "note": _clip(f"currency {c} differs from limit currency {lccy}")}]
+     if amt > lim:
+         return [{**base, "reason": "value_limit_exceeded", "observed_value": amt, "limit": lim}]
+     return []

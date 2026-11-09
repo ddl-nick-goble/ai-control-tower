@@ -1,0 +1,1022 @@
+diff --git a/backend/db.py b/backend/db.py
+index 08f7359..9de994e 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -145,6 +145,8 @@ findings = Table(
+     Column("reason", Text),
+     Column("observed_value", String),
+     Column("limit", String),
++    Index("ux_findings_run_drift", "run_id", "type", unique=True,
++          sqlite_where=text("type = 'scope_drift'"), postgresql_where=text("type = 'scope_drift'")),
+ )
+ 
+ approvals = Table(
+@@ -212,9 +214,26 @@ def _migrate() -> None:
+                               "ON events (run_id, span_id)"))
+ 
+ 
++def _ensure_findings_index() -> None:
++    """Unique partial index for one scope_drift finding per run; never crash on legacy duplicates."""
++    try:
++        with engine.begin() as conn:
++            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_findings_run_drift "
++                              "ON findings (run_id, type) WHERE type = 'scope_drift'"))
++    except Exception:
++        log.warning("could not create ux_findings_run_drift (existing duplicate scope_drift findings?)",
++                    exc_info=True)
++
++
+ def init_db() -> None:
+-    metadata.create_all(engine)
++    try:
++        metadata.create_all(engine)
++    except Exception as e:
++        if "index" not in str(e).lower():
++            raise
++        log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
+     _migrate()
++    _ensure_findings_index()
+ 
+ 
+ def prewarm(n: int) -> None:
+diff --git a/backend/drift.py b/backend/drift.py
+new file mode 100644
+index 0000000..97f24ab
+--- /dev/null
++++ b/backend/drift.py
+@@ -0,0 +1,356 @@
++"""Scope-drift detection: compare a run's tool calls with the agent's manifest.
++
++ACT detects and records only; it never blocks anything in the agent's runtime.
++"""
++import json
++import logging
++import math
++import re
++import threading
++import time
++from datetime import datetime, timezone
++
++from sqlalchemy import insert, select, update
++
++from . import db
++
++log = logging.getLogger(__name__)
++SEVERITY = {1: "critical", 2: "high", 3: "medium", 4: "low"}
++LLM_WAIT_SECONDS = 2.0
++_lock = threading.Lock()
++_inflight: set[int] = set()  # finding ids with an explanation thread running
++_batch = threading.local()  # per-ingest-request LLM wait budget (hooks run in the request thread)
++BATCH_GAP_SECONDS = 1.0
++
++
++def _now() -> str:
++    return datetime.now(timezone.utc).isoformat()
++
++
++def _tier(v) -> int:
++    try:
++        return int(v)
++    except (TypeError, ValueError):
++        return 4
++
++
++_NUM_RE = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
++_COMMA_RE = re.compile(r"^\d{1,3}(,\d{3})+(\.\d+)?$")
++_ISO_PRE = re.compile(r"^([A-Za-z]{3})\s*(?=[\d.+-])")
++_ISO_SUF = re.compile(r"(?<=[\d.])\s*([A-Za-z]{3})$")
++_SYMBOL_ISO = {"$": "USD", "\u20ac": "EUR", "\u00a3": "GBP", "\u00a5": "JPY"}
++# Fixed set of active ISO-4217 codes; anything else is not a currency.
++ISO_4217 = frozenset("""
++AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD
++CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD
++GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KGS KHR KMF KPW KRW KWD KYD KZT
++LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR
++NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP
++STN SVC SYP SZL THB TJS TMT TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XOF
++XPF YER ZAR ZMW ZWL
++""".split())
++_MISSING = object()
++_MAX_TEXT = 200
++
++
++def _clip(s, n: int = _MAX_TEXT):
++    return s if not isinstance(s, str) or len(s) <= n else s[:n]
++
++
++class Unverifiable(Exception):
++    def __init__(self, note: str):
++        note = _clip(note)
++        super().__init__(note)
++        self.note = note
++
++
++def _iso(code) -> str:
++    """Normalise a currency token to ISO-4217 or raise Unverifiable."""
++    c = code.strip().upper() if isinstance(code, str) else ""
++    if c in ISO_4217:
++        return c
++    raise Unverifiable("amount carries an unrecognised currency or unit token")
++
++
++def parse_amount(v):
++    """Return (number, iso_currency_or_None). Raise Unverifiable for anything not a finite number.
++
++    Commas are accepted only as thousands grouping (^\\d{1,3}(,\\d{3})+(\\.\\d+)?$). An optional
++    currency is an ISO-4217 code or one of $ EUR-sign GBP-sign JPY-sign; any other alphabetic token
++    (mil, k, M, XYZ ...) is unverifiable.
++    """
++    ccy = None
++    try:
++        if isinstance(v, bool) or v is None:
++            raise Unverifiable("amount is not a number")
++        if isinstance(v, str):
++            t = v.strip()
++            m = _ISO_PRE.match(t)
++            if m:
++                ccy, t = _iso(m.group(1)), t[m.end():]
++            else:
++                m = _ISO_SUF.search(t)
++                if m:
++                    ccy, t = _iso(m.group(1)), t[:m.start()]
++            t = t.strip()
++            if t and t[0] in _SYMBOL_ISO:
++                sym = _SYMBOL_ISO[t[0]]
++                if ccy and ccy != sym:
++                    raise Unverifiable("amount carries conflicting currency tokens")
++                ccy, t = sym, t[1:].strip()
++            if "," in t:
++                if not _COMMA_RE.match(t):
++                    raise Unverifiable("amount has an invalid comma form")
++                t = t.replace(",", "")
++            if not _NUM_RE.match(t):
++                raise Unverifiable("amount could not be parsed as a number")
++            f = float(t)
++        elif isinstance(v, (int, float)):
++            f = float(v)
++        else:
++            raise Unverifiable("amount is not a number")
++    except (ValueError, OverflowError, TypeError):
++        raise Unverifiable("amount could not be parsed as a number")
++    if not math.isfinite(f):
++        raise Unverifiable("amount is not finite")
++    return (int(f) if f == int(f) else f), ccy
++
++
++def _num(v):
++    """Lenient numeric read for stored limits; None when unusable."""
++    try:
++        return parse_amount(v)[0]
++    except Unverifiable:
++        return None
++
++
++def _limit(v):
++    if isinstance(v, dict):
++        v = v.get("amount")
++    return _num(v)
++
++
++def _limit_ccy(v):
++    """Currency of a stored limit. A bare limit (number/string without currency) carries none and is
++    compared numerically against any call currency."""
++    if isinstance(v, dict) and isinstance(v.get("currency"), str):
++        return v["currency"].strip().upper() or None
++    return None
++
++
++def _amount_args(ev: dict, raw: dict):
++    """Return (amount_raw_or__MISSING, currency_or_None) from the first source carrying an amount key."""
++    srcs = [ev.get("args_redacted"), ev.get("attrs")]
++    a = (raw or {}).get("attributes") or {}
++    for k in ("gen_ai.tool.call.arguments", "tool.parameters", "mlflow.spanInputs", "input.value"):
++        v = a.get(k)
++        if isinstance(v, str):
++            try:
++                v = json.loads(v)
++            except ValueError:
++                v = None
++        srcs.append(v)
++    for s in srcs:
++        if isinstance(s, dict) and "amount" in s:
++            return s["amount"], s.get("currency")
++    return _MISSING, None
++
++
++def _jsonable(v):
++    if isinstance(v, (str, int, dict, list)) or v is None:
++        return v
++    return str(v)
++
++
++def _raw_text(raw):
++    r = _jsonable(raw) if not (isinstance(raw, float) and not math.isfinite(raw)) else str(raw)
++    if isinstance(r, (dict, list)):
++        j = json.dumps(r, default=str)
++        return r if len(j) <= _MAX_TEXT else j[:_MAX_TEXT]
++    return _clip(r)
++
++
++def _manifest(conn, agent_id: str) -> dict | None:
++    r = conn.execute(select(db.manifests.c.content).where(db.manifests.c.agent_id == agent_id)
++                     .order_by(db.manifests.c.created_at.desc(), db.manifests.c.id.desc())).first()
++    m = r.content if r else None
++    if isinstance(m, str):
++        try:
++            m = json.loads(m)
++        except ValueError:
++            m = None
++    if not m:
++        row = conn.execute(select(db.agents.c.record).where(db.agents.c.id == agent_id)).first()
++        m = ((row.record or {}) if row else {}).get("manifest")
++    if not m:
++        log.warning("no manifest found for agent %s; drift not evaluated", agent_id)
++        return None
++    return m
++
++
++def _span_violations(e, allowed, limits) -> list[dict]:
++    ev = e.event or {}
++    if ev.get("kind") != "tool_call":
++        return []
++    tool = ev.get("name")
++    base = {"tool": tool, "span_id": e.span_id or ev.get("span_id"), "ts": e.ts or ev.get("ts")}
++    if tool not in allowed:
++        return [{**base, "reason": "tool_not_in_manifest", "observed_value": None, "limit": None}]
++    lim_raw = limits.get(tool)
++    lim = _limit(lim_raw)
++    if lim is None:
++        return []
++    raw, call_ccy = _amount_args(ev, e.raw_span)
++    if raw is _MISSING:
++        return []
++    unv = {**base, "reason": "value_unverifiable", "observed_value": None, "limit": lim,
++           "raw_value": _raw_text(raw)}
++    try:
++        amt, str_ccy = parse_amount(raw)
++    except Unverifiable as u:
++        return [{**unv, "note": u.note}]
++    lccy = _limit_ccy(lim_raw)
++    try:
++        cc = _iso(call_ccy) if isinstance(call_ccy, str) and call_ccy.strip() else None
++        if cc and str_ccy and cc != str_ccy:
++            raise Unverifiable("currency tokens in the call disagree")
++    except Unverifiable as u:
++        return [{**unv, "note": u.note}]
++    for c in (cc, str_ccy):
++        if c and lccy and c != lccy:
++            return [{**unv, "note": _clip(f"currency {c} differs from limit currency {lccy}")}]
++    if amt > lim:
++        return [{**base, "reason": "value_limit_exceeded", "observed_value": amt, "limit": lim}]
++    return []
++
++
++def find_violations(events, manifest: dict) -> list[dict]:
++    allowed = set(manifest.get("tools") or [])
++    limits = dict(manifest.get("value_limits") or {})
++    for k, v in (manifest.get("value_limits_detail") or {}).items():
++        limits.setdefault(k, v)
++    out = []
++    for e in events:
++        try:
++            out.extend(_span_violations(e, allowed, limits))
++        except Exception:  # one bad span must never drop the run's other violations
++            log.warning("drift check failed for span %s", getattr(e, "span_id", None), exc_info=True)
++            ev = e.event or {}
++            if ev.get("kind") == "tool_call":
++                out.append({"tool": ev.get("name"), "span_id": e.span_id or ev.get("span_id"),
++                            "ts": e.ts or ev.get("ts"), "reason": "value_unverifiable",
++                            "observed_value": None, "limit": None, "note": "detector error"})
++    out.sort(key=lambda v: (v["ts"] or "", v["span_id"] or ""))
++    return out
++
++
++def fallback_explanation(v: dict, agent_name: str, tier: int) -> str:
++    who = f"Agent {agent_name} (Tier {tier})"
++    if v["reason"] == "value_limit_exceeded":
++        return (f"{who} called {v['tool']} with value {v['observed_value']}, above its approved "
++                f"limit of {v['limit']}.")
++    if v["reason"] == "value_unverifiable":
++        return (f"{who} called {v['tool']} with a value that could not be verified against its "
++                f"approved limit of {v['limit']} ({v.get('note', 'unverifiable')}).")
++    return f"{who} called {v['tool']}, which is not in its approved manifest."
++
++
++def _llm_explanation(v: dict, agent_name: str, tier: int):
++    from . import llm
++    prompt = (f"In one plain sentence for a bank risk officer, explain this AI agent scope drift. "
++              f"Agent: {agent_name} (Tier {tier}). Tool: {v['tool']}. Reason: {v['reason']}. "
++              f"Observed value: {v['observed_value']}. Limit: {v['limit']}. Time: {v['ts']}.")
++    r = llm.create_message("haiku", [{"role": "user", "content": prompt}], max_tokens=120,
++                           tags={"component": "act-drift"}, timeout=20)
++    text = "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip()
++    if not text:
++        raise ValueError("empty LLM response")
++    return text, r.get("model")
++
++
++def _fill_explanation(fid: int, v: dict, agent_name: str, tier: int, fb: str, done: threading.Event):
++    try:
++        text, model = _llm_explanation(v, agent_name, tier)
++        with _lock, db.engine.begin() as conn:
++            row = conn.execute(select(db.findings.c.detail).where(db.findings.c.id == fid)).first()
++            d = dict(row.detail or {})
++            if d.get("explanation") == fb:  # not changed since
++                d.update(explanation=text, explanation_model=model)
++                conn.execute(update(db.findings).where(db.findings.c.id == fid)
++                             .values(detail=d, message=text))
++    except Exception:
++        log.warning("drift explanation LLM failed; keeping fallback", exc_info=True)
++    finally:
++        with _lock:
++            _inflight.discard(fid)
++        done.set()
++
++
++def detect_run(run_id: str) -> int | None:
++    """Idempotently create/update the scope_drift finding for a run. Returns finding id."""
++    with _lock, db.engine.begin() as conn:
++        evs = conn.execute(select(db.events.c.agent_id, db.events.c.ts, db.events.c.span_id,
++                                  db.events.c.raw_span, db.events.c.event)
++                           .where(db.events.c.run_id == run_id)).all()
++        agent_id = next((e.agent_id for e in evs if e.agent_id and e.agent_id != "unknown"), None)
++        if not agent_id:
++            return None
++        ag = conn.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++        man = _manifest(conn, agent_id) if ag else None
++        if man is None:
++            return None
++        viol = find_violations(evs, man)
++        if not viol:
++            return None
++        tier = _tier(ag.tier)
++        first = viol[0]
++        fb = fallback_explanation(first, ag.name or agent_id, tier)
++        cur = conn.execute(select(db.findings).where(
++            db.findings.c.run_id == run_id, db.findings.c.type == "scope_drift")).first()
++        vals = dict(agent_id=agent_id, run_id=run_id, severity=SEVERITY.get(tier, "low"),
++                    rule="scope_drift", type="scope_drift", tool=first["tool"], span_id=first["span_id"],
++                    ts=first["ts"], reason=first["reason"],
++                    observed_value=None if first["observed_value"] is None else str(first["observed_value"]),
++                    limit=None if first["limit"] is None else str(first["limit"]))
++        detail = {"violations": viol, "tier": tier}
++        need_llm = True
++        if cur is None:
++            detail.update(explanation=fb, explanation_model=None)
++            conn.execute(insert(db.findings).values(**vals, message=fb, status="open",
++                                                    created_at=_now(), detail=detail))
++            fid = conn.execute(select(db.findings.c.id).where(
++                db.findings.c.run_id == run_id, db.findings.c.type == "scope_drift")).scalar()
++        else:
++            fid = cur.id
++            old = dict(cur.detail or {})
++            same = (cur.tool, cur.span_id, cur.reason) == (first["tool"], first["span_id"], first["reason"])
++            if same and old.get("explanation_model"):
++                need_llm = False
++            detail.update(explanation=old.get("explanation") if same else fb,
++                          explanation_model=old.get("explanation_model") if same else None)
++            if not same or not old.get("explanation"):
++                detail["explanation"] = fb
++            fb = detail["explanation"]
++            conn.execute(update(db.findings).where(db.findings.c.id == fid)
++                         .values(**vals, detail=detail, message=detail["explanation"]))
++    if need_llm:
++        with _lock:
++            if fid in _inflight:
++                return fid
++            _inflight.add(fid)
++        done = threading.Event()
++        try:
++            threading.Thread(target=_fill_explanation, daemon=True,
++                             args=(fid, first, ag.name or agent_id, tier, fb, done)).start()
++        except Exception:
++            with _lock:
++                _inflight.discard(fid)
++            raise
++        now = time.monotonic()
++        if now - getattr(_batch, "last", -1e9) > BATCH_GAP_SECONDS:
++            _batch.spent = 0.0  # new ingest request on this thread
++        remaining = max(0.0, LLM_WAIT_SECONDS - getattr(_batch, "spent", 0.0))
++        done.wait(remaining)
++        _batch.last = time.monotonic()
++        _batch.spent = getattr(_batch, "spent", 0.0) + (_batch.last - now)
++    return fid
+diff --git a/backend/llm.py b/backend/llm.py
+new file mode 100644
+index 0000000..396eb9b
+--- /dev/null
++++ b/backend/llm.py
+@@ -0,0 +1,91 @@
++"""(Mirrors agents/recon_agent/llm.py; kept separate so packages do not import each other.)
++
++Single entry point for LLM calls: Domino LLM Gateway 2.0, Anthropic-compatible path.
++
++Gateway base URL comes from env LLM_GATEWAY_URL (the gateway App's URL, for example
++https://<apps host>/apps/<vanity>); nothing is hardcoded and no provider key is used.
++Model names are gateway aliases (for example "sonnet", "haiku"). The in-run access token is
++read fresh from $DOMINO_API_PROXY/access-token (default http://localhost:8899) on every call.
++"""
++import os
++
++import requests
++
++DEFAULT_PROXY = "http://localhost:8899"
++ANTHROPIC_VERSION = "2023-06-01"
++
++
++class GatewayError(RuntimeError):
++    pass
++
++
++def _token() -> str:
++    proxy = (os.environ.get("DOMINO_API_PROXY") or DEFAULT_PROXY).rstrip("/")
++    try:
++        tok = requests.get(f"{proxy}/access-token", timeout=5).text.strip()
++    except requests.RequestException:
++        tok = ""
++    if not tok:  # outside Domino: a Domino bearer the user stored
++        tok = os.environ.get("LLM_GATEWAY_TOKEN", "")
++    if not tok:
++        raise GatewayError("no Domino access token (in-run proxy unreachable, LLM_GATEWAY_TOKEN unset)")
++    return tok
++
++
++def gateway_url() -> str:
++    url = os.environ.get("LLM_GATEWAY_URL", "").rstrip("/")
++    if not url:
++        raise GatewayError("LLM_GATEWAY_URL is not set (Project env var: the LLM Gateway App URL)")
++    return url
++
++
++def _headers(tags=None) -> dict:
++    h = {"Authorization": f"Bearer {_token()}", "anthropic-version": ANTHROPIC_VERSION,
++         "content-type": "application/json"}
++    for k, v in (tags or {}).items():
++        h[f"X-LLM-Tag-{k}"] = str(v)
++    return h
++
++
++def list_aliases() -> list:
++    """Aliases the caller may use (GET <base>/v1/models, data[].id)."""
++    r = requests.get(f"{gateway_url()}/v1/models", headers=_headers(), timeout=30, allow_redirects=False)
++    _check(r)
++    return [m["id"] for m in r.json().get("data", [])]
++
++
++def _check(r) -> None:
++    if 300 <= r.status_code < 400:
++        raise GatewayError(
++            f"gateway redirected ({r.status_code}) to {r.headers.get('location', '?').split('?')[0]}: "
++            "bearer missing/expired, or the user has not consented to the gateway App "
++            "(open the gateway URL in a browser once and accept)")
++    if r.status_code >= 400:
++        raise GatewayError(f"gateway {r.status_code}: {r.text[:500]}")
++
++
++def create_message(model_alias, messages, tools=None, system=None, max_tokens=1024,
++                   tags=None, timeout=120, **extra) -> dict:
++    """Call POST <gateway>/anthropic/v1/messages and return an Anthropic-style dict.
++
++    Returns {"stop_reason", "content": [{"type": "text"|"tool_use", ...}], "model", "usage", "id"}.
++    "model" is the model id the gateway reports having served (alias resolved upstream).
++    """
++    body = {"model": model_alias, "messages": messages, "max_tokens": max_tokens}
++    if tools:
++        body["tools"] = tools
++    if system:
++        body["system"] = system
++    body.update(extra)
++    r = requests.post(f"{gateway_url()}/anthropic/v1/messages", json=body,
++                      headers=_headers(tags), timeout=timeout, allow_redirects=False)
++    _check(r)
++    d = r.json()
++    return {
++        "stop_reason": d.get("stop_reason"),
++        "content": d.get("content", []),
++        "model": d.get("model"),
++        "usage": d.get("usage", {}),
++        "id": d.get("id"),
++        "alias": model_alias,
++    }
+diff --git a/backend/routes/findings.py b/backend/routes/findings.py
+new file mode 100644
+index 0000000..380f4b3
+--- /dev/null
++++ b/backend/routes/findings.py
+@@ -0,0 +1,47 @@
++"""Findings API and registration of the drift detector on trace ingest."""
++from fastapi import APIRouter, HTTPException
++from sqlalchemy import case, select
++
++from .. import db, drift
++from . import traces
++
++router = APIRouter()
++traces.register_run_hook(drift.detect_run)
++
++
++def _num(v):
++    if v is None:
++        return None
++    try:
++        return drift._num(v)
++    except Exception:
++        return None
++
++
++def _out(r) -> dict:
++    d = dict(r.detail or {})
++    o = {"id": str(r.id), "type": r.type or r.rule, "severity": r.severity, "agent_id": r.agent_id,
++         "run_id": r.run_id, "span_id": r.span_id, "tool": r.tool, "ts": r.ts, "status": r.status,
++         "reason": r.reason, "observed_value": _num(r.observed_value), "limit": _num(r.limit),
++         "explanation": d.get("explanation") or r.message, "created_at": r.created_at, "detail": d}
++    return {k: v for k, v in o.items() if v is not None}
++
++
++@router.get("/api/agents/{agent_id}/findings")
++def agent_findings(agent_id: str):
++    with db.engine.connect() as cx:
++        rows = cx.execute(select(db.findings).where(db.findings.c.agent_id == agent_id).order_by(
++            case((db.findings.c.status == "open", 0), else_=1), db.findings.c.id.desc())).all()
++    return [_out(r) for r in rows]
++
++
++@router.get("/api/findings/{finding_id}")
++def get_finding(finding_id: int):
++    with db.engine.connect() as cx:
++        r = cx.execute(select(db.findings).where(db.findings.c.id == finding_id)).first()
++    if r is None:
++        raise HTTPException(404, "finding not found")
++    o = _out(r)
++    if r.run_id:
++        o["timeline_url"] = f"runs/{r.run_id}/timeline"
++    return o
+diff --git a/schemas/finding.json b/schemas/finding.json
+index 49f4d4b..c3e509a 100644
+--- a/schemas/finding.json
++++ b/schemas/finding.json
+@@ -55,7 +55,8 @@
+     "reason": {
+       "enum": [
+         "tool_not_in_manifest",
+-        "value_limit_exceeded"
++        "value_limit_exceeded",
++        "value_unverifiable"
+       ]
+     },
+     "observed_value": {
+diff --git a/tests/test_t6_drift.py b/tests/test_t6_drift.py
+new file mode 100644
+index 0000000..db54810
+--- /dev/null
++++ b/tests/test_t6_drift.py
+@@ -0,0 +1,449 @@
++"""T-6 tests: drift detector and findings (AC-6, AC-12 backend part)."""
++import importlib
++import json
++import sqlite3
++import sys
++import time
++from pathlib import Path
++
++import jsonschema
++import pytest
++from fastapi.testclient import TestClient
++
++import test_t4_intake as t4  # reuse the stubbed Domino HTTP + env approach
++
++ROOT = Path(__file__).resolve().parent.parent
++HDR = {"X-Domino-User-Id": "u1", "X-Domino-User": "tester"}
++FINDING_SCHEMA = json.loads((ROOT / "schemas" / "finding.json").read_text())
++DRIFT = json.loads((ROOT / "fixtures" / "runs" / "weekend-drift.json").read_text())
++NORMAL = json.loads((ROOT / "fixtures" / "runs" / "otel-genai-treasury-sweep-normal.json").read_text())
++STUB_TEXT = "The agent called a tool outside its approved manifest."
++T0 = 1_760_000_000_000_000_000
++NATIVE = "native-t6"
++
++
++def _kv(k, v):
++    if isinstance(v, (dict, list)):
++        v = json.dumps(v)
++    return {"key": k, "value": {"stringValue": str(v)}}
++
++
++def _span(i, tool, args, trace):
++    return {"traceId": trace, "spanId": f"{i + 1:016x}", "name": f"execute_tool {tool}", "kind": 1,
++            "startTimeUnixNano": str(T0 + i * 1_000_000_000), "endTimeUnixNano": str(T0 + i * 1_000_000_000 + 5),
++            "attributes": [_kv("gen_ai.operation.name", "execute_tool"), _kv("gen_ai.tool.name", tool),
++                           _kv("gen_ai.tool.call.arguments", args), _kv("gen_ai.agent.id", NATIVE)]}
++
++
++def _otlp(spans):
++    return {"resourceSpans": [{"resource": {"attributes": [_kv("service.name", "svc")]},
++                               "scopeSpans": [{"scope": {"name": "t"}, "spans": spans}]}]}
++
++
++@pytest.fixture
++def llm_calls(monkeypatch):
++    return []
++
++
++@pytest.fixture
++def client(db_env, monkeypatch, llm_calls):
++    monkeypatch.setenv("DOMINO_API_HOST", "http://domino.invalid")
++    monkeypatch.setenv("DOMINO_PROJECT_ID", "proj-123")
++    t4.STATE.clear()
++    t4.STATE["project"] = "proj-123"
++    import requests
++    monkeypatch.setattr(requests, "get", t4._fake_http)
++    monkeypatch.setattr(requests, "request", lambda m, u, *a, **k: t4._fake_http(u, **k))
++    monkeypatch.setattr(requests.Session, "request", lambda self, m, u, *a, **k: t4._fake_http(u, **k))
++    monkeypatch.setattr(requests.Session, "get", lambda self, u, *a, **k: t4._fake_http(u, **k))
++    for m in [m for m in sys.modules if m.split(".")[0] in ("backend", "jobs", "adapters")]:
++        del sys.modules[m]
++    main = importlib.import_module("backend.main")
++    llm = importlib.import_module("backend.llm")  # feature module; missing until built
++
++    def fake(alias, *a, **k):
++        llm_calls.append(alias)
++        return {"content": [{"type": "text", "text": STUB_TEXT}], "model": "stub"}
++    monkeypatch.setattr(llm, "create_message", fake)
++    with TestClient(main.app) as c:
++        yield c
++
++
++def _seed(db_env, tier, tools=("A", "B"), limits=None, aid="act:test:t6"):
++    manifest = {"tools": list(tools), "data_scopes": [], "systems": [],
++                "value_limits": limits or {}, "value_limits_detail": limits or {}, "permissions": {}}
++    con = sqlite3.connect(str(db_env))
++    con.execute("insert into agents (id, source_platform, native_id, name, status, tier, record) values (?,?,?,?,?,?,?)",
++                (aid, "test", NATIVE, "T6 Agent", "discovered", str(tier), json.dumps({"id": aid, "manifest": manifest})))
++    con.execute("insert into manifests (agent_id, version, content, created_at) values (?,?,?,?)",
++                (aid, "1", json.dumps(manifest), "2026-11-01T00:00:00Z"))
++    con.commit()
++    con.close()
++    return aid
++
++
++def _post(client, spans):
++    return client.post("/v1/traces", json=_otlp(spans), headers=HDR)
++
++
++def _findings(client, aid):
++    r = client.get(f"/api/agents/{aid}/findings")
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++def _weekend(client):
++    t4.importlib.import_module("jobs.intake").run_intake()
++    a = next(x for x in client.get("/api/agents").json() if x["name"] == "treasury-sweep-agent")
++    return a["id"]
++
++
++@pytest.mark.parametrize("tier,sev", [(1, "critical"), (2, "high"), (3, "medium"), (4, "low")])
++def test_ac6_scope_drift_severity_from_tier(client, db_env, tier, sev):
++    aid = _seed(db_env, tier)
++    trace = "b" * 32
++    assert _post(client, [_span(0, "A", {}, trace), _span(1, "C", {}, trace)]).status_code == 200
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    f = fs[0]
++    assert f["type"] == "scope_drift" and f["severity"] == sev
++    assert f["tool"] == "C" and f["span_id"] == f"{2:016x}" and f["run_id"] == trace
++    assert f["status"] == "open"
++    assert f["ts"].startswith("2025-10-09T08:53:21")  # T0 + 1s
++    assert f["reason"] == "tool_not_in_manifest"
++    jsonschema.validate(f, FINDING_SCHEMA, format_checker=jsonschema.FormatChecker())
++
++
++def test_ac6_finding_appears_within_5_seconds(client, db_env):
++    aid = _seed(db_env, 2)
++    t = time.monotonic()
++    _post(client, [_span(0, "C", {}, "c" * 32)])
++    while not _findings(client, aid) and time.monotonic() - t < 5:
++        time.sleep(0.05)
++    assert time.monotonic() - t < 5
++    assert len(_findings(client, aid)) == 1
++
++
++def test_ac6_in_manifest_run_creates_no_finding(client, db_env):
++    aid = _seed(db_env, 1)
++    _post(client, [_span(0, "A", {}, "d" * 32), _span(1, "B", {}, "d" * 32)])
++    assert _findings(client, aid) == []
++    assert next(a for a in client.get("/api/agents").json() if a["id"] == aid)["open_findings"] == 0
++
++
++def test_ac6_normal_fixture_creates_no_finding(client):
++    aid = _weekend(client)
++    assert client.post("/v1/traces", json=NORMAL, headers=HDR).status_code == 200
++    assert _findings(client, aid) == []
++
++
++def test_ac6_idempotent_across_repost_and_hook_calls(client, db_env):
++    aid = _seed(db_env, 1)
++    spans = [_span(0, "C", {}, "e" * 32), _span(1, "D", {}, "e" * 32)]
++    _post(client, spans)
++    _post(client, spans)
++    _post(client, spans + [_span(2, "A", {}, "e" * 32)])
++    traces = importlib.import_module("backend.routes.traces")
++    for _ in range(2):
++        for fn in list(traces.run_ingested_hooks):
++            fn("e" * 32)
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    assert fs[0]["tool"] == "C"
++    assert {v["tool"] for v in fs[0]["detail"]["violations"]} == {"C", "D"}
++
++
++def test_ac6_open_findings_count_and_get_by_id(client, db_env):
++    aid = _seed(db_env, 1)
++    _post(client, [_span(0, "C", {}, "f" * 32)])
++    assert next(a for a in client.get("/api/agents").json() if a["id"] == aid)["open_findings"] == 1
++    f = _findings(client, aid)[0]
++    r = client.get(f"/api/findings/{f['id']}")
++    assert r.status_code == 200
++    j = r.json()
++    assert j["run_id"] == "f" * 32 and j["timeline_url"] == f"runs/{'f' * 32}/timeline"
++    assert client.get("/api/findings/999999").status_code == 404
++
++
++def test_ac6_value_limit_read_from_tool_arguments(client, db_env):
++    aid = _seed(db_env, 1, tools=("transfer_funds",), limits={"transfer_funds": {"amount": 1000, "currency": "USD"}})
++    _post(client, [_span(0, "transfer_funds", {"amount": 500}, "1" * 32)])
++    assert _findings(client, aid) == []
++    _post(client, [_span(0, "transfer_funds", {"amount": 5000}, "2" * 32)])
++    f = _findings(client, aid)[0]
++    assert f["reason"] == "value_limit_exceeded" and f["observed_value"] == 5000 and f["limit"] == 1000
++    jsonschema.validate(f, FINDING_SCHEMA, format_checker=jsonschema.FormatChecker())
++
++
++def test_ac6_explanation_from_haiku_stub(client, db_env, llm_calls):
++    aid = _seed(db_env, 3)
++    _post(client, [_span(0, "C", {}, "3" * 32)])
++    assert _findings(client, aid)[0]["explanation"] == STUB_TEXT
++    assert llm_calls and set(llm_calls) == {"haiku"}
++
++
++def test_ac6_llm_failure_still_creates_finding_with_fallback(client, db_env, monkeypatch):
++    llm = importlib.import_module("backend.llm")
++
++    def boom(*a, **k):
++        raise RuntimeError("gateway down")
++    monkeypatch.setattr(llm, "create_message", boom)
++    aid = _seed(db_env, 1)
++    assert _post(client, [_span(0, "C", {}, "4" * 32)]).status_code == 200
++    f = _findings(client, aid)[0]
++    assert isinstance(f["explanation"], str) and f["explanation"].strip()
++    assert f["explanation"] != STUB_TEXT
++
++
++def test_ac6_slow_llm_does_not_block_ingest(client, db_env, monkeypatch):
++    llm = importlib.import_module("backend.llm")
++
++    def slow(*a, **k):
++        time.sleep(8)
++        return {"content": [{"type": "text", "text": "late"}], "model": "stub"}
++    monkeypatch.setattr(llm, "create_message", slow)
++    aid = _seed(db_env, 1)
++    t = time.monotonic()
++    assert _post(client, [_span(0, "C", {}, "5" * 32)]).status_code == 200
++    assert time.monotonic() - t < 5
++    deadline = time.monotonic() + 5
++    while not _findings(client, aid) and time.monotonic() < deadline:
++        time.sleep(0.05)
++    assert len(_findings(client, aid)) == 1
++
++
++def test_ac12_weekend_drift_single_open_finding_with_timeline(client):
++    aid = _weekend(client)
++    t = time.monotonic()
++    assert client.post("/v1/traces", json=DRIFT, headers=HDR).status_code == 200
++    assert client.post("/v1/traces", json=DRIFT, headers=HDR).status_code == 200  # re-post
++    assert time.monotonic() - t < 5 + 5
++    fs = [f for f in _findings(client, aid) if f["type"] == "scope_drift"]
++    assert len(fs) == 1
++    f = fs[0]
++    assert f["status"] == "open" and f["severity"] == "critical"
++    assert f["tool"] == "transfer_funds" and f["reason"] == "value_limit_exceeded"
++    assert f["observed_value"] == 4750000 and f["limit"] == 250000
++    assert f["ts"].startswith("2026-11-07T02:14:00")
++    assert f["span_id"] == "8df4f50947aaeb26"
++    viol = {v["tool"]: v for v in f["detail"]["violations"]}
++    assert viol["list_credentials"]["reason"] == "tool_not_in_manifest"
++    assert viol["transfer_funds"]["reason"] == "value_limit_exceeded"
++    jsonschema.validate(f, FINDING_SCHEMA, format_checker=jsonschema.FormatChecker())
++    g = client.get(f"/api/findings/{f['id']}").json()
++    assert g["run_id"] == f["run_id"] and g["timeline_url"] == f"runs/{f['run_id']}/timeline"
++    a = next(x for x in client.get("/api/agents").json() if x["id"] == aid)
++    assert a["open_findings"] == 1
++
++
++# ---- Round 2: hardening against crafted inputs (AC-6) ----
++LIM = {"transfer_funds": {"amount": 250000, "currency": "USD"}}
++
++
++def _limited(db_env):
++    return _seed(db_env, 1, tools=("A", "B", "transfer_funds"), limits=LIM)
++
++
++def _violations(f):
++    return f["detail"]["violations"]
++
++
++@pytest.mark.parametrize("raw", ["1e999", "Infinity", "inf"])
++def test_ac6_nonfinite_amount_is_unverifiable(client, db_env, raw):
++    aid = _limited(db_env)
++    trace = "7" * 32
++    r = _post(client, [_span(0, "transfer_funds", {"amount": raw, "currency": "USD"}, trace)])
++    assert r.status_code == 200
++    fs = _findings(client, aid)
++    assert len(fs) == 1 and fs[0]["type"] == "scope_drift"
++    f = fs[0]
++    assert f["span_id"] == f"{1:016x}"
++    vs = [v for v in _violations(f) if v["tool"] == "transfer_funds"]
++    assert len(vs) == 1
++    assert vs[0]["reason"] == "value_unverifiable"
++    assert vs[0]["raw_value"] == raw
++
++
++@pytest.mark.parametrize("raw", ["5,000,000", "$5,000,000", "USD 5000000"])
++def test_ac6_formatted_amount_is_normalised(client, db_env, raw):
++    aid = _limited(db_env)
++    _post(client, [_span(0, "transfer_funds", {"amount": raw}, "8" * 32)])
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    assert fs[0]["reason"] == "value_limit_exceeded"
++    assert fs[0]["observed_value"] == 5000000
++    assert fs[0]["limit"] == 250000
++
++
++@pytest.mark.parametrize("raw", ["lots", {}])
++def test_ac6_unparseable_amount_is_unverifiable(client, db_env, raw):
++    aid = _limited(db_env)
++    _post(client, [_span(0, "transfer_funds", {"amount": raw}, "9" * 32)])
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    vs = [v for v in _violations(fs[0]) if v["tool"] == "transfer_funds"]
++    assert len(vs) == 1 and vs[0]["reason"] == "value_unverifiable"
++    assert vs[0]["raw_value"] == raw
++
++
++def test_ac6_missing_amount_key_no_value_violation(client, db_env):
++    aid = _limited(db_env)
++    assert _post(client, [_span(0, "transfer_funds", {"currency": "USD"}, "a1" * 16)]).status_code == 200
++    assert _findings(client, aid) == []
++
++
++def test_ac6_currency_mismatch_is_unverifiable(client, db_env):
++    aid = _limited(db_env)
++    _post(client, [_span(0, "transfer_funds", {"amount": 100, "currency": "EUR"}, "a2" * 16)])
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    vs = [v for v in _violations(fs[0]) if v["tool"] == "transfer_funds"]
++    assert len(vs) == 1 and vs[0]["reason"] == "value_unverifiable"
++    assert "currency" in vs[0]["note"].lower()
++
++
++def test_ac6_same_currency_below_limit_no_finding(client, db_env):
++    aid = _limited(db_env)
++    _post(client, [_span(0, "transfer_funds", {"amount": 100, "currency": "USD"}, "a3" * 16)])
++    assert _findings(client, aid) == []
++
++
++def _base_finding(**kw):
++    f = {"type": "scope_drift", "severity": "high", "agent_id": "x", "run_id": "r", "span_id": "s",
++         "tool": "transfer_funds", "ts": "2026-11-07T02:14:00Z"}
++    f.update(kw)
++    return f
++
++
++def test_ac6_schema_accepts_value_unverifiable_without_value_fields():
++    jsonschema.validate(_base_finding(reason="value_unverifiable"), FINDING_SCHEMA,
++                        format_checker=jsonschema.FormatChecker())
++
++
++def test_ac6_schema_value_limit_exceeded_still_requires_value_and_limit():
++    with pytest.raises(jsonschema.ValidationError):
++        jsonschema.validate(_base_finding(reason="value_limit_exceeded"), FINDING_SCHEMA)
++    with pytest.raises(jsonschema.ValidationError):
++        jsonschema.validate(_base_finding(reason="value_limit_exceeded", observed_value=5), FINDING_SCHEMA)
++    jsonschema.validate(_base_finding(reason="value_limit_exceeded", observed_value=5, limit=1), FINDING_SCHEMA)
++
++
++def test_ac6_unverifiable_finding_from_api_validates_schema(client, db_env):
++    aid = _limited(db_env)
++    _post(client, [_span(0, "transfer_funds", {"amount": "1e999"}, "a4" * 16)])
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    jsonschema.validate(fs[0], FINDING_SCHEMA, format_checker=jsonschema.FormatChecker())
++
++
++def test_ac6_mixed_violations_single_finding(client, db_env):
++    aid = _limited(db_env)
++    trace = "a5" * 16
++    _post(client, [_span(0, "list_credentials", {}, trace),
++                   _span(1, "transfer_funds", {"amount": "1e999"}, trace)])
++    fs = _findings(client, aid)
++    assert len(fs) == 1
++    viol = {v["tool"]: v["reason"] for v in _violations(fs[0])}
++    assert viol == {"list_credentials": "tool_not_in_manifest", "transfer_funds": "value_unverifiable"}
++
++
++def test_ac6_reads_latest_manifest_row_not_stale_agent_record(client, db_env):
++    aid = _seed(db_env, 1)
++    manifest = {"tools": ["A", "B", "C"], "data_scopes": [], "systems": [],
++                "value_limits": {}, "value_limits_detail": {}, "permissions": {}}
++    con = sqlite3.connect(str(db_env))
++    con.execute("insert into manifests (agent_id, version, content, created_at) values (?,?,?,?)",
++                (aid, "2", json.dumps(manifest), "2026-11-02T00:00:00Z"))
++    con.commit()
++    con.close()
++    assert _post(client, [_span(0, "C", {}, "a6" * 16)]).status_code == 200
++    assert _findings(client, aid) == []
++
++
++# ---- Round 3: amount parsing hardening (AC-6; a crafted amount must never suppress a finding) ----
++BARE = {"transfer_funds": 250000}
++MANIFESTS = {"usd": LIM, "bare": BARE}
++
++
++def _agent(db_env, kind):
++    return _seed(db_env, 1, tools=("A", "B", "transfer_funds"), limits=MANIFESTS[kind])
++
++
++def _tf_violations(client, aid):
++    fs = _findings(client, aid)
++    return fs, [v for f in fs for v in _violations(f) if v["tool"] == "transfer_funds"]
++
++
++def _run_amount(client, db_env, kind, amount, extra=None):
++    aid = _agent(db_env, kind)
++    args = {"amount": amount}
++    args.update(extra or {})
++    assert _post(client, [_span(0, "transfer_funds", args, "d" * 32)]).status_code == 200
++    return (aid,) + _tf_violations(client, aid)[::-1]
++
++
++def _assert_unverifiable(client, db_env, kind, raw, note=None):
++    aid, vs, fs = _run_amount(client, db_env, kind, raw)
++    assert len(fs) == 1, f"{raw!r} must produce a finding"
++    assert len(vs) == 1 and vs[0]["reason"] == "value_unverifiable", vs
++    assert vs[0]["raw_value"] == raw
++    if note:
++        assert note in vs[0]["note"].lower()
++
++
++@pytest.mark.parametrize("kind", ["usd", "bare"])
++def test_ac6_comma_grouping_valid_exceeds(client, db_env, kind):
++    aid, vs, fs = _run_amount(client, db_env, kind, "5,000,000")
++    assert len(fs) == 1 and fs[0]["reason"] == "value_limit_exceeded"
++    assert fs[0]["observed_value"] == 5000000 and fs[0]["limit"] == 250000
++
++
++@pytest.mark.parametrize("kind", ["usd", "bare"])
++@pytest.mark.parametrize("raw", ["9.999,99", "5,00", "1,5", "12,34,567"])
++def test_ac6_invalid_comma_forms_unverifiable(client, db_env, kind, raw):
++    _assert_unverifiable(client, db_env, kind, raw)
++
++
++@pytest.mark.parametrize("kind", ["usd", "bare"])
++@pytest.mark.parametrize("raw", ["5 mil", "5 mln", "5 bln", "5k", "5M"])
++def test_ac6_magnitude_words_unverifiable(client, db_env, kind, raw):
++    _assert_unverifiable(client, db_env, kind, raw)
++
++
++@pytest.mark.parametrize("raw", ["€240,000", "£240,000"])
++def test_ac6_foreign_symbol_vs_usd_limit_unverifiable(client, db_env, raw):
++    _assert_unverifiable(client, db_env, "usd", raw, note="currency")
++
++
++def test_ac6_dollar_symbol_vs_usd_limit_no_finding(client, db_env):
++    aid, vs, fs = _run_amount(client, db_env, "usd", "$240,000")
++    assert fs == []
++
++
++def test_ac6_euro_symbol_vs_bare_limit_compared_numerically(client, db_env):
++    # a bare numeric limit carries no currency, so only the number is compared
++    aid, vs, fs = _run_amount(client, db_env, "bare", "€240,000")
++    assert vs == [] and fs == []
++
++
++def test_ac6_iso_code_same_currency_exceeds(client, db_env):
++    aid, vs, fs = _run_amount(client, db_env, "usd", "USD 300000")
++    assert len(fs) == 1 and fs[0]["reason"] == "value_limit_exceeded"
++    assert fs[0]["observed_value"] == 300000
++
++
++def test_ac6_iso_code_other_currency_vs_usd_limit_unverifiable(client, db_env):
++    _assert_unverifiable(client, db_env, "usd", "EUR 100", note="currency")
++
++
++@pytest.mark.parametrize("kind", ["usd", "bare"])
++def test_ac6_non_iso_code_unverifiable(client, db_env, kind):
++    _assert_unverifiable(client, db_env, kind, "XYZ 100")
++
++
++@pytest.mark.parametrize("kind", ["usd", "bare"])
++def test_ac6_long_raw_value_truncated(client, db_env, kind):
++    raw = "9" * 4999 + "x"
++    aid, vs, fs = _run_amount(client, db_env, kind, raw)
++    assert len(fs) == 1 and len(vs) == 1
++    assert isinstance(vs[0]["raw_value"], str) and len(vs[0]["raw_value"]) <= 200
