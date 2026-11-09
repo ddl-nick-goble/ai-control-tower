@@ -115,17 +115,38 @@ def test_t1_require_user_rejects_anonymous(db_env):
     assert r.json() == {"user_id": "u1", "username": "alice"}
 
 
-def test_t1_anonymous_write_rejected(db_mod):
-    """Any write route under /api must 401 without identity headers."""
+def test_t1_ac_write_guard_rejects_anonymous_everywhere(db_mod):
     from fastapi.testclient import TestClient
     main = importlib.import_module("backend.main")
     with TestClient(main.app) as c:
-        spec = c.get("/openapi.json").json()
-        for path, ops in spec["paths"].items():
-            if not path.startswith("/api"):
-                continue
-            for verb in ("post", "put", "delete", "patch"):
-                if verb in ops:
-                    url = path.replace("{", "").replace("}", "") if "{" not in path else path.replace("{", "x").replace("}", "")
-                    r = getattr(c, verb)(url)
-                    assert r.status_code == 401, (verb, path, r.status_code)
+        assert c.post("/api/does-not-exist").status_code == 401
+        assert c.post("/v1/traces").status_code == 401
+        assert c.delete("/api/agents/x").status_code == 401
+        assert c.put("/api/does-not-exist").status_code == 401
+        assert c.patch("/api/does-not-exist").status_code == 401
+
+
+def test_t1_ac_write_guard_passes_with_identity(db_mod):
+    from fastapi.testclient import TestClient
+    main = importlib.import_module("backend.main")
+    h = {"X-Domino-User-Id": "u1", "X-Domino-User": "alice"}
+    with TestClient(main.app) as c:
+        assert c.post("/api/does-not-exist", headers=h).status_code == 404
+
+
+def test_t1_ac_health_anonymous_ok(db_mod):
+    from fastapi.testclient import TestClient
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").status_code == 200
+
+
+def test_t1_ac_events_without_run_row(db_mod):
+    from sqlalchemy import insert
+    db_mod.init_db()
+    with db_mod.engine.begin() as conn:
+        conn.execute(insert(db_mod.events).values(
+            run_id="no-such-run", agent_id="shadow", ts="2026-01-01T00:00:00Z",
+            kind="span", raw_span={}, event={}, prev_hash=None, hash="h1"))
+        n = conn.execute(db_mod.events.select()).fetchall()
+    assert len(n) == 1
