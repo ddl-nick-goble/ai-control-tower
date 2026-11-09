@@ -1,0 +1,341 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "treasury-sweep-agent"
+            }
+          },
+          {
+            "key": "cloud.provider",
+            "value": {
+              "stringValue": "aws"
+            }
+          },
+          {
+            "key": "cloud.platform",
+            "value": {
+              "stringValue": "aws_bedrock_agentcore"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "opentelemetry.instrumentation.genai",
+            "version": "1.0.0"
+          },
+          "spans": [
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "08f86bebb2737f6a",
+              "name": "invoke_agent treasury-sweep-agent",
+              "kind": 1,
+              "startTimeUnixNano": "1793887200000000000",
+              "endTimeUnixNano": "1793887260000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.id",
+                  "value": {
+                    "stringValue": "treasury_sweep_agent-Xk3Lq9ZpT2"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "treasury-sweep-agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "aws.bedrock"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "6f0fb23c6f5da2ce",
+              "name": "chat anthropic.claude-sonnet-4",
+              "kind": 3,
+              "startTimeUnixNano": "1793887201000000000",
+              "endTimeUnixNano": "1793887202800000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "anthropic.claude-sonnet-4"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "900"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "140"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "c255404e4fb44003",
+              "name": "execute_tool get_balance",
+              "kind": 1,
+              "startTimeUnixNano": "1793887204000000000",
+              "endTimeUnixNano": "1793887204600000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "get_balance"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.arguments",
+                  "value": {
+                    "stringValue": "{\"account\": \"OPS-USD-001\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.result",
+                  "value": {
+                    "stringValue": "{\"balance\": 1820000}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "4d6608697a8d41be",
+              "name": "execute_tool sweep_plan",
+              "kind": 1,
+              "startTimeUnixNano": "1793887207000000000",
+              "endTimeUnixNano": "1793887207600000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "sweep_plan"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.arguments",
+                  "value": {
+                    "stringValue": "{\"source\": \"OPS-USD-001\", \"target\": \"CONC-USD-100\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.result",
+                  "value": {
+                    "stringValue": "{\"proposed_amount\": 180000}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "d440e50454f31af3",
+              "name": "chat anthropic.claude-sonnet-4",
+              "kind": 3,
+              "startTimeUnixNano": "1793887210000000000",
+              "endTimeUnixNano": "1793887211800000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "anthropic.claude-sonnet-4"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "900"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "140"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "176813e02ea68ef7",
+              "name": "execute_tool transfer_funds",
+              "kind": 1,
+              "startTimeUnixNano": "1793887213000000000",
+              "endTimeUnixNano": "1793887213600000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "transfer_funds"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.arguments",
+                  "value": {
+                    "stringValue": "{\"from\": \"OPS-USD-001\", \"to\": \"CONC-USD-100\", \"amount\": 180000, \"currency\": \"USD\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.result",
+                  "value": {
+                    "stringValue": "{\"status\": \"settled\"}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "86e4d3cea27d2693",
+              "name": "execute_tool post_journal_entry",
+              "kind": 1,
+              "startTimeUnixNano": "1793887216000000000",
+              "endTimeUnixNano": "1793887216600000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "post_journal_entry"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.arguments",
+                  "value": {
+                    "stringValue": "{\"ref\": \"SWP-20261105-01\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.result",
+                  "value": {
+                    "stringValue": "{\"ok\": true}"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            },
+            {
+              "traceId": "ff9243a8f506b40928b5b7a767c76fb0",
+              "spanId": "4b484e73cf575dca",
+              "name": "chat anthropic.claude-sonnet-4",
+              "kind": 3,
+              "startTimeUnixNano": "1793887219000000000",
+              "endTimeUnixNano": "1793887220800000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "anthropic.claude-sonnet-4"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "900"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "140"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              },
+              "parentSpanId": "08f86bebb2737f6a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
