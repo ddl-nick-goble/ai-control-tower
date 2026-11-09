@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { fmtTs } from '../format'
+import { clean, fmtTs } from '../format'
 import Markdown from '../components/Markdown'
 import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
 
@@ -29,9 +29,10 @@ function TierCard({ agent }) {
 
 function Identity({ agent }) {
   const id = agent.identity || {}
+  const noDistinct = !agent.identity || !id.type || id.type === 'none' || id.distinct === false
   return (
     <Panel title="Identity binding" testid="identity-panel">
-      {id.distinct === false && (
+      {noDistinct && (
         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
       )}
       <dl className="kv">
@@ -50,7 +51,7 @@ function Manifest({ agent }) {
   return (
     <Panel title="Permitted-action manifest">
       <h3>Tools</h3>
-      <ul className="tags">
+      <ul className="tags tool-chips">
         {(m.tools || []).map((t) => <li key={t} data-testid="manifest-tool" className="chip">{t}</li>)}
         {!(m.tools || []).length && <li className="muted">none declared</li>}
       </ul>
@@ -103,12 +104,19 @@ function Governance({ gov }) {
         <dt>Bundle</dt><dd data-testid="bundle-id">{gov.bundle_id || 'not yet created'}</dd>
         <dt>Stage</dt><dd>{gov.stage || '-'}</dd>
       </dl>
-      <h3>Policies on this bundle</h3>
-      <ul className="plain">
-        {gov.policies.map((p, i) => <li key={i} data-testid="policy-name">{p.name}</li>)}
+      <h3>{gov.bundle_id ? 'Policies attached to this bundle' : 'Policies the bundle will carry'}</h3>
+      <ul className="plain" data-testid={gov.bundle_id ? 'policies-attached' : 'policies-expected'}>
+        {(gov.policies || []).map((p, i) => <li key={i} data-testid="policy-name">{p.name}</li>)}
       </ul>
     </Panel>
   )
+}
+
+function approveError(err) {
+  if (err.status === 401) return 'Not signed in: sign in to Domino to approve this agent.'
+  if (err.status === 403) return `Refused: the user who registered this agent cannot approve it. ${err.message || ''}`
+  if (err.status === 409) return `Not awaiting approval, or it has no registrant on record. ${err.message || ''}`
+  return `Error ${err.status || ''}: ${err.message}`
 }
 
 function Approvals({ id, gov, onChanged }) {
@@ -126,9 +134,8 @@ function Approvals({ id, gov, onChanged }) {
   return (
     <Panel title="Approvals" testid="approvals-panel"
            aside={<button className="btn primary" onClick={approve} disabled={busy}>Approve</button>}>
-      {err && <div className="alert error" role="alert" data-testid="approve-error">
-        {err.status === 403 ? 'Refused (403): ' : err.status === 409 ? 'Conflict (409): ' : `Error ${err.status || ''}: `}{err.message}</div>}
-      {ok && <div className="alert ok">{ok}</div>}
+      {err && <div className="alert error" role="alert" data-testid="approve-error">{approveError(err)}</div>}
+      {ok && <div className="alert ok" role="status" data-testid="approve-success">{ok}</div>}
       {gov && gov.approvals.length ? (
         <table className="table compact"><thead><tr><th>Approver</th><th>Decision</th><th>When</th><th>Expires</th></tr></thead>
           <tbody>{gov.approvals.map((a) => (
@@ -150,10 +157,10 @@ function Findings({ findings }) {
               <span className="chip">{f.type}</span>
               <span className={`pill sev-${f.severity}`}>{f.severity}</span>
               <span className="pill">{f.status}</span>
-              <strong>{f.tool}</strong>
+              <strong>{clean(f.tool)}</strong>
               <span className="muted">{fmtTs(f.ts)}</span>
             </div>
-            <Markdown text={f.explanation} />
+            <Markdown text={clean(f.explanation)} />
             {f.run_id && <Link data-testid="finding-timeline-link" to={`/runs/${encodeURIComponent(f.run_id)}`}>View run timeline</Link>}
           </li>
         ))}
@@ -177,6 +184,10 @@ function Runs({ findings }) {
 
 export default function Agent() {
   const { id } = useParams()
+  return <AgentView key={id} id={id} />
+}
+
+function AgentView({ id }) {
   const [rev, setRev] = React.useState(0)
   const agent = useAsync(() => api.agent(id), [id, rev])
   const gov = useAsync(() => api.governance(id), [id, rev])
@@ -192,7 +203,7 @@ export default function Agent() {
         {/* SLOT: "Generate evidence pack" button (added by a later task) */}
         <div id="evidence-pack-slot" data-slot="evidence-pack" />
       </div>
-      <p className="muted"><span className="chip">{a.source_platform}</span> owner {a.owner || '-'} · <StatusPill status={a.status} /> · last seen {fmtTs(a.last_seen)}</p>
+      <p className="muted"><span className="chip">{a.source_platform}</span> owner {a.owner || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
       <div className="grid">
         <TierCard agent={a} />
         <Identity agent={a} />

@@ -6,8 +6,8 @@ export function TierBadge({ tier }) {
   return <span className={`badge tier-${tier}`} data-testid="tier-badge" data-tier={tier}>Tier {tier}</span>
 }
 
-export function StatusPill({ status }) {
-  return <span className={`pill status-${status}`}>{status || 'unknown'}</span>
+export function StatusPill({ status, testid }) {
+  return <span className={`pill status-${status}`} data-testid={testid}>{status || 'unknown'}</span>
 }
 
 export function Panel({ title, children, testid, aside }) {
@@ -40,9 +40,9 @@ export function useAsync(fn, deps) {
   const [state, setState] = React.useState({ loading: true, data: null, error: null })
   React.useEffect(() => {
     let live = true
-    setState({ loading: true, data: null, error: null })
+    setState((s) => ({ loading: true, data: s.data, error: null }))
     fn().then((data) => live && setState({ loading: false, data, error: null }),
-              (error) => live && setState({ loading: false, data: null, error }))
+              (error) => live && setState((s) => ({ loading: false, data: s.data, error })))
     return () => { live = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)

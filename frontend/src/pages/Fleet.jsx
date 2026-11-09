@@ -31,7 +31,7 @@ export default function Fleet() {
         <label>Tier{' '}
           <select data-testid="tier-filter" value={tier} onChange={(e) => setTier(e.target.value)}>
             <option value="">All</option>
-            {[1, 2, 3, 4].map((t) => <option key={t} value={t}>{t}</option>)}
+            {[1, 2, 3, 4].map((t) => <option key={t} value={t}>Tier {t}</option>)}
           </select>
         </label>
       </div>
