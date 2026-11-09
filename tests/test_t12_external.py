@@ -37,14 +37,19 @@ def _port():
         return s.getsockname()[1]
 
 
-def _wait(port):
+def _wait(port, proc=None):
+    """True once the port accepts connections; False if proc exited or timeout."""
     for _ in range(100):
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             socket.create_connection(("127.0.0.1", port), 0.1).close()
-            return
+            if proc is not None and proc.poll() is not None:
+                return False
+            return True
         except OSError:
             time.sleep(0.05)
-    raise RuntimeError("server did not start")
+    return False
 
 
 @pytest.fixture
@@ -52,15 +57,24 @@ def fixture_server():
     procs = []
 
     def start(signed=False):
-        port = _port()
-        cmd = [sys.executable, str(EXT / "serve.py"), "--port", str(port)] + (["--signed"] if signed else [])
-        procs.append(subprocess.Popen(cmd))
-        _wait(port)
-        return f"http://127.0.0.1:{port}{WK}"
-    yield start
-    for p in procs:
-        p.kill()
-        p.wait()
+        for _ in range(5):
+            port = _port()
+            cmd = [sys.executable, str(EXT / "serve.py"), "--port", str(port)] + (["--signed"] if signed else [])
+            p = subprocess.Popen(cmd)
+            procs.append(p)
+            if _wait(port, p):
+                return f"http://127.0.0.1:{port}{WK}"
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+        raise RuntimeError("server did not start after 5 attempts")
+    try:
+        yield start
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
 
 
 @pytest.fixture
@@ -88,10 +102,12 @@ def card_server():
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         servers.append(srv)
         return f"http://127.0.0.1:{srv.server_address[1]}{WK}"
-    yield start
-    for s in servers:
-        s.shutdown()
-        s.server_close()
+    try:
+        yield start
+    finally:
+        for s in servers:
+            s.shutdown()
+            s.server_close()
 
 
 @pytest.fixture
@@ -297,17 +313,19 @@ def raw_server():
                 threading.Thread(target=handler, args=(conn,), daemon=True).start()
         threading.Thread(target=loop, daemon=True).start()
         return f"http://127.0.0.1:{srv.getsockname()[1]}{WK}"
-    yield start
-    state["stop"] = True
-    for s_ in state["socks"]:
-        try:
-            s_.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            s_.close()
-        except OSError:
-            pass
+    try:
+        yield start
+    finally:
+        state["stop"] = True
+        for s_ in state["socks"]:
+            try:
+                s_.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                s_.close()
+            except OSError:
+                pass
 
 
 @pytest.mark.default_hosts
