@@ -12,7 +12,7 @@ export function fmtJson(v) {
 }
 
 // Never show provider/model ids from trace or finding data.
-const MODEL_RE = /[\w.:/-]*(?:claude|anthropic|sonnet|haiku|opus)[\w.:/-]*/gi
+const MODEL_RE = /(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[.:/_-])*(?:claude|anthropic|sonnet|haiku|opus)[A-Za-z0-9]*(?:[.:/_-][A-Za-z0-9]+)*/gi
 export function clean(v) {
   if (v == null) return v
   return String(v).replace(MODEL_RE, 'frontier model')

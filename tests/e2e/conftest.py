@@ -56,7 +56,8 @@ def app_session(tmp_path_factory):
     log_path = tmp_path_factory.mktemp("applog") / "app.log"
     logf = open(log_path, "w")
     proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
-                            env={**env, "ACT_DB": db_path, "ACT_DB_PREWARM_COUNT": "0", "PORT": PORT},
+                            env={**env, "ACT_DB": db_path, "ACT_DB_PREWARM_COUNT": "0", "PORT": PORT,
+                                 "ACT_EVIDENCE_DIR": str(tmp_path_factory.mktemp("act-evidence"))},
                             start_new_session=True)
     try:
         url = None
