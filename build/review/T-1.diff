@@ -1,0 +1,853 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..c36a634
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,10 @@
++# Copy to .env for local runs. Never commit secrets.
++# PORT=9888
++# ACT_DB=./act.db
++# ACT_DB_PREWARM_COUNT=10
++# DOMINO_JWKS_URL=
++# DOMINO_JWT_ISSUER=      # expected iss claim for bearer JWTs (set in production)
++# DOMINO_JWT_AUDIENCE=    # expected aud claim; when unset, aud is not checked
++# SECURITY: X-Domino-User-Id / X-Domino-User headers are trusted ONLY because the
++# Domino proxy is the sole ingress. Never expose the app port directly. A valid
++# bearer JWT takes precedence over these headers.
+diff --git a/.gitignore b/.gitignore
+index 2ad649f..d86c420 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,2 +1,11 @@
+ .claude/cost-ledger.json
+ .worktrees/
++node_modules/
++dist/
++act.db*
++test-results/
++__pycache__/
++*.pyc
++.pytest_cache/
++.env
++.env.local
+diff --git a/app.sh b/app.sh
+new file mode 100755
+index 0000000..dc95bd8
+--- /dev/null
++++ b/app.sh
+@@ -0,0 +1,17 @@
++#!/bin/bash
++# Domino App entry point: rebuilds the frontend when sources are newer than dist, then serves API + static files.
++set -e
++cd "$(dirname "$0")"
++if [ -f package.json ] && command -v npm >/dev/null 2>&1; then
++  need=0
++  if [ ! -f frontend/dist/index.html ] || [ "${ACT_REBUILD:-0}" = "1" ]; then
++    need=1
++  elif [ -n "$(find frontend vite.config.js package.json -path frontend/dist -prune -o -type f -newer frontend/dist/index.html -print -quit)" ]; then
++    need=1
++  fi
++  if [ "$need" = "1" ]; then
++    [ -d node_modules ] || npm install --no-audit --no-fund
++    npm run build
++  fi
++fi
++exec python3 -m backend.main
+diff --git a/backend/__init__.py b/backend/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/db.py b/backend/db.py
+new file mode 100644
+index 0000000..8c239e0
+--- /dev/null
++++ b/backend/db.py
+@@ -0,0 +1,211 @@
++"""SQLite storage for ACT (single DB, WAL, pooled connections)."""
++import logging
++import os
++from pathlib import Path
++
++from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer,
++                        MetaData, String, Table, Text, create_engine, event, inspect, text)
++from sqlalchemy.pool import QueuePool
++
++
++def _db_path() -> str:
++    if os.environ.get("ACT_DB"):
++        return os.environ["ACT_DB"]
++    project = os.environ.get("DOMINO_PROJECT_NAME")
++    if project and os.environ.get("DOMINO_IS_GIT_BASED", "").lower() == "true":
++        return f"/mnt/data/{project}/act/act.db"
++    if project and os.environ.get("DOMINO_API_PROXY"):
++        return f"/domino/datasets/local/{project}/act/act.db"
++    return "./act.db"
++
++
++log = logging.getLogger(__name__)
++DB_PATH = _db_path()
++try:
++    Path(DB_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
++except OSError:
++    log.exception("could not create DB directory for %s", DB_PATH)
++
++engine = create_engine(
++    f"sqlite:///{DB_PATH}",
++    poolclass=QueuePool,
++    pool_size=20,
++    max_overflow=5,
++    pool_pre_ping=False,
++    connect_args={"check_same_thread": False, "timeout": 30},
++)
++
++
++@event.listens_for(engine, "connect")
++def _on_connect(dbapi_conn, _record):
++    cur = dbapi_conn.cursor()
++    cur.execute("PRAGMA journal_mode=WAL")
++    cur.execute("PRAGMA foreign_keys=ON")
++    cur.execute("PRAGMA busy_timeout=30000")
++    cur.close()
++
++
++metadata = MetaData()
++
++agents = Table(
++    "agents", metadata,
++    Column("id", String, primary_key=True),  # act:<platform>:<hash16>
++    Column("source_platform", String, nullable=False),
++    Column("native_id", String, nullable=False),
++    Column("name", String),
++    Column("owner", String),
++    Column("tier", String),
++    Column("tier_reasoning", Text),
++    Column("criteria", JSON),
++    Column("status", String, default="discovered"),
++    Column("registered_by", String),
++    Column("last_seen", String),
++    Column("record", JSON),
++)
++
++agent_versions = Table(
++    "agent_versions", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), nullable=False, index=True),
++    Column("version", String),
++    Column("created_at", String),
++    Column("record", JSON),
++)
++
++manifests = Table(
++    "manifests", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), nullable=False, index=True),
++    Column("version", String),
++    Column("content", JSON),
++    Column("created_at", String),
++)
++
++identities = Table(
++    "identities", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), nullable=False, index=True),
++    Column("kind", String),
++    Column("principal", String),
++    Column("scopes", JSON),
++    Column("record", JSON),
++)
++
++dependencies = Table(
++    "dependencies", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), nullable=False, index=True),
++    Column("kind", String),
++    Column("name", String),
++    Column("target", String),
++    Column("record", JSON),
++)
++
++runs = Table(
++    "runs", metadata,
++    Column("id", String, primary_key=True),
++    Column("agent_id", String, ForeignKey("agents.id"), index=True),
++    Column("status", String),
++    Column("started_at", String),
++    Column("ended_at", String),
++    Column("cost", Float),
++    Column("record", JSON),
++)
++
++events = Table(
++    "events", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("run_id", String, index=True),  # no FK: shadow-agent spans have no run row
++    Column("agent_id", String, index=True),
++    Column("ts", String),
++    Column("kind", String),
++    Column("raw_span", JSON),
++    Column("event", JSON),
++    Column("prev_hash", String),
++    Column("hash", String, unique=True),
++)
++
++findings = Table(
++    "findings", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), index=True),
++    Column("run_id", String),
++    Column("severity", String),
++    Column("rule", String),
++    Column("message", Text),
++    Column("status", String, default="open"),
++    Column("created_at", String),
++    Column("detail", JSON),
++)
++
++approvals = Table(
++    "approvals", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), nullable=False, index=True),
++    Column("approver", String, nullable=False),
++    Column("decision", String),
++    Column("created_at", String),
++    Column("expires_at", String),
++    Column("note", Text),
++)
++
++validation_records = Table(
++    "validation_records", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), index=True),
++    Column("kind", String),
++    Column("result", String),
++    Column("created_at", String),
++    Column("detail", JSON),
++)
++
++evidence_packs = Table(
++    "evidence_packs", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("agent_id", String, ForeignKey("agents.id"), index=True),
++    Column("created_at", String),
++    Column("created_by", String),
++    Column("path", String),
++    Column("content", JSON),
++)
++
++audit_events = Table(
++    "audit_events", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("actor_user_id", String, index=True),
++    Column("actor_username", String),
++    Column("action", String, nullable=False),
++    Column("target", String),
++    Column("ts", String),
++    Column("detail", JSON),
++)
++
++
++def _migrate() -> None:
++    """Idempotent additive migration: add any declared column missing from an existing table."""
++    insp = inspect(engine)
++    with engine.begin() as conn:
++        for table in metadata.sorted_tables:
++            if not insp.has_table(table.name):
++                continue
++            have = {c["name"] for c in insp.get_columns(table.name)}
++            for col in table.columns:
++                if col.name in have or col.primary_key:
++                    continue
++                if not col.nullable and col.default is None and col.server_default is None:
++                    log.warning("skipping migration of NOT NULL column %s.%s without default",
++                                table.name, col.name)
++                    continue
++                ctype = col.type.compile(engine.dialect)
++                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {ctype}'))
++
++
++def init_db() -> None:
++    metadata.create_all(engine)
++    _migrate()
++
++
++def prewarm(n: int) -> None:
++    conns = [engine.raw_connection() for _ in range(max(0, min(n, 20)))]
++    for c in conns:
++        c.close()
+diff --git a/backend/domino_identity.py b/backend/domino_identity.py
+new file mode 100644
+index 0000000..3770fc1
+--- /dev/null
++++ b/backend/domino_identity.py
+@@ -0,0 +1,66 @@
++"""Caller identity: Domino proxy headers or a bearer JWT verified against Keycloak JWKS."""
++import os
++from dataclasses import dataclass
++
++from fastapi import HTTPException, Request
++
++
++@dataclass
++class User:
++    user_id: str
++    username: str
++
++
++_jwks_client = None
++
++
++def _verify_bearer(token: str):
++    url = os.environ.get("DOMINO_JWKS_URL")
++    if not url:
++        return None
++    global _jwks_client
++    try:
++        import jwt
++        if _jwks_client is None or getattr(_jwks_client, "_url", None) != url:
++            _jwks_client = jwt.PyJWKClient(url)
++            _jwks_client._url = url
++        key = _jwks_client.get_signing_key_from_jwt(token)
++        kwargs = {"algorithms": ["RS256", "ES256"],
++                  "options": {"require": ["exp", "sub"], "verify_aud": False}}
++        if os.environ.get("DOMINO_JWT_ISSUER"):
++            kwargs["issuer"] = os.environ["DOMINO_JWT_ISSUER"]
++        if os.environ.get("DOMINO_JWT_AUDIENCE"):
++            kwargs["audience"] = os.environ["DOMINO_JWT_AUDIENCE"]
++            kwargs["options"]["verify_aud"] = True
++        claims = jwt.decode(token, key.key, **kwargs)
++    except Exception:
++        return None
++    uid = claims.get("sub")
++    name = claims.get("preferred_username")
++    return User(user_id=str(uid), username=str(name)) if uid and name else None
++
++
++def get_user(request):
++    """Return the caller or None. A valid bearer wins over proxy headers.
++
++    ASSUMPTION: X-Domino-User-Id / X-Domino-User are trusted only because the Domino
++    proxy is the sole ingress to this app (it strips/sets them). Never expose the app
++    port directly, or any client could forge identity.
++    """
++    auth = request.headers.get("Authorization", "")
++    if auth.lower().startswith("bearer "):
++        user = _verify_bearer(auth[7:].strip())
++        if user:
++            return user
++    uid = request.headers.get("X-Domino-User-Id")
++    name = request.headers.get("X-Domino-User")
++    if uid and name:
++        return User(user_id=uid, username=name)
++    return None
++
++
++def require_user(request: Request) -> User:
++    user = get_user(request)
++    if user is None:
++        raise HTTPException(status_code=401, detail="Authentication required")
++    return user
+diff --git a/backend/main.py b/backend/main.py
+new file mode 100644
+index 0000000..5f7f781
+--- /dev/null
++++ b/backend/main.py
+@@ -0,0 +1,88 @@
++"""ACT FastAPI app: API + built frontend."""
++import importlib
++import os
++import pkgutil
++from contextlib import asynccontextmanager
++from pathlib import Path
++
++from fastapi import FastAPI, HTTPException
++from fastapi.concurrency import run_in_threadpool
++from fastapi.responses import JSONResponse
++from fastapi.staticfiles import StaticFiles
++
++from . import db, routes
++from .domino_identity import get_user
++
++ROOT = Path(__file__).resolve().parent.parent
++DIST = ROOT / "frontend" / "dist"
++
++
++@asynccontextmanager
++async def lifespan(_app):
++    db.init_db()
++    db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
++    yield
++
++
++app = FastAPI(title="Agent Control Tower", lifespan=lifespan)
++
++
++WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
++
++
++@app.middleware("http")
++async def write_guard(request, call_next):
++    """Reject unauthenticated writes on every path (incl. /v1/*) before routing."""
++    if request.method in WRITE_METHODS and await run_in_threadpool(get_user, request) is None:
++        return JSONResponse({"detail": "Authentication required"}, status_code=401)
++    return await call_next(request)
++
++
++@app.get("/api/health")
++def health():
++    return {"status": "ok"}
++
++
++for _m in pkgutil.iter_modules(routes.__path__):
++    _mod = importlib.import_module(f"{routes.__name__}.{_m.name}")
++    if hasattr(_mod, "router"):
++        app.include_router(_mod.router)
++
++@app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
++               include_in_schema=False)
++@app.api_route("/v1/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
++               include_in_schema=False)
++def _unmatched(rest: str):
++    raise HTTPException(status_code=404, detail="Not found")
++
++
++if DIST.is_dir():
++    app.mount("/", StaticFiles(directory=str(DIST), html=True), name="frontend")
++
++
++def in_workspace() -> bool:
++    return "notebookSession" in os.environ.get("DOMINO_RUN_HOST_PATH", "")
++
++
++def get_port() -> int:
++    if os.environ.get("PORT"):
++        return int(os.environ["PORT"])
++    return 9888 if in_workspace() else 8888
++
++
++def app_url(port: int) -> str:
++    path = os.environ.get("DOMINO_RUN_HOST_PATH", "").rstrip("/")
++    if in_workspace():
++        path = f"{path}/proxy/{port}"
++    host = os.environ.get("DOMINO_USER_HOST", "").rstrip("/")
++    if not path and not host:
++        return f"http://localhost:{port}/"
++    return f"{host}{path}/"
++
++
++if __name__ == "__main__":
++    import uvicorn
++
++    port = get_port()
++    print(f"APP_URL={app_url(port)}", flush=True)
++    uvicorn.run(app, host="0.0.0.0", port=port)
+diff --git a/backend/routes/__init__.py b/backend/routes/__init__.py
+new file mode 100644
+index 0000000..e671506
+--- /dev/null
++++ b/backend/routes/__init__.py
+@@ -0,0 +1 @@
++"""Route modules: each exposes `router`; auto-included by backend.main."""
+diff --git a/frontend/index.html b/frontend/index.html
+new file mode 100644
+index 0000000..9abf766
+--- /dev/null
++++ b/frontend/index.html
+@@ -0,0 +1,13 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <script>if (!location.pathname.endsWith('/')) location.replace(location.pathname + '/' + location.search + location.hash)</script>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <title>Agent Control Tower</title>
++  </head>
++  <body>
++    <div id="root"></div>
++    <script type="module" src="./src/main.jsx"></script>
++  </body>
++</html>
+diff --git a/frontend/src/main.jsx b/frontend/src/main.jsx
+new file mode 100644
+index 0000000..f90df7e
+--- /dev/null
++++ b/frontend/src/main.jsx
+@@ -0,0 +1,20 @@
++import React from 'react'
++import { createRoot } from 'react-dom/client'
++import { HashRouter, Routes, Route } from 'react-router-dom'
++
++function Home() {
++  return (
++    <main style={{ fontFamily: 'sans-serif', padding: 24 }}>
++      <h1>Agent Control Tower</h1>
++      <p>Placeholder. Screens arrive in a later task.</p>
++    </main>
++  )
++}
++
++createRoot(document.getElementById('root')).render(
++  <HashRouter>
++    <Routes>
++      <Route path="*" element={<Home />} />
++    </Routes>
++  </HashRouter>
++)
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..f14d7e2
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,19 @@
++{
++  "name": "act-frontend",
++  "private": true,
++  "version": "0.1.0",
++  "type": "module",
++  "scripts": {
++    "dev": "vite",
++    "build": "vite build"
++  },
++  "dependencies": {
++    "react": "^18.3.1",
++    "react-dom": "^18.3.1",
++    "react-router-dom": "^6.26.0"
++  },
++  "devDependencies": {
++    "@vitejs/plugin-react": "^4.3.1",
++    "vite": "^5.4.0"
++  }
++}
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+new file mode 100644
+index 0000000..cc52e8c
+--- /dev/null
++++ b/requirements-dev.txt
+@@ -0,0 +1 @@
++pytest>=8
+diff --git a/requirements.txt b/requirements.txt
+new file mode 100644
+index 0000000..78c2aa3
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +1,6 @@
++fastapi>=0.110
++uvicorn[standard]>=0.29
++sqlalchemy>=2.0
++httpx>=0.27
++PyJWT[crypto]>=2.8
++jupyter-server-proxy
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..fc14cbc
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,27 @@
++import importlib
++import sys
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parent.parent
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++
++@pytest.fixture
++def db_env(tmp_path, monkeypatch):
++    path = tmp_path / "act.db"
++    monkeypatch.setenv("ACT_DB", str(path))
++    monkeypatch.setenv("ACT_DB_PREWARM_COUNT", "0")
++    for k in ("DOMINO_IS_GIT_BASED", "DOMINO_PROJECT_NAME", "DOMINO_API_PROXY"):
++        monkeypatch.delenv(k, raising=False)
++    return path
++
++
++@pytest.fixture
++def db_mod(db_env):
++    """Import backend.db fresh so it picks up env."""
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    return importlib.import_module("backend.db")
+diff --git a/tests/unit/test_t1_bearer_jwt.py b/tests/unit/test_t1_bearer_jwt.py
+new file mode 100644
+index 0000000..701674d
+--- /dev/null
++++ b/tests/unit/test_t1_bearer_jwt.py
+@@ -0,0 +1,103 @@
++import sys
++import time
++import types
++
++import jwt
++import pytest
++from cryptography.hazmat.primitives.asymmetric import rsa
++from fastapi import HTTPException
++
++ISS = "https://kc.invalid/realms/domino"
++AUD = "act"
++
++
++def _key():
++    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
++
++
++def _req(token, extra=None):
++    h = {"Authorization": f"Bearer {token}"}
++    h.update(extra or {})
++    return types.SimpleNamespace(headers=h)
++
++
++def _claims(**over):
++    c = {"sub": "u-123", "preferred_username": "alice", "iss": ISS, "aud": AUD,
++         "exp": int(time.time()) + 600}
++    c.update(over)
++    return {k: v for k, v in c.items() if v is not None}
++
++
++@pytest.fixture
++def setup(monkeypatch):
++    good = _key()
++    monkeypatch.setenv("DOMINO_JWKS_URL", "https://kc.invalid/jwks")
++    monkeypatch.setenv("DOMINO_JWT_ISSUER", ISS)
++    monkeypatch.setenv("DOMINO_JWT_AUDIENCE", AUD)
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    from backend import domino_identity as di
++
++    class StubClient:
++        def __init__(self, url, *a, **kw):
++            pass
++
++        def get_signing_key_from_jwt(self, token):
++            return types.SimpleNamespace(key=good.public_key())
++
++    monkeypatch.setattr(jwt, "PyJWKClient", StubClient)
++    monkeypatch.setattr(di, "_jwks_client", None)
++    return di, good
++
++
++def _enc(key, claims):
++    return jwt.encode(claims, key, algorithm="RS256")
++
++
++def _rejects(di, tok):
++    with pytest.raises(HTTPException) as e:
++        di.require_user(_req(tok))
++    assert e.value.status_code == 401
++
++
++def test_t1_bearer_jwt_accepts_valid_rejects_foreign_key(setup):
++    di, good = setup
++    user = di.require_user(_req(_enc(good, _claims())))
++    assert user.user_id == "u-123" and user.username == "alice"
++    _rejects(di, _enc(_key(), _claims()))
++
++
++def test_t1_bearer_jwt_wrong_issuer_401(setup):
++    di, good = setup
++    _rejects(di, _enc(good, _claims(iss="https://evil.invalid")))
++
++
++def test_t1_bearer_jwt_wrong_audience_401(setup):
++    di, good = setup
++    _rejects(di, _enc(good, _claims(aud="other")))
++
++
++def test_t1_bearer_jwt_missing_exp_401(setup):
++    di, good = setup
++    _rejects(di, _enc(good, _claims(exp=None)))
++
++
++def test_t1_bearer_jwt_missing_sub_401(setup):
++    di, good = setup
++    _rejects(di, _enc(good, _claims(sub=None)))
++
++
++def test_t1_bearer_jwt_audience_unset_not_checked_issuer_still(setup, monkeypatch):
++    di, good = setup
++    monkeypatch.delenv("DOMINO_JWT_AUDIENCE")
++    user = di.require_user(_req(_enc(good, _claims(aud="anything"))))
++    assert user.user_id == "u-123"
++    _rejects(di, _enc(good, _claims(iss="https://evil.invalid")))
++
++
++def test_t1_bearer_precedence_over_headers(setup):
++    di, good = setup
++    req = _req(_enc(good, _claims()),
++               {"X-Domino-User-Id": "someone-else", "X-Domino-User": "mallory"})
++    user = di.require_user(req)
++    assert user.user_id == "u-123" and user.username == "alice"
+diff --git a/tests/unit/test_t1_scaffold.py b/tests/unit/test_t1_scaffold.py
+new file mode 100644
+index 0000000..bd498d3
+--- /dev/null
++++ b/tests/unit/test_t1_scaffold.py
+@@ -0,0 +1,152 @@
++import importlib
++import sqlite3
++import sys
++
++import pytest
++
++TABLES = {
++    "agents", "agent_versions", "manifests", "identities", "dependencies", "runs",
++    "events", "findings", "approvals", "validation_records", "evidence_packs",
++    "audit_events",
++}
++
++
++def _tables(path):
++    con = sqlite3.connect(str(path))
++    try:
++        return {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
++    finally:
++        con.close()
++
++
++def test_t1_health_ok(db_mod):
++    from fastapi.testclient import TestClient
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        r = c.get("/api/health")
++        assert r.status_code == 200
++        assert r.json()["status"] == "ok"
++
++
++def test_t1_init_db_creates_twelve_tables(db_mod, db_env):
++    db_mod.init_db()
++    assert TABLES <= _tables(db_env)
++
++
++def test_t1_init_db_idempotent(db_mod, db_env):
++    db_mod.init_db()
++    db_mod.init_db()
++    assert TABLES <= _tables(db_env)
++
++
++def test_t1_events_has_hash_chain_columns(db_mod, db_env):
++    db_mod.init_db()
++    con = sqlite3.connect(str(db_env))
++    cols = {r[1] for r in con.execute("pragma table_info(events)")}
++    con.close()
++    assert {"prev_hash", "hash"} <= cols
++
++
++def test_t1_pragmas_on_connection(db_mod):
++    db_mod.init_db()
++    from sqlalchemy import text
++    with db_mod.engine.connect() as conn:
++        assert conn.execute(text("PRAGMA journal_mode")).scalar().lower() == "wal"
++        assert conn.execute(text("PRAGMA foreign_keys")).scalar() == 1
++        assert conn.execute(text("PRAGMA busy_timeout")).scalar() == 30000
++
++
++def test_t1_engine_queuepool_sizes(db_mod):
++    from sqlalchemy.pool import QueuePool
++    pool = db_mod.engine.pool
++    assert isinstance(pool, QueuePool)
++    assert pool.size() == 20
++    assert pool._max_overflow == 5
++
++
++def test_t1_db_path_env_override(db_mod, db_env):
++    assert str(db_env) in str(db_mod.engine.url)
++
++
++def _fresh_db(monkeypatch):
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    return importlib.import_module("backend.db")
++
++
++def test_t1_db_path_git_based_domino(tmp_path, monkeypatch):
++    monkeypatch.delenv("ACT_DB", raising=False)
++    monkeypatch.setenv("ACT_DB_PREWARM_COUNT", "0")
++    monkeypatch.setenv("DOMINO_IS_GIT_BASED", "true")
++    monkeypatch.setenv("DOMINO_PROJECT_NAME", "proj1")
++    mod = _fresh_db(monkeypatch)
++    assert "/mnt/data/proj1/act/act.db" in str(mod.engine.url)
++
++
++def test_t1_db_path_local_default(tmp_path, monkeypatch):
++    monkeypatch.delenv("ACT_DB", raising=False)
++    for k in ("DOMINO_IS_GIT_BASED", "DOMINO_PROJECT_NAME", "DOMINO_API_PROXY"):
++        monkeypatch.delenv(k, raising=False)
++    monkeypatch.setenv("ACT_DB_PREWARM_COUNT", "0")
++    monkeypatch.chdir(tmp_path)
++    mod = _fresh_db(monkeypatch)
++    assert str(mod.engine.url).endswith("act.db")
++
++
++def test_t1_require_user_rejects_anonymous(db_env):
++    from fastapi import HTTPException
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    ident = importlib.import_module("backend.domino_identity")
++    assert hasattr(ident, "require_user")
++    from fastapi import FastAPI, Depends
++    from fastapi.testclient import TestClient
++    app = FastAPI()
++
++    @app.post("/w")
++    def w(u=Depends(ident.require_user)):
++        return {"user_id": u.user_id, "username": u.username}
++
++    c = TestClient(app)
++    assert c.post("/w").status_code == 401
++    assert c.put("/w").status_code in (401, 405)  # route is POST only; 405 acceptable
++    r = c.post("/w", headers={"X-Domino-User-Id": "u1", "X-Domino-User": "alice"})
++    assert r.status_code == 200
++    assert r.json() == {"user_id": "u1", "username": "alice"}
++
++
++def test_t1_ac_write_guard_rejects_anonymous_everywhere(db_mod):
++    from fastapi.testclient import TestClient
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        assert c.post("/api/does-not-exist").status_code == 401
++        assert c.post("/v1/traces").status_code == 401
++        assert c.delete("/api/agents/x").status_code == 401
++        assert c.put("/api/does-not-exist").status_code == 401
++        assert c.patch("/api/does-not-exist").status_code == 401
++
++
++def test_t1_ac_write_guard_passes_with_identity(db_mod):
++    from fastapi.testclient import TestClient
++    main = importlib.import_module("backend.main")
++    h = {"X-Domino-User-Id": "u1", "X-Domino-User": "alice"}
++    with TestClient(main.app) as c:
++        assert c.post("/api/does-not-exist", headers=h).status_code == 404
++
++
++def test_t1_ac_health_anonymous_ok(db_mod):
++    from fastapi.testclient import TestClient
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        assert c.get("/api/health").status_code == 200
++
++
++def test_t1_ac_events_without_run_row(db_mod):
++    from sqlalchemy import insert
++    db_mod.init_db()
++    with db_mod.engine.begin() as conn:
++        conn.execute(insert(db_mod.events).values(
++            run_id="no-such-run", agent_id="shadow", ts="2026-01-01T00:00:00Z",
++            kind="span", raw_span={}, event={}, prev_hash=None, hash="h1"))
++        n = conn.execute(db_mod.events.select()).fetchall()
++    assert len(n) == 1
+diff --git a/vite.config.js b/vite.config.js
+new file mode 100644
+index 0000000..6329f28
+--- /dev/null
++++ b/vite.config.js
+@@ -0,0 +1,10 @@
++import { defineConfig } from 'vite'
++import react from '@vitejs/plugin-react'
++
++export default defineConfig({
++  base: './',
++  root: 'frontend',
++  plugins: [react()],
++  build: { outDir: 'dist', emptyOutDir: true },
++  server: { host: '0.0.0.0', allowedHosts: true },
++})
