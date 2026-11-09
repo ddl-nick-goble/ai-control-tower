@@ -13,9 +13,8 @@ def _num(v):
     if v is None:
         return None
     try:
-        f = float(v)
-        return int(f) if f == int(f) else f
-    except ValueError:
+        return drift._num(v)
+    except Exception:
         return None
 
 

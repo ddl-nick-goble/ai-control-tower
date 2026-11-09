@@ -55,7 +55,8 @@
     "reason": {
       "enum": [
         "tool_not_in_manifest",
-        "value_limit_exceeded"
+        "value_limit_exceeded",
+        "value_unverifiable"
       ]
     },
     "observed_value": {
