@@ -73,3 +73,12 @@ Only the agent-level span carries gen_ai.agent.id, so child spans (execute_tool,
 - Deferred to T-13 polish (from the T-10 visual review): the evidence-pack preview's section headings are small grey caps and need a stronger hierarchy; the identity ARN wraps mid-string. Note: the audit record for a failed evidence attachment stores only the outcome; the error detail is in the app logs.
 - T-11 live run (after gateway consent): Domino Job `python jobs/validate.py`, small tier, env RECON_AGENT_ID (Domino agent native id), ACT_URL, LLM_GATEWAY_URL. The job aborts without posting when more than 20% of calls are errors or invalid. Nick reads the five judged samples in the MLflow artifacts.
 - Deferred (T-5b review): re-resolve "ancestor" rows when a nearer explicit parent arrives later.
+
+## T-14 (added 2026-11-09 at Nick's request): local hosting and mocks behind clear interfaces
+Goal: the full demo runs now without gateway consent, a deployed agent, or a second user, and every stand-in is swappable by env only.
+- LLM provider seam: `ACT_LLM_PROVIDER=gateway|mock` in agents/recon_agent/llm.py and backend/llm.py, with the same create_message() signature. The mock is deterministic: it scripts the recon tool loop, applies a rubric judge (keyword match against expected), and returns a template drift explanation. Its model id is "mock-llm". The validation record and evidence pack label it "mock judge (not a model)".
+- Local agent hosting: `ACT_DOMINO_LOCAL_AGENTS=<json file>` merges locally hosted agents into the Domino adapter listing (platform domino, hosting "workspace (not deployed)"). The recon agent runs in the workspace or as a Domino Job and posts real OTLP to ACT, calling the real break_classifier endpoint when its key is present.
+- Validation job: when ACT_URL is unset or unreachable, it writes in-process to the dataset DB (the same pattern as intake). It runs as a Domino Job in mock mode.
+- docs/INTEGRATION.md lists each stand-in, its switch, and the go-live steps (gateway consent and env, Agent deploy and RECON_AGENT_ID, service account, second approver, validation rerun).
+- Order: after T-12 merges, before T-13. T-13's seed_demo uses these modes.
+Touches: agents/recon_agent/llm.py, agents/recon_agent/llm_mock.py, backend/llm.py, backend/llm_mock.py, adapters/domino.py (local agents), jobs/validate.py (in-process fallback), backend/evidence.py and backend/routes/validation.py (mock label only), docs/INTEGRATION.md, config/local_agents.json. Builder: builder. QA: test-author, code-reviewer.

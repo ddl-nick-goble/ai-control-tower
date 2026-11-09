@@ -26,6 +26,7 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
   - If round 3 is not green, stop and ask Nick (3-round rule).
 
 ## Next
+- **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): starts after T-12 merges, before T-13.
 - **T-13** (demo hardening and docs): docs/architecture.md (3 Mermaid diagrams), docs/DEMO.md, jobs/seed_demo.py, README.
   - Seed demo: intake, the weekend-drift run, and POST /api/agents/{id}/governance for each agent before any approval.
   - Set ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost so the fixture card server works.
