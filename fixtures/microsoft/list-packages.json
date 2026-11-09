@@ -16,7 +16,7 @@
         "Copilot"
       ],
       "shortDescription": "Summarises client meetings and drafts follow-ups.",
-      "agentIdentity": {
+      "identity": {
         "type": "managed_identity",
         "clientId": "0c7d1e34-5a2b-4c88-b1f0-7e9a3d4c5b02",
         "principalId": "20b5c4d3a9e7-0f1b-88c4-b2a5-43e1d7c0",
@@ -61,7 +61,7 @@
         "Copilot"
       ],
       "shortDescription": "Drafts corporate credit memos from financials and ratings.",
-      "agentIdentity": {
+      "identity": {
         "type": "managed_identity",
         "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
         "principalId": "31c6d5e4baf8-1a2a-99d4-c3b6-54f2e8d1",
@@ -106,7 +106,7 @@
         "Copilot"
       ],
       "shortDescription": "Answers branch procedure questions and creates tasks.",
-      "agentIdentity": {
+      "identity": {
         "type": "none",
         "note": "uses the shared Copilot Studio connection identity"
       },

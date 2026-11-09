@@ -10,7 +10,7 @@ platform's free-form slot. Exactly one agent per platform has `identity.type == 
 | aws/list-discoverable-registry-records.json | Agent Registry `ListDiscoverableRegistryRecords` (`registryRecords[]`) | 3 records for the same agents |
 | google/agent-registry-services.json | Google Agent Registry `Service` resources (`services[]`, names `projects/.../locations/.../services/...`); extras in `labels`, `properties`, `identity` | 3 (payments-fraud-screener, collections-outreach-agent, regulatory-report-drafter; last has no identity) |
 | google/agent-registry-bindings.json | Agent Registry `Binding` resources, grouped by service name under `bindingsByService` | 3 |
-| microsoft/list-packages.json | Agent 365 Graph "List packages" (`@odata.context`, `value[]`); extras in `agentIdentity`, `customMetadata`, `owner` | 3 (relationship-manager-copilot, credit-memo-drafter, branch-ops-assistant; last has no identity) |
+| microsoft/list-packages.json | Agent 365 Graph "List packages" (`@odata.context`, `value[]`); extras in `identity`, `customMetadata`, `owner` | 3 (relationship-manager-copilot, credit-memo-drafter, branch-ops-assistant; last has no identity) |
 | databricks/agent-services.json | Unity Catalog `/api/2.1/unity-catalog/agent-services` (`agent_services[]`); extras in `owner`, `tags`, `properties`, `identity` | 2 (liquidity-forecast-agent, model-risk-doc-agent; last has no identity) |
 | runs/otel-genai-kyc-refresh.json | OTLP/HTTP JSON, OTel GenAI dialect, in-manifest run | 8 spans |
 | runs/otel-genai-treasury-sweep-normal.json | OTel GenAI, in-manifest run (transfer_funds 180000 under the 250000 limit) | 8 spans |
