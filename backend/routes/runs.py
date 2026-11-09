@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 
-from .. import db
+from .. import db, evidence
 from ..domino_identity import User, require_user
 from ..normalize import _audit, now_iso
 from ..normalize_span import redact
@@ -65,3 +65,11 @@ def timeline(run_id: str):
     return {"run_id": run_id, "agent_id": agent_id,
             "started_at": run.started_at if run else None, "ended_at": run.ended_at if run else None,
             "events": events}
+
+
+@router.get("/api/agents/{agent_id}/runs")
+def agent_runs(agent_id: str):
+    with db.engine.connect() as cx:
+        if cx.execute(select(db.agents.c.id).where(db.agents.c.id == agent_id)).first() is None:
+            raise HTTPException(404, "agent not found")
+    return evidence.agent_runs(agent_id)

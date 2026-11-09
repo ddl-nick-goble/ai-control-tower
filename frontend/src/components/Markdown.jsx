@@ -1,14 +1,17 @@
 import React from 'react'
 
-// Minimal safe markdown renderer (no raw HTML): paragraphs, lists, headings, bold, italic, code, links.
+// Minimal safe markdown renderer (no raw HTML): paragraphs, nested lists, headings, bold, italic, code, links,
+// backslash escapes and the &lt; &gt; entities the evidence pack uses for untrusted text.
 function inline(text, key) {
   const out = []
-  const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\[[^\]]+\]\(https?:[^)\s]+\))/g
+  const re = /(\\[\\!\[\]()`*_#|&<>]|&(?:lt|gt|amp);|\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*|(?<![A-Za-z0-9])_[^_\s][^_]*_(?![A-Za-z0-9])|\[[^\]]+\]\(https?:[^)\s]+\))/g
   let last = 0, m, i = 0
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(text.slice(last, m.index))
     const t = m[0]
-    if (t.startsWith('**')) out.push(<strong key={`${key}-${i}`}>{t.slice(2, -2)}</strong>)
+    if (t.startsWith('\\')) out.push(t.slice(1))
+    else if (t.startsWith('&')) out.push({ '&lt;': '<', '&gt;': '>', '&amp;': '&' }[t])
+    else if (t.startsWith('**')) out.push(<strong key={`${key}-${i}`}>{t.slice(2, -2)}</strong>)
     else if (t.startsWith('`')) out.push(<code key={`${key}-${i}`}>{t.slice(1, -1)}</code>)
     else if (t.startsWith('[')) {
       const mm = /\[([^\]]+)\]\(([^)]+)\)/.exec(t)
@@ -19,6 +22,30 @@ function inline(text, key) {
   }
   if (last < text.length) out.push(text.slice(last))
   return out
+}
+
+// Flat items with indents -> nested tree.
+function tree(items) {
+  const root = { children: [] }
+  const stack = [{ indent: -1, node: root }]
+  for (const it of items) {
+    const node = { text: it.text, ordered: it.ordered, children: [] }
+    while (stack.length > 1 && stack[stack.length - 1].indent >= it.indent) stack.pop()
+    stack[stack.length - 1].node.children.push(node)
+    stack.push({ indent: it.indent, node })
+  }
+  return root.children
+}
+
+function List({ nodes, k }) {
+  const Tag = nodes[0].ordered ? 'ol' : 'ul'
+  return (
+    <Tag>
+      {nodes.map((n, j) => (
+        <li key={j}>{inline(n.text, `${k}-${j}`)}{n.children.length > 0 && <List nodes={n.children} k={`${k}-${j}`} />}</li>
+      ))}
+    </Tag>
+  )
 }
 
 export default function Markdown({ text }) {
@@ -35,8 +62,8 @@ export default function Markdown({ text }) {
     else if ((m = /^\s*([-*]|\d+\.)\s+(.*)/.exec(line))) {
       flushPara()
       const ordered = /\d/.test(m[1])
-      if (!list || list.ordered !== ordered) { flushList(); list = { t: 'l', ordered, items: [] } }
-      list.items.push(m[2])
+      if (!list) list = { t: 'l', items: [] }
+      list.items.push({ indent: /^\s*/.exec(line)[0].length, ordered, text: m[2] })
     } else { flushList(); para.push(line.trim()) }
   }
   flushPara(); flushList()
@@ -45,8 +72,7 @@ export default function Markdown({ text }) {
       {blocks.map((b, i) => {
         if (b.t === 'p') return <p key={i}>{inline(b.v, i)}</p>
         if (b.t === 'h') return <h4 key={i}>{inline(b.v, i)}</h4>
-        const Tag = b.ordered ? 'ol' : 'ul'
-        return <Tag key={i}>{b.items.map((it, j) => <li key={j}>{inline(it, `${i}-${j}`)}</li>)}</Tag>
+        return <List key={i} nodes={tree(b.items)} k={String(i)} />
       })}
     </div>
   )

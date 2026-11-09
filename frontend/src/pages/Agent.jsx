@@ -170,14 +170,24 @@ function Findings({ findings }) {
   )
 }
 
-function Runs({ findings }) {
-  // No runs-by-agent endpoint yet: list the runs referenced by this agent's findings.
-  const ids = [...new Set(findings.map((f) => f.run_id).filter(Boolean))]
+function Runs({ id }) {
+  const runs = useAsync(() => fetch(`api/agents/${encodeURIComponent(id)}/runs`).then((r) => {
+    if (!r.ok) throw new Error(`${r.status}: could not load runs`)
+    return r.json()
+  }), [id])
+  const list = runs.data || []
   return (
     <Panel title="Runs">
-      {!ids.length && <p className="muted">No runs with findings.</p>}
+      {runs.error && <ErrorBox error={runs.error} />}
+      {runs.loading && !runs.data && <Loading what="runs" />}
+      {runs.data && !list.length && <p className="muted">No runs recorded.</p>}
       <ul className="plain">
-        {ids.map((r) => <li key={r} data-testid="run-item"><Link to={`/runs/${encodeURIComponent(r)}`}>{r}</Link></li>)}
+        {list.map((r) => (
+          <li key={r.run_id} data-testid="run-item">
+            <Link to={`/runs/${encodeURIComponent(r.run_id)}`}>{clean(r.run_id)}</Link>{' '}
+            <span className="muted">{fmtTs(r.started_at)} · {r.span_count} {r.span_count === 1 ? 'span' : 'spans'}</span>
+          </li>
+        ))}
       </ul>
     </Panel>
   )
@@ -201,8 +211,6 @@ function AgentView({ id }) {
       <p><Link to="/">Fleet</Link> / {clean(a.name)}</p>
       <div className="page-head" style={{ flexWrap: 'wrap' }}>
         <h1>{clean(a.name)}</h1>
-        {/* SLOT: "Generate evidence pack" button (added by a later task) */}
-        <div id="evidence-pack-slot" data-slot="evidence-pack" style={{ display: 'contents' }}><EvidencePack id={id} /></div>
       </div>
       <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
       <div className="grid">
@@ -214,7 +222,8 @@ function AgentView({ id }) {
         <Approvals id={id} gov={gov.data} onChanged={() => setRev((r) => r + 1)} />
       </div>
       {fnd.error ? <ErrorBox error={fnd.error} /> : <Findings findings={fnd.data || []} />}
-      <Runs findings={fnd.data || []} />
+      <div id="evidence-pack-slot" data-slot="evidence-pack"><EvidencePack id={id} /></div>
+      <Runs id={id} />
     </div>
   )
 }

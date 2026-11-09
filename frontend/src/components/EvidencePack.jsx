@@ -1,11 +1,9 @@
 import React from 'react'
 import { clean } from '../format'
 import Markdown from './Markdown'
+import { Panel } from './ui'
 
-// The safe Markdown renderer treats _x_ as emphasis: put snake_case identifiers in code spans.
-const codeify = (t) => t.replace(/`[^`]*`|\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b/g, (m) => (m.startsWith('`') ? m : `\`${m}\``))
-
-// Split the pack Markdown into real headings (h2 title, h3 sections) plus safe Markdown bodies.
+// Split the pack Markdown into the title (h3) and the seven sections (h3), each with a safe Markdown body.
 function Preview({ markdown }) {
   const parts = []
   let cur = null
@@ -17,13 +15,24 @@ function Preview({ markdown }) {
   return (
     <div data-testid="evidence-pack-preview" className="evidence-preview">
       {parts.map((p, i) => (
-        <section key={i}>
-          {p.level === 1 ? <h2>{clean(p.title)}</h2> : <h3>{clean(p.title)}</h3>}
-          <Markdown text={codeify(p.body.map(clean).join('\n'))} />
+        <section key={i} style={{ marginTop: i ? 16 : 0 }}>
+          <h3 style={p.level === 1 ? { fontSize: 18 } : undefined}>{clean(unescapeText(p.title))}</h3>
+          <Markdown text={p.body.join('\n')} />
         </section>
       ))}
     </div>
   )
+}
+
+// Headings are plain text here (not run through the Markdown renderer): undo the pack's escaping.
+const unescapeText = (t) => t.replace(/\\([\\!\[\]()`*_#|&])/g, '$1').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+
+function bundleNote(res) {
+  const g = String(res.governance || '')
+  if (!res.bundle_id) return 'No Governance bundle for this agent. Files are saved in the project dataset.'
+  const where = `Recorded against Governance bundle ${clean(res.bundle_id)}.`
+  if (g === 'attached') return `${where} Attached to the bundle as policy evidence.`
+  return `${where} Attaching to the bundle failed; files are saved in the project dataset.`
 }
 
 export default function EvidencePack({ id }) {
@@ -45,25 +54,21 @@ export default function EvidencePack({ id }) {
   }
   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
   return (
-    <div id="evidence-pack" style={{ display: 'contents' }}>
-      <button className="btn primary" data-testid="evidence-pack-generate" onClick={generate} disabled={busy}>
-        {busy ? 'Generating...' : 'Generate evidence pack'}
-      </button>
-      {err && <div className="alert error" role="alert" style={{ flexBasis: '100%' }}>{clean(err)}</div>}
+    <Panel title="Evidence pack" testid="evidence-pack-card"
+           aside={<button className="btn primary" data-testid="evidence-pack-generate" onClick={generate} disabled={busy}>
+             {busy ? 'Generating...' : 'Generate evidence pack'}</button>}>
+      {!res && !err && <p className="muted">Generate a dated pack in OCC 2026-54 order from ACT's own records.</p>}
+      {err && <div className="alert error" role="alert">{clean(err)}</div>}
       {res && (
-        <div className="panel" data-testid="evidence-pack-result" style={{ flexBasis: '100%', marginTop: 12 }}>
-          <h2>Evidence pack</h2>
+        <div data-testid="evidence-pack-result">
           <p>
             <a data-testid="evidence-pack-md-link" href={`${base}/markdown`} download>Download Markdown</a>{' · '}
             <a data-testid="evidence-pack-pdf-link" href={`${base}/pdf`} download>Download PDF</a>
           </p>
-          <p data-testid="evidence-pack-bundle" className="muted">
-            {res.bundle_id ? `Attached to Governance bundle ${clean(res.bundle_id)}` : 'Saved to project dataset (no Governance bundle for this agent)'}
-            {res.governance && res.governance.startsWith('attach failed') ? ' (attachment failed; pack saved to the project dataset)' : ''}
-          </p>
+          <p data-testid="evidence-pack-bundle" className="muted">{bundleNote(res)}</p>
           <Preview markdown={res.markdown} />
         </div>
       )}
-    </div>
+    </Panel>
   )
 }
