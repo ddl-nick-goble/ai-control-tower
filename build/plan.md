@@ -39,7 +39,7 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 | T-7 | AC-8 (data), AC-10 (agent) | T-1 | models/, agents/, tracing_setup.py, experiment_setup.py | domino-setup (sonnet) + domino-deploy (sonnet) + builder | test-author, code-reviewer | task/T-7 | 1c2e4ea | building |
 | T-4 | AC-1, AC-2 (routes), AC-3 (re-tier) | T-1, T-2, T-3 | adapters/, backend/normalize.py, backend/routes/agents.py, jobs/intake.py | builder | test-author, code-reviewer | task/T-4 | — | pending |
 | T-6 | AC-6 (backend) | T-4, T-5 | backend/drift.py, backend/llm.py, backend/routes/findings.py | builder | test-author, code-reviewer | task/T-6 | — | pending |
-| T-8 | AC-8, AC-9 | T-4, T-7 | policies/, backend/governance.py, backend/routes/approvals.py, backend/routes/dependencies.py | domino-setup (sonnet) then builder | test-author, code-reviewer | task/T-8 | — | pending |
+| T-8 | AC-8, AC-9 | T-4, T-7 | policies/, backend/governance.py, backend/routes/approvals.py, backend/routes/dependencies.py, backend/routes/runs.py (merge approvals and overrides into the timeline) | domino-setup (sonnet) then builder | test-author, code-reviewer | task/T-8 | — | pending |
 | T-8b | AC-7, AC-9 (attachment manual) | T-8 stopped | backend/governance_local.py | builder | test-author | task/T-8b | — | conditional |
 | T-9 | AC-5 UI, AC-6 UI, AC-8 UI, AC-12 | T-4, T-5, T-6, T-8/T-8b | frontend/src/ | builder + domino-deploy (sonnet, proxy check) | ui-tester, visual-reviewer, code-reviewer | task/T-9 | — | pending |
 | T-10 | AC-7, AC-12 (pack) | T-8/T-8b, T-9 | backend/evidence.py, backend/routes/evidence.py, frontend/src/components/EvidencePack.jsx | builder | ui-tester, test-author, visual-reviewer, code-reviewer | task/T-10 | — | pending |
@@ -48,3 +48,7 @@ Note: the handoff suggests T-4+T-6, T-8+T-9, and T-11+T-13 as pairs. Each pair h
 | T-13 | AC-12 e2e, DoD | all | docs/, jobs/seed_demo.py, README.md | builder | ui-tester (full), test-author (full) | task/T-13 | — | pending |
 
 Shared registration of routers in backend/main.py belongs to T-1. Later tasks that need a router mounted must either use an auto-include pattern that T-1 provides or report the needed change.
+
+## Design decisions
+- Shadow agents (T-5, round 2): an unmatched gen_ai.agent.id creates a placeholder agents row with status `shadow` and id `act:shadow:<sha256(native)[:16]>`. The shadow_agent finding points to that placeholder. T-4's fleet route and T-9's fleet page show shadow agents separately, so the demo's 13-agent count holds.
+- Drift dedupe (T-6): ingest is idempotent per (run_id, span_id). The run-ingested hook can fire more than once per run, so T-6 must upsert one scope_drift finding per run and keep it idempotent.
