@@ -45,3 +45,12 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
 .tool-chips { margin-bottom:14px }
 .kv { margin-top:4px }
 .tl-content { white-space:pre-wrap }
+
+.select { appearance:none; -webkit-appearance:none; min-width:140px; padding:6px 32px 6px 12px; border-radius:4px; background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236b7280' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 12px center }
+.select:hover { border-color:#9aa3af }
+.filters label { font-size:12px; text-transform:uppercase; letter-spacing:.04em }
+.filters .select { text-transform:none; letter-spacing:0; font-size:14px; color:var(--ink) }
+.nowrap { white-space:nowrap }
+.panel.wide { grid-column:1 / -1 }
+.kv dd, .chip, .tl-head strong, .plain li, .tl-note, .alert { overflow-wrap:anywhere }
+.kv dd { word-break:normal }

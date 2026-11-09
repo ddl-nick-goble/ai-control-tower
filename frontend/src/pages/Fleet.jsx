@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import { fmtTs } from '../format'
+import { clean, fmtTs } from '../format'
 import { ErrorBox, Loading, StatusPill, TierBadge, useAsync } from '../components/ui'
 
 export default function Fleet() {
@@ -23,13 +23,13 @@ export default function Fleet() {
       </div>
       <div className="filters">
         <label>Source{' '}
-          <select data-testid="source-filter" value={source} onChange={(e) => setSource(e.target.value)}>
+          <select className="select" data-testid="source-filter" value={source} onChange={(e) => setSource(e.target.value)}>
             <option value="">All</option>
             {sources.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </label>
         <label>Tier{' '}
-          <select data-testid="tier-filter" value={tier} onChange={(e) => setTier(e.target.value)}>
+          <select className="select" data-testid="tier-filter" value={tier} onChange={(e) => setTier(e.target.value)}>
             <option value="">All</option>
             {[1, 2, 3, 4].map((t) => <option key={t} value={t}>Tier {t}</option>)}
           </select>
@@ -46,8 +46,8 @@ export default function Fleet() {
             {list.data.map((a) => (
               <tr key={a.id} data-testid="fleet-row" data-agent-id={a.id}>
                 <td data-testid="fleet-source"><span className="chip">{a.source_platform}</span></td>
-                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{a.name}</Link></td>
-                <td data-testid="fleet-owner">{a.owner || '-'}</td>
+                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{clean(a.name)}</Link></td>
+                <td data-testid="fleet-owner">{clean(a.owner) || '-'}</td>
                 <td><TierBadge tier={a.tier} /></td>
                 <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
                 <td><span data-testid="open-findings" className={a.open_findings ? 'count hot' : 'count'}>{a.open_findings}</span></td>

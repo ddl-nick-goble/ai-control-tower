@@ -47,12 +47,12 @@ function Identity({ agent }) {
 function Manifest({ agent }) {
   const m = agent.manifest || {}
   const limits = m.value_limits_detail || m.value_limits || {}
-  const list = (xs) => (xs && xs.length ? xs.join(', ') : 'none')
+  const list = (xs) => (xs && xs.length ? xs.map(clean).join(', ') : 'none')
   return (
     <Panel title="Permitted-action manifest">
       <h3>Tools</h3>
       <ul className="tags tool-chips">
-        {(m.tools || []).map((t) => <li key={t} data-testid="manifest-tool" className="chip">{t}</li>)}
+        {(m.tools || []).map((t) => <li key={t} data-testid="manifest-tool" className="chip">{clean(t)}</li>)}
         {!(m.tools || []).length && <li className="muted">none declared</li>}
       </ul>
       <dl className="kv">
@@ -60,7 +60,7 @@ function Manifest({ agent }) {
         <dt>Systems</dt><dd>{list(m.systems)}</dd>
         <dt>Value limits</dt>
         <dd>{Object.keys(limits).length ? Object.entries(limits).map(([t, v]) => (
-          <div key={t}>{t}: {typeof v === 'object' ? `${v.amount} ${v.currency || ''}` : v}</div>)) : 'none'}</dd>
+          <div key={t}>{clean(t)}: {typeof v === 'object' ? `${v.amount} ${v.currency || ''}` : v}</div>)) : 'none'}</dd>
       </dl>
     </Panel>
   )
@@ -77,18 +77,18 @@ function Dependencies({ id }) {
           <h3>Models</h3>
           <ul className="plain">
             {data.models.map((m, i) => (
-              <li key={i} data-testid="dependency-model">{m.name} <span className="chip">registry version {m.registry_version ?? '-'}</span></li>
+              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}</span></li>
             ))}
             {!data.models.length && <li className="muted">none</li>}
           </ul>
           <h3>MCP servers</h3>
           <ul className="plain">
-            {data.mcp_servers.map((m, i) => <li key={i} data-testid="dependency-mcp">{m.name}{m.target ? ` (${m.target})` : ''}</li>)}
+            {data.mcp_servers.map((m, i) => <li key={i} data-testid="dependency-mcp">{clean(m.name)}{m.target ? ` (${clean(m.target)})` : ''}</li>)}
             {!data.mcp_servers.length && <li className="muted">none</li>}
           </ul>
           <h3>Tools</h3>
           <ul className="plain">
-            {data.tools.map((m, i) => <li key={i} data-testid="dependency-tool">{m.name}</li>)}
+            {data.tools.map((m, i) => <li key={i} data-testid="dependency-tool">{clean(m.name)}</li>)}
             {!data.tools.length && <li className="muted">none recorded as dependencies</li>}
           </ul>
         </div>
@@ -106,7 +106,7 @@ function Governance({ gov }) {
       </dl>
       <h3>{gov.bundle_id ? 'Policies attached to this bundle' : 'Policies the bundle will carry'}</h3>
       <ul className="plain" data-testid={gov.bundle_id ? 'policies-attached' : 'policies-expected'}>
-        {(gov.policies || []).map((p, i) => <li key={i} data-testid="policy-name">{p.name}</li>)}
+        {(gov.policies || []).map((p, i) => <li key={i} data-testid="policy-name">{clean(p.name)}</li>)}
       </ul>
     </Panel>
   )
@@ -114,9 +114,9 @@ function Governance({ gov }) {
 
 function approveError(err) {
   if (err.status === 401) return 'Not signed in: sign in to Domino to approve this agent.'
-  if (err.status === 403) return `Refused: the user who registered this agent cannot approve it. ${err.message || ''}`
-  if (err.status === 409) return `Not awaiting approval, or it has no registrant on record. ${err.message || ''}`
-  return `Error ${err.status || ''}: ${err.message}`
+  if (err.status === 403) return clean(err.message) || 'Refused: the user who registered this agent cannot approve it.'
+  if (err.status === 409) return clean(err.message) || 'Not awaiting approval, or it has no registrant on record.'
+  return `Error ${err.status || ''}: ${clean(err.message)}`
 }
 
 function Approvals({ id, gov, onChanged }) {
@@ -132,14 +132,14 @@ function Approvals({ id, gov, onChanged }) {
     } catch (e) { setErr(e) } finally { setBusy(false) }
   }
   return (
-    <Panel title="Approvals" testid="approvals-panel"
+    <Panel title="Approvals" testid="approvals-panel" className="wide"
            aside={<button className="btn primary" onClick={approve} disabled={busy}>Approve</button>}>
       {err && <div className="alert error" role="alert" data-testid="approve-error">{approveError(err)}</div>}
       {ok && <div className="alert ok" role="status" data-testid="approve-success">{ok}</div>}
       {gov && gov.approvals.length ? (
         <table className="table compact"><thead><tr><th>Approver</th><th>Decision</th><th>When</th><th>Expires</th></tr></thead>
           <tbody>{gov.approvals.map((a) => (
-            <tr key={a.id}><td>{a.approver}</td><td>{a.decision}</td><td>{fmtTs(a.created_at)}</td><td>{fmtTs(a.expires_at)}</td></tr>
+            <tr key={a.id}><td>{clean(a.approver)}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
           ))}</tbody></table>
       ) : <p className="muted">No approvals recorded.</p>}
     </Panel>
@@ -197,13 +197,13 @@ function AgentView({ id }) {
   const a = agent.data
   return (
     <div>
-      <p><Link to="/">Fleet</Link> / {a.name}</p>
+      <p><Link to="/">Fleet</Link> / {clean(a.name)}</p>
       <div className="page-head">
-        <h1>{a.name}</h1>
+        <h1>{clean(a.name)}</h1>
         {/* SLOT: "Generate evidence pack" button (added by a later task) */}
         <div id="evidence-pack-slot" data-slot="evidence-pack" />
       </div>
-      <p className="muted"><span className="chip">{a.source_platform}</span> owner {a.owner || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
+      <p className="muted"><span className="chip">{a.source_platform}</span> owner {clean(a.owner) || '-'} · <StatusPill status={a.status} testid="agent-status" /> · last seen {fmtTs(a.last_seen)}</p>
       <div className="grid">
         <TierCard agent={a} />
         <Identity agent={a} />

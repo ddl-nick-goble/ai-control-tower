@@ -30,21 +30,22 @@ export default function Run() {
   const { runId } = useParams()
   const tl = useAsync(() => api.timeline(runId), [runId])
   const agentId = tl.data?.agent_id
-  const fnd = useAsync(() => (agentId ? api.findings(agentId) : Promise.resolve([])), [agentId])
+  const fnd = useAsync(() => (agentId ? api.findings(agentId).then((items) => ({ agentId, items })) : Promise.resolve({ agentId: null, items: [] })), [agentId])
+  const findingsPending = tl.loading || !tl.data || (!fnd.error && (fnd.loading || fnd.data?.agentId !== (agentId ?? null)))
   const findingsFailed = !!fnd.error
 
   const violations = React.useMemo(() => {
     const m = new Map()
-    for (const f of fnd.data || []) {
+    for (const f of fnd.data?.items || []) {
       if (f.run_id !== runId || f.status !== 'open') continue
       for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest' })
-      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit })
+      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit, observed_value: f.observed_value })
     }
     return m
   }, [fnd.data, runId])
 
   if (tl.error) return <ErrorBox error={tl.error} />
-  if (tl.loading || fnd.loading) return <Loading what="timeline" />
+  if (findingsPending) return <Loading what="timeline" />
   const events = tl.data.events
 
   return (
@@ -63,7 +64,7 @@ export default function Run() {
             <li key={`${ev.span_id || ev.kind}-${i}`} className={`tl-event kind-${ev.kind}${isV ? ' violation' : ''}`}
                 data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
                 data-violation={isV ? 'true' : 'false'}
-                data-violation-reason={isV ? (v.reason || 'tool_not_in_manifest') : undefined}>
+                data-violation-reason={isV ? clean(v.reason || 'tool_not_in_manifest') : undefined}>
               <div className="tl-head">
                 <span className="tl-ts">{fmtTs(ev.ts)}</span>
                 <span className="chip">{ev.kind}</span>
@@ -76,7 +77,7 @@ export default function Run() {
                 <pre data-testid="timeline-event-args">{cleanText(ev.args_redacted, 2000)}</pre>
               )}
               {isV && v.reason === 'value_limit_exceeded' && (
-                <div className="tl-note">Observed {v.observed_value}, limit {v.limit}</div>
+                <div className="tl-note">Observed {clean(v.observed_value)}, limit {clean(v.limit)}</div>
               )}
               {isV && v.note && <div className="tl-note">{clean(v.note)}</div>}
               {(ev.kind === 'input' || ev.kind === 'output') && content(ev) && (
