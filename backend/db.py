@@ -228,7 +228,9 @@ def _ensure_findings_index() -> None:
 def init_db() -> None:
     try:
         metadata.create_all(engine)
-    except Exception:
+    except Exception as e:
+        if "index" not in str(e).lower():
+            raise
         log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
     _migrate()
     _ensure_findings_index()
