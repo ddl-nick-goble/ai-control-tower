@@ -1,41 +1,30 @@
 # ACT build status
 
-Updated: 2026-11-09 18:25 (workspace). Integration branch: `main`. Build spend about $56 of $1,900.
+Updated: 2026-11-10. Integration branch: `main` @ 3570c5e. Build spend about $82 of $1,900.
 
-## Resume checklist (new session)
-1. `bash build/qa/preflight.sh`. If Playwright or Node is missing after a workspace restart, reinstall (see plan.md "Environment facts"):
-   - `pip install playwright pytest-playwright && pip install "packaging==23.2"`
-   - `sudo env "PATH=$PATH" PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright python3 -m playwright install --with-deps chromium && sudo chmod -R a+rX /opt/ms-playwright`
-   - Node 22: `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs`
-2. Read build/HANDOFF.md, build/plan.md (task table, design decisions, deferred items) and this file.
-3. `git worktree list`, `git branch -r`. Resume the task under "In progress".
+## BUILD COMPLETE
 
-## Merged to main
-T-1, T-2, T-3, T-4, T-5, T-5b (ingest fix), T-6, T-7, T-7L (classifier v1/v2 + endpoint), T-7L2 (input validation, champion v6), T-8, T-9, T-10, T-11, T-12 (b8aefb6), T-14 (a40b9e5), T-13 (9b28369). ALL TASKS MERGED.
-Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (live-only).
+Every task is merged to `main`: T-1 to T-13, plus T-5b, T-7L, T-7L2 and T-14. No task is in progress and only the main worktree remains. The task/* branches are kept on the remote for history.
 
-## In progress
-- **T-12** merged (b8aefb6). Post-merge on main: 424 backend passed, 33/33 e2e passed (QA dir wave6-main). Wave 6 complete.
-- **T-14** merged (a40b9e5): mock LLM provider (ACT_LLM_PROVIDER), recon-agent hosted locally (ACT_DOMINO_LOCAL_AGENTS), in-process validation, docs/INTEGRATION.md. Post-merge on main: 457 passed, 3 skipped.
+Final results on `main`:
+- 478 backend tests passed. 3 were skipped because they need live credentials or services: BREAK_CLASSIFIER_ACCESS_KEY, ACT_LIVE_URL and ACT_GOVERNANCE_LIVE.
+- 41 of 41 browser tests passed.
 
-## Next
-- **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
-- **T-13** merged (9b28369). FINAL on main: 478 backend passed (3 live-only skips), 41/41 e2e passed. qa-summary.md written to /mnt/data/ai-control-tower/qa/qa-summary.md. BUILD COMPLETE; the remaining items are live/manual (see 'Waiting on Nick').
-  - Seed demo: intake, the weekend-drift run, and POST /api/agents/{id}/governance for each agent before any approval.
-  - Set ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost so the fixture card server works.
-  - Deferred polish to apply, from plan.md: evidence-pack heading hierarchy, ARN wrapping, the fixtures/README line 8 wording, and the app.sh build step for a published App.
-- After T-13: full suites (test-author + ui-tester) on main, then write qa-summary.md to /mnt/data/ai-control-tower/qa/ (pass/fail per AC with screenshot paths).
+QA summary with pass or fail per AC: /mnt/data/ai-control-tower/qa/qa-summary.md
+Demo walk (9 of 9 steps OK): /mnt/data/ai-control-tower/qa/T-13-demo/
 
-## Waiting on Nick
-1. LLM Gateway consent: open https://apps.se-demo.domino.tech/apps/llmgateway/ once and accept. Then set the Project env var `LLM_GATEWAY_URL=https://apps.se-demo.domino.tech/apps/llmgateway`. This blocks the live recon-agent, the live haiku explanations, and the T-11 live validation job.
-2. Service account to publish recon-agent (e.g. `svc-act-recon`, listed in ACT_SERVICE_ACCOUNTS), or accept recon-agent shown as bound to the publisher with "no distinct identity".
-3. A second Domino user to approve recon-agent (AC-9 demo). Whoever runs intake cannot approve.
-4. Demo wording: "break_classifier v2" should become "the champion version" (now v6, because of the int64 schema fix).
-5. Optional: update the endpoint description in Domino, which still says "registry v2".
+## Waiting on Nick (live and manual steps; not build work)
+1. LLM Gateway consent: open https://apps.se-demo.domino.tech/apps/llmgateway/ once and accept. Then set the Project env vars `LLM_GATEWAY_URL=https://apps.se-demo.domino.tech/apps/llmgateway` and `ACT_LLM_PROVIDER=gateway`.
+2. Deploy recon-agent as a Domino Agent and set RECON_AGENT_ID to its app id. Then remove its entry from config/local_agents.json and the local act:domino row.
+3. Provide a service account for recon-agent (ACT_SERVICE_ACCOUNTS) and a real second Domino user to approve it.
+4. Rerun `python jobs/validate.py` as a Domino Job with the gateway judge, then read the five judged samples in MLflow.
+5. Sign off on the evidence pack content and arrange the MRM colleague review.
+6. Optional: update the endpoint description, which still says "registry v2" (the champion is v6). Delete /mnt/data/ai-control-tower/act/act.db.stale-202611100020 if it is not needed.
 
-## Live items pending after consent
-- Deploy recon-agent as a Domino Agent (domino-deploy) with RECON_AGENT_ID equal to its Domino app id. Env: ACT_TRACES_URL, BREAK_CLASSIFIER_ENDPOINT_URL, BREAK_CLASSIFIER_ACCESS_KEY (Project var), LLM_GATEWAY_URL.
-- Run the validation job: `python jobs/validate.py` as a Domino Job (small tier). Nick reads the five judged samples in MLflow.
+docs/INTEGRATION.md maps each mock or local switch to its go-live step.
 
-## Note
-- The shared dataset DB /mnt/data/ai-control-tower/act/act.db was accidentally written by a T-13 debug run. It was moved aside to act.db.stale-202611100020, so the app cold-starts clean. Delete it once you have confirmed it is not needed.
+## If the workspace restarts
+Playwright and Node were installed into the running workspace, not into the environment image. To reinstall them:
+- `pip install playwright pytest-playwright && pip install "packaging==23.2"`
+- `sudo env "PATH=$PATH" PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright python3 -m playwright install --with-deps chromium && sudo chmod -R a+rX /opt/ms-playwright`
+- `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs`
