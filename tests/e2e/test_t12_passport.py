@@ -6,7 +6,7 @@ data-testid contract
   Fleet:     register-external-button, fleet-row (data-agent-id), fleet-source, fleet-status, tier-badge (data-tier)
   Register:  card-url (label "Agent card URL"), criterion-<name> for decision_impact, financial_exposure,
              customer_impact, autonomy, data_sensitivity, reversibility, regulatory_exposure (values 1-5),
-             data-scopes (comma-separated), button "Register", register-error
+             data-scopes (chip input: Enter adds), criterion-<name> is a radiogroup of radios "1".."5", button "Register agent", register-error
   Passport:  passport, passport-identity, passport-skill (one per card skill id), passport-scope (one per scope),
              passport-expiry, passport-signature, passport-status, tier-badge (data-tier)
 """
@@ -37,13 +37,11 @@ def _register(page, url):
     expect(page).to_have_url(re.compile(r"#/register"))
     page.get_by_label("Agent card URL").fill(url)
     for name, v in CRITERIA.items():
-        ctl = page.get_by_test_id(f"criterion-{name}")
-        if ctl.evaluate("e => e.tagName") == "SELECT":
-            ctl.select_option(str(v))
-        else:
-            ctl.fill(str(v))
-    page.get_by_test_id("data-scopes").fill(", ".join(SCOPES))
-    page.get_by_role("button", name="Register").click()
+        page.get_by_test_id(f"criterion-{name}").get_by_role("radio", name=str(v), exact=True).click()
+    for sc in SCOPES:
+        page.get_by_test_id("data-scopes").fill(sc)
+        page.get_by_test_id("data-scopes").press("Enter")
+    page.get_by_role("button", name="Register agent", exact=True).click()
 
 
 def _check_passport(page, signature):
@@ -164,7 +162,7 @@ def test_ac11_signature_attributes(page, authed, shot, card_urls):
 
 def test_ac11_errors_visible(page, authed, shot):
     page.goto("./#/register")
-    submit = page.get_by_role("button", name="Register")
+    submit = page.get_by_role("button", name="Register agent", exact=True)
     url = page.get_by_label("Agent card URL")
     url.fill("")
     if submit.is_enabled():
@@ -174,13 +172,10 @@ def test_ac11_errors_visible(page, authed, shot):
         expect(submit).to_be_disabled()
     url.fill("http://169.254.169.254/latest")
     for name, v in CRITERIA.items():
-        ctl = page.get_by_test_id(f"criterion-{name}")
-        if ctl.evaluate("e => e.tagName") == "SELECT":
-            ctl.select_option(str(v))
-        else:
-            ctl.fill(str(v))
+        page.get_by_test_id(f"criterion-{name}").get_by_role("radio", name=str(v), exact=True).click()
     page.get_by_test_id("data-scopes").fill("accounts:read")
-    page.get_by_role("button", name="Register").click()
+    page.get_by_test_id("data-scopes").press("Enter")
+    page.get_by_role("button", name="Register agent", exact=True).click()
     err = page.get_by_test_id("register-error")
     expect(err).to_be_visible(timeout=15000)
     expect(err).to_contain_text(re.compile(r"not allowed", re.I))
