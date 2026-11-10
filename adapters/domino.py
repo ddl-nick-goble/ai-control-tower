@@ -9,10 +9,13 @@ Endpoints used (all Public API, bearer auth):
 There is no separate /api/agents route in this deployment (404); agents are Apps with
 configurationType AISYSTEM. Sub-calls degrade to [] / {} with a log line; the agent listing raises so intake reports it.
 """
+import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
@@ -179,8 +182,54 @@ class DominoAdapter(AdapterBase):
                    "configuration_type": it.get("configurationType")},
             raw=it)
 
+    # -- locally hosted agents (stand-in until the agent is deployed as a Domino Agent) --------------------
+    _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-((?:[^{}]|\{[^{}]*\})*)\}")
+
+    @classmethod
+    def _expand(cls, v):
+        if isinstance(v, str):
+            prev = None
+            while prev != v:  # innermost-first, nested defaults allowed
+                prev, v = v, cls._VAR.sub(lambda m: os.environ.get(m.group(1)) or m.group(2), v)
+            return v
+        if isinstance(v, list):
+            return [cls._expand(x) for x in v]
+        if isinstance(v, dict):
+            return {k: cls._expand(x) for k, x in v.items()}
+        return v
+
+    def _local_agents(self):
+        path = (os.environ.get("ACT_DOMINO_LOCAL_AGENTS") or "").strip()
+        if not path:
+            return []
+        try:
+            entries = self._expand(json.loads(Path(path).read_text())).get("agents", [])
+            if not isinstance(entries, list) or not all(isinstance(e, dict) and e.get("native_id") and e.get("name")
+                                                        for e in entries):
+                raise ValueError("'agents' must be a list of entries with native_id and name")
+        except (OSError, ValueError, AttributeError) as e:
+            log.warning("ACT_DOMINO_LOCAL_AGENTS=%s ignored, no local agents added: %s", path, e)
+            return []
+        out = []
+        for e in entries:
+            principal = e.get("principal") or e.get("owner")
+            allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
+            ident = (self._identity(principal) if principal in allow else
+                     {"type": "domino_workspace_user", "principal": principal or "unknown", "distinct": False})
+            out.append(SourceAgent(
+                platform="domino", native_id=e["native_id"], name=e["name"], description=e.get("description", ""),
+                version=str(e.get("version", "1")), owner=e.get("owner"), status=e.get("status", ""),
+                provider="Domino", tools=list(e.get("tools", [])), data_scopes=list(e.get("data_scopes", [])),
+                systems=list(e.get("systems", [])), identity=ident,
+                dependencies=e.get("dependencies") or {},
+                extra={"hosting": "workspace (not deployed)", "local_agents_file": os.path.basename(path)},
+                raw=e))
+        return out
+
     def list_agents(self):
-        return [self._to_agent(it) for it in self._fetch_apps()]  # listing errors propagate to intake
+        agents = [self._to_agent(it) for it in self._fetch_apps()]  # listing errors propagate to intake
+        have = {a.native_id for a in agents}
+        return agents + [a for a in self._local_agents() if a.native_id not in have]
 
     def get_agent(self, native_id):
         it = self._call("GET", f"/api/apps/v1/apps/{native_id}")

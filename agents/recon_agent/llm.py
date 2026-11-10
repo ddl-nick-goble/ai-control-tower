@@ -5,9 +5,13 @@ https://<apps host>/apps/<vanity>); nothing is hardcoded and no provider key is 
 Model names are gateway aliases (for example "sonnet", "haiku"). The in-run access token is
 read fresh from $DOMINO_API_PROXY/access-token (default http://localhost:8899) on every call.
 """
+import logging
 import os
 
 import requests
+
+log = logging.getLogger(__name__)
+_warned = False
 
 DEFAULT_PROXY = "http://localhost:8899"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -15,6 +19,15 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 class GatewayError(RuntimeError):
     pass
+
+
+def warn_if_mock() -> None:
+    """Log once per process that LLM calls are answered by the offline mock, not a model."""
+    global _warned
+    if not _warned and (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
+        _warned = True
+        log.warning("ACT_LLM_PROVIDER=mock: LLM calls are answered by the offline mock-llm stand-in, "
+                    "NOT a model. Unset it and set LLM_GATEWAY_URL to use the LLM Gateway.")
 
 
 def _token() -> str:
@@ -69,6 +82,11 @@ def create_message(model_alias, messages, tools=None, system=None, max_tokens=10
     Returns {"stop_reason", "content": [{"type": "text"|"tool_use", ...}], "model", "usage", "id"}.
     "model" is the model id the gateway reports having served (alias resolved upstream).
     """
+    if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
+        warn_if_mock()
+        from act_llm_mock import create_message as _mock  # deterministic offline stand-in, model "mock-llm"
+        return _mock(model_alias, messages, tools=tools, system=system, max_tokens=max_tokens, tags=tags,
+                     timeout=timeout, **extra)
     body = {"model": model_alias, "messages": messages, "max_tokens": max_tokens}
     if tools:
         body["tools"] = tools
