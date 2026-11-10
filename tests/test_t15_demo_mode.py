@@ -393,3 +393,88 @@ def test_normal_approve_ignores_client_supplied_audit_fields(off):
     assert "simulated" not in d and "requested_by" not in d and "requested_by_username" not in d
     assert "evil" not in json.dumps(d)
     assert rows[0].actor_user_id == "approver1"
+
+
+# ---- round 4: DB ownership guard ----
+def _marker_exists():
+    from sqlalchemy import text
+    from backend import db
+    with db.engine.connect() as cx:
+        return cx.execute(text("SELECT 1 FROM sqlite_master WHERE name='act_demo_marker'")).first() is not None
+
+
+def _make_empty_non_demo_db(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path, False)
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app):
+        assert _counts()["agents"] == 0
+        assert not _marker_exists()
+    _purge()
+
+
+def test_r4_empty_existing_non_demo_db_not_seeded_and_reset_409(tmp_path, monkeypatch):
+    _make_empty_non_demo_db(monkeypatch, tmp_path)
+    assert (tmp_path / "demo-test.db").exists()
+    monkeypatch.setenv("ACT_DEMO_MODE", "1")
+    monkeypatch.delenv("ACT_DEMO_ALLOW_DB", raising=False)
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        h = c.get("/api/health").json()
+        assert h["demo_mode"] is True
+        assert h["demo_guard"] and isinstance(h["demo_guard"], str)
+        assert c.get("/api/agents").json() == []
+        r = c.post("/api/demo/reset", headers=HDR)
+        assert r.status_code == 409, r.text
+        assert _counts()["agents"] == 0
+        assert not _marker_exists()
+    _purge()
+
+
+def test_r4_allow_db_seeds_empty_existing_db_and_reset_works(tmp_path, monkeypatch):
+    _make_empty_non_demo_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ACT_DEMO_MODE", "1")
+    monkeypatch.setenv("ACT_DEMO_ALLOW_DB", "1")
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").json()["demo_guard"] is None
+        assert len(c.get("/api/agents").json()) == 12
+        r = c.post("/api/demo/reset", headers=HDR)
+        assert r.status_code == 200, r.text
+        assert len(c.get("/api/agents").json()) == 12
+    _purge()
+
+
+def test_r4_nonexistent_db_path_seeded_and_reset_works(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, True)
+    monkeypatch.delenv("ACT_DEMO_ALLOW_DB", raising=False)
+    assert not (tmp_path / "demo-test.db").exists()
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").json()["demo_guard"] is None
+        assert len(c.get("/api/agents").json()) == 12
+        assert c.post("/api/demo/reset", headers=HDR).status_code == 200
+        assert len(c.get("/api/agents").json()) == 12
+    _purge()
+
+
+def test_r4_earlier_demo_db_reused_on_restart_and_reset_works(tmp_path, monkeypatch):
+    _setup(monkeypatch, tmp_path, True)
+    monkeypatch.delenv("ACT_DEMO_ALLOW_DB", raising=False)
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app):
+        first = _counts()
+    _purge()
+    assert (tmp_path / "demo-test.db").exists()  # restart sees an existing file
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").json()["demo_guard"] is None
+        assert _counts() == first
+        assert len(c.get("/api/agents").json()) == 12
+        assert c.post("/api/demo/reset", headers=HDR).status_code == 200
+        assert len(c.get("/api/agents").json()) == 12
+    _purge()
+
+
+def test_r4_healthy_demo_db_has_null_demo_guard(demo):
+    h = demo.get("/api/health").json()
+    assert h["demo_mode"] is True and h["demo_guard"] is None
