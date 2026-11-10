@@ -4,6 +4,10 @@
 # environment with node, for a published App). Without both, only the API is served and a warning is printed.
 set -e
 cd "$(dirname "$0")"
+# --demo (or ACT_DEMO_MODE=1): one-switch demo mode, see docs/DEMO.md
+for arg in "$@"; do
+  [ "$arg" = "--demo" ] && export ACT_DEMO_MODE=1
+done
 if [ -f package.json ] && command -v npm >/dev/null 2>&1; then
   need=0
   if [ ! -f frontend/dist/index.html ] || [ "${ACT_REBUILD:-0}" = "1" ]; then

@@ -1,11 +1,11 @@
 import React from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, demoApi, standIn } from '../api'
 import { clean, fmtStatus, fmtTs } from '../format'
 import Passport from '../components/Passport'
 import Markdown from '../components/Markdown'
 import EvidencePack from '../components/EvidencePack'
-import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync } from '../components/ui'
+import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync, useHealth } from '../components/ui'
 
 const CRITERIA = [
   ['decision_impact', 'Decision impact'], ['financial_exposure', 'Financial exposure'],
@@ -46,6 +46,7 @@ export function Identity({ agent }) {
       {noDistinct && (
         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
       )}
+      {id.simulated && <p className="muted" data-testid="identity-simulated"><span className="chip">{id.label || 'simulated service account (demo)'}</span></p>}
       <dl className="kv">
         <dt>Type</dt><dd>{id.type || '-'}</dd>
         <dt>Issuer</dt><dd>{id.issuer || '-'}</dd>
@@ -79,6 +80,7 @@ function Manifest({ agent }) {
 
 function Dependencies({ id }) {
   const { data, error, loading } = useAsync(() => api.dependencies(id), [id])
+  const classifier = standIn(useHealth(), 'classifier')
   return (
     <Panel title="Dependencies">
       {error && <ErrorBox error={error} />}
@@ -88,7 +90,7 @@ function Dependencies({ id }) {
           <h3>Models</h3>
           <ul className="plain">
             {data.models.map((m, i) => (
-              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span></li>
+              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="chip" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
             ))}
             {!data.models.length && <li className="muted">none</li>}
           </ul>
@@ -137,8 +139,10 @@ function Validation({ id }) {
 }
 
 function Governance({ gov }) {
+  const sim = standIn(useHealth(), 'governance')
   return (
     <Panel title="Governance bundle">
+      {sim && <p className="muted" data-testid="demo-governance-label"><span className="chip">{sim.label}</span></p>}
       <dl className="kv">
         <dt>Bundle</dt><dd data-testid="bundle-id">{gov.bundle_id || 'not yet created'}</dd>
         <dt>Stage</dt><dd>{gov.stage || '-'}</dd>
@@ -159,26 +163,30 @@ function approveError(err) {
 }
 
 function Approvals({ id, gov, onChanged }) {
+  const demo = useHealth()
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState(null)
   const [ok, setOk] = React.useState(null)
-  const approve = async () => {
+  const approve = async (asDemo) => {
     setBusy(true); setErr(null); setOk(null)
     try {
-      const r = await api.approve(id)
-      setOk(`Approved. Expires ${fmtTs(r.expires_at)}.`)
+      const r = await (asDemo === true ? demoApi.approve(id) : api.approve(id))
+      setOk(`Approved${asDemo === true ? ' by the simulated demo approver' : ''}. Expires ${fmtTs(r.expires_at)}.`)
       onChanged()
     } catch (e) { setErr(e) } finally { setBusy(false) }
   }
   return (
     <Panel title="Approvals" testid="approvals-panel" className="wide"
-           aside={<button className="btn primary" onClick={approve} disabled={busy}>Approve</button>}>
+           aside={<span>
+             <button className="btn primary" onClick={() => approve(false)} disabled={busy}>Approve</button>
+             {demo && demo.demo_mode && <> <button className="btn" onClick={() => approve(true)} disabled={busy}>Approve as demo approver</button></>}
+           </span>}>
       {err && <div className="alert error" role="alert" data-testid="approve-error">{approveError(err)}</div>}
       {ok && <div className="alert ok" role="status" data-testid="approve-success">{ok}</div>}
       {gov && gov.approvals.length ? (
         <table className="table compact"><thead><tr><th>Approver</th><th>Decision</th><th>When</th><th>Expires</th></tr></thead>
           <tbody>{gov.approvals.map((a) => (
-            <tr key={a.id}><td>{clean(a.approver)}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
+            <tr key={a.id}><td>{clean(a.approver)}{/simulated/i.test(a.approver || '') && <> <span className="chip">simulated</span></>}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
           ))}</tbody></table>
       ) : <p className="muted">No approvals recorded.</p>}
     </Panel>
@@ -215,14 +223,24 @@ function Findings({ findings }) {
   )
 }
 
-function Runs({ id }) {
+function Runs({ id, agentName }) {
+  const demo = useHealth()
+  const [n, setN] = React.useState(0)
+  const [busy, setBusy] = React.useState(false)
+  const [runErr, setRunErr] = React.useState(null)
+  const runDemo = async () => {
+    setBusy(true); setRunErr(null)
+    try { await demoApi.run(id); setN((x) => x + 1) } catch (e) { setRunErr(e.message) } finally { setBusy(false) }
+  }
   const runs = useAsync(() => fetch(`api/agents/${encodeURIComponent(id)}/runs`).then((r) => {
     if (!r.ok) throw new Error(`${r.status}: could not load runs`)
     return r.json()
-  }), [id])
+  }), [id, n])
   const list = runs.data || []
   return (
-    <Panel title="Runs">
+    <Panel title="Runs" aside={demo && demo.demo_mode && agentName === 'recon-agent'
+      ? <button className="btn" onClick={runDemo} disabled={busy}>Run recon agent</button> : null}>
+      {runErr && <div className="alert error" role="alert">{runErr}</div>}
       {runs.error && <ErrorBox error={runs.error} />}
       {runs.loading && !runs.data && <Loading what="runs" />}
       {runs.data && !list.length && <p className="muted">No runs recorded.</p>}
@@ -270,7 +288,7 @@ function AgentView({ id }) {
       </div>
       {fnd.error ? <ErrorBox error={fnd.error} /> : <Findings findings={fnd.data || []} />}
       <div id="evidence-pack-slot" data-slot="evidence-pack"><EvidencePack id={id} /></div>
-      <Runs id={id} />
+      <Runs id={id} agentName={a.name} />
     </div>
   )
 }

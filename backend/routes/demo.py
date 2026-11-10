@@ -1,0 +1,57 @@
+"""Demo-mode routes (/api/demo/*). Mounted by backend/main.py only when ACT_DEMO_MODE is on.
+
+The simulated approver goes through the same approval code as a real approver, so builder/approver
+separation stays real; it is only the identity that is supplied by the app instead of a second Domino user.
+"""
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy import select
+
+from .. import db, demo
+from ..domino_identity import User, require_user
+from .approvals import approve_as
+
+router = APIRouter()
+log = logging.getLogger(__name__)
+
+
+def _agent(agent_id):
+    with db.engine.connect() as cx:
+        a = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
+    if a is None:
+        raise HTTPException(404, "agent not found")
+    return a
+
+
+@router.get("/api/demo/state")
+def state():
+    return {"demo_mode": True, "stand_ins": demo.stand_ins(), "banner": demo.BANNER_TEXT}
+
+
+@router.post("/api/demo/approve/{agent_id}")
+def demo_approve(agent_id: str, _user: User = Depends(require_user)):
+    _agent(agent_id)
+    r = approve_as(agent_id, User(user_id=demo.APPROVER_ID, username=demo.APPROVER_NAME))
+    return {**r, "simulated": True, "note": "approved by the simulated demo approver, not a second Domino user"}
+
+
+@router.post("/api/demo/run/{agent_id}")
+def demo_run(agent_id: str, _user: User = Depends(require_user)):
+    a = _agent(agent_id)
+    if a.name != "recon-agent":
+        raise HTTPException(409, "only recon-agent can be run in demo mode")
+    from jobs import seed_demo
+    try:
+        run_id = seed_demo.run_recon_once(agent_id)
+    except Exception as e:  # noqa: BLE001
+        log.exception("demo run failed")
+        raise HTTPException(500, f"demo run failed: {type(e).__name__}")
+    return {"run_id": run_id, "agent_id": agent_id, "simulated": True}
+
+
+@router.post("/api/demo/reset")
+def demo_reset(_user: User = Depends(require_user)):
+    summary = demo.reset()
+    return {"status": "reset", "agents": summary.get("agents")}

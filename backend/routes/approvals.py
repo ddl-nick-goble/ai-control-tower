@@ -48,6 +48,11 @@ def _mirror_bg(agent_id, ap_id, username):
 @router.post("/api/agents/{agent_id}/approve")
 def approve(agent_id: str, body: dict | None = Body(None), user: User = Depends(require_user)):
     run_id = (body or {}).get("run_id") if isinstance(body, dict) else None
+    return approve_as(agent_id, user, run_id)
+
+
+def approve_as(agent_id: str, user: User, run_id=None):
+    """Approve with the real separation-of-duties checks. The demo route calls this with the simulated approver."""
     now = datetime.now(timezone.utc)
     actor = (user.user_id, user.username)
     err = None

@@ -139,12 +139,27 @@ def _from_registry(payload):
     return str(out["class"] if isinstance(out, dict) else out)
 
 
+def _demo_mode():
+    return (os.environ.get("ACT_DEMO_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _demo_classify(payload):
+    """Deterministic local stand-in for the break_classifier endpoint (demo mode only)."""
+    if payload.get("missing_side"):
+        return "missing_entry"
+    if payload.get("days_diff") and not payload.get("amount_diff"):
+        return "timing"
+    return "amount_mismatch"
+
+
 def classify_break(br: dict, notes=None):
     """Return (class, source). Order: endpoint (URL+key) -> BREAK_CLASSIFIER_MODEL_PATH -> MLflow registry
     models:/break_classifier@champion -> ("unclassified", "unavailable"). Never raises: a classifier
     failure must not hide the break; reasons are appended to `notes`."""
     payload = _payload(br)
     notes = notes if notes is not None else []
+    if _demo_mode():  # no endpoint, no registry
+        return _demo_classify(payload), "demo"
     url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
     if url:
         try:
