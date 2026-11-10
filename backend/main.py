@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, llm, routes
@@ -59,8 +59,18 @@ def _unmatched(rest: str):
     raise HTTPException(status_code=404, detail="Not found")
 
 
+_MISSING_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Frontend build missing</title></head>
+<body style="font-family:sans-serif;max-width:40rem;margin:3rem auto"><h1>Frontend build is missing</h1>
+<p>The API is running (<code>api/health</code>), but <code>frontend/dist</code> was not found.</p>
+<p>Build it with <code>npm install &amp;&amp; npm run build</code>, or run <code>ACT_REBUILD=1 bash app.sh</code>
+in an environment with Node, then commit <code>frontend/dist</code>.</p></body></html>"""
+
 if DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(DIST), html=True), name="frontend")
+else:
+    @app.get("/", include_in_schema=False)
+    def _frontend_missing():
+        return HTMLResponse(_MISSING_HTML, status_code=503)
 
 
 # Outermost middleware: strip the Domino proxy prefix before routing and the write guard.

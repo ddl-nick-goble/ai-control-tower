@@ -12,8 +12,9 @@ if [ -f package.json ] && command -v npm >/dev/null 2>&1; then
     need=1
   fi
   if [ "$need" = "1" ]; then
-    [ -d node_modules ] || npm install --no-audit --no-fund
-    npm run build
+    if ! { { [ -d node_modules ] || npm install --no-audit --no-fund; } && npm run build; }; then
+      echo "app.sh: frontend build failed: serving the committed frontend/dist if present" >&2
+    fi
   fi
 fi
 if ! command -v npm >/dev/null 2>&1 && [ ! -f frontend/dist/index.html ]; then

@@ -52,3 +52,7 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright QA_RUN_DIR=<dir> python3 -m pytest t
 ```
 
 The browser suite serves the app on port 9888 and needs Playwright browsers.
+
+## App Preview and published Apps
+
+App Preview and published Apps run `app.sh` in an environment without Node, so they serve the committed `frontend/dist`. After frontend changes run `npm run build` and commit `frontend/dist` (after the source changes).
