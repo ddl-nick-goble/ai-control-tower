@@ -20,7 +20,7 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
 
 ## Next
 - **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
-- **T-13** merged (9b28369). Final full suites on main running (backend + e2e into /mnt/data/ai-control-tower/qa/final/); next: write /mnt/data/ai-control-tower/qa/qa-summary.md.
+- **T-13** merged (9b28369). FINAL on main: 478 backend passed (3 live-only skips), 41/41 e2e passed. qa-summary.md written to /mnt/data/ai-control-tower/qa/qa-summary.md. BUILD COMPLETE; the remaining items are live/manual (see 'Waiting on Nick').
   - Seed demo: intake, the weekend-drift run, and POST /api/agents/{id}/governance for each agent before any approval.
   - Set ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost so the fixture card server works.
   - Deferred polish to apply, from plan.md: evidence-pack heading hierarchy, ARN wrapping, the fixtures/README line 8 wording, and the app.sh build step for a published App.
