@@ -60,15 +60,38 @@ def apply_defaults() -> None:
         return
 
     def fill(k, v):
-        if not os.environ.get(k):
+        if k not in os.environ:
             os.environ[k] = v
             _applied.append(k)
     for k, v in _ENV_DEFAULTS.items():
         fill(k, v)
-    if not os.environ.get("ACT_DB"):
-        fill("ACT_DB", default_db_path())
-    if not os.environ.get("MLFLOW_TRACKING_URI"):  # keep tracking local: no outbound call
-        fill("MLFLOW_TRACKING_URI", f"file://{Path(os.environ['ACT_DB']).resolve().parent / 'mlruns'}")
+    fill("ACT_DB", default_db_path()) if "ACT_DB" not in os.environ else None
+    demo_dir = Path(os.environ["ACT_DB"]).expanduser().resolve().parent
+    if "MLFLOW_TRACKING_URI" not in os.environ:  # keep tracking local: no outbound call
+        fill("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
+    if "ACT_EVIDENCE_DIR" not in os.environ:  # demo packs never land beside real packs
+        fill("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
+
+
+def effective_llm_provider() -> str:
+    return "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"
+
+
+def live_switches() -> list:
+    out = []
+    if effective_llm_provider() != "mock":
+        out.append("ACT_LLM_PROVIDER=" + (os.environ.get("ACT_LLM_PROVIDER") or "gateway"))
+    uri = os.environ.get("MLFLOW_TRACKING_URI") or ""
+    if uri and not uri.startswith(("file:", "/")):
+        out.append("MLFLOW_TRACKING_URI (non-file)")
+    out += sorted(k for k, v in os.environ.items() if k.startswith("ACT_LIVE_") and v.strip())
+    return out
+
+
+def warn_live_switches() -> None:
+    sw = live_switches()
+    if enabled() and sw:
+        log.warning("demo mode is on but live switches are set (%s); those parts are NOT simulated", ", ".join(sw))
 
 
 def restore_defaults() -> None:
@@ -78,7 +101,12 @@ def restore_defaults() -> None:
 
 
 def stand_ins() -> list:
-    return [dict(s) for s in STAND_INS] if enabled() else []
+    if not enabled():
+        return []
+    out = [dict(s) for s in STAND_INS]
+    if effective_llm_provider() != "mock":
+        out[0]["label"] = "LLM via gateway (live; ACT_LLM_PROVIDER set explicitly)"
+    return out
 
 
 def service_account_identity() -> dict:
@@ -92,24 +120,70 @@ def _seed(**kw):
         return seed_demo.seed(governance=True, **kw)
 
 
+class DemoGuardError(Exception):
+    """Raised when demo seeding/reset is refused because the DB is not demo-owned."""
+
+
+SHARED_DB = Path("/mnt/data/ai-control-tower/act/act.db")
+
+
+def _marker_present(cx) -> bool:
+    from sqlalchemy import text
+    return cx.execute(text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='act_demo_marker'")).first() is not None \
+        and cx.execute(text("SELECT 1 FROM act_demo_marker")).first() is not None
+
+
+def _write_marker() -> None:
+    from sqlalchemy import text
+    from . import db
+    with db.engine.begin() as cx:
+        cx.execute(text("CREATE TABLE IF NOT EXISTS act_demo_marker (id INTEGER PRIMARY KEY, note TEXT)"))
+        cx.execute(text("INSERT OR REPLACE INTO act_demo_marker (id, note) VALUES (1, 'created by ACT demo mode')"))
+
+
+def _refuse(msg):
+    log.warning("demo mode: %s", msg)
+    raise DemoGuardError(msg)
+
+
+def _check_not_shared() -> None:
+    from . import db
+    try:
+        if Path(db.DB_PATH).expanduser().resolve() == SHARED_DB.resolve():
+            _refuse(f"refusing: ACT_DB resolves to the shared database {SHARED_DB}; demo mode only uses a demo-owned DB")
+    except OSError:
+        pass
+
+
 def ensure_seeded():
-    """Seed an empty DB to the demo state. Idempotent: a populated DB is left alone."""
+    """Seed an empty DB to the demo state. Idempotent: a populated demo DB is left alone.
+    Raises DemoGuardError for the shared DB or a non-demo DB that already has data."""
     from sqlalchemy import func, select
     from . import db
+    _check_not_shared()
     db.init_db()
     with db.engine.connect() as cx:
         n = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
+        marked = _marker_present(cx)
     if n:
+        if not marked:
+            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
         return None
     log.warning("demo mode: seeding an empty database (%s)", db.DB_PATH)
+    _write_marker()
     return _seed()
 
 
 def reset():
-    """Wipe the demo DB and reseed it to the initial demo state."""
+    """Wipe the demo DB and reseed it. Only a demo-owned DB (marker present) is ever wiped."""
     from . import db, demo_governance
+    _check_not_shared()
+    with db.engine.connect() as cx:
+        if not _marker_present(cx):
+            _refuse(f"refusing to reset {db.DB_PATH}: it is not a demo-owned database (no demo marker)")
     with demo_governance.lock:
         db.metadata.drop_all(db.engine)
         demo_governance.clear()
     db.init_db()
+    _write_marker()
     return _seed()

@@ -23,7 +23,11 @@ async def lifespan(_app):
     llm.warn_if_mock()
     db.init_db()
     if demo.enabled():
-        await run_in_threadpool(demo.ensure_seeded)
+        demo.warn_live_switches()
+        try:
+            await run_in_threadpool(demo.ensure_seeded)
+        except demo.DemoGuardError:
+            pass  # already logged; the app starts without seeding
     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
     try:
         yield
@@ -48,7 +52,7 @@ async def write_guard(request, call_next):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
-            "llm_provider": "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"}
+            "llm_provider": demo.effective_llm_provider()}
 
 
 for _m in pkgutil.iter_modules(routes.__path__):

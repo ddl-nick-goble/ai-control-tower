@@ -31,9 +31,10 @@ def state():
 
 
 @router.post("/api/demo/approve/{agent_id}")
-def demo_approve(agent_id: str, _user: User = Depends(require_user)):
+def demo_approve(agent_id: str, user: User = Depends(require_user)):
     _agent(agent_id)
-    r = approve_as(agent_id, User(user_id=demo.APPROVER_ID, username=demo.APPROVER_NAME))
+    r = approve_as(agent_id, User(user_id=demo.APPROVER_ID, username=demo.APPROVER_NAME),
+                   audit_extra={"simulated": True, "requested_by": user.user_id, "requested_by_username": user.username})
     return {**r, "simulated": True, "note": "approved by the simulated demo approver, not a second Domino user"}
 
 
@@ -53,5 +54,8 @@ def demo_run(agent_id: str, _user: User = Depends(require_user)):
 
 @router.post("/api/demo/reset")
 def demo_reset(_user: User = Depends(require_user)):
-    summary = demo.reset()
+    try:
+        summary = demo.reset()
+    except demo.DemoGuardError as e:
+        raise HTTPException(409, str(e))
     return {"status": "reset", "agents": summary.get("agents")}

@@ -37,11 +37,13 @@ def ensure_bundle(agent_id: str) -> str:
         a, deps = _agent(agent_id)
         if a is None:
             raise GovernanceError(f"unknown agent {agent_id}")
-        bid = a.bundle_id or "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
+        demo_bid = "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
+        replace = bool(a.bundle_id) and not str(a.bundle_id).startswith("demo-")  # never relabel a real bundle
+        bid = a.bundle_id if a.bundle_id and not replace else demo_bid
         want_model = a.source_platform == "domino" or any(d.kind == "model" for d in deps)
         names = [AGENTIC_NAME] + ([MODEL_NAME] if want_model else [])
         b = _entry(bid, f"ACT {agent_id}", names)
-        if not a.bundle_id:
+        if not a.bundle_id or replace:
             with db.engine.begin() as cx:
                 cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
                     bundle_id=bid, governance={"policies": names, "stage": b["stage"]}))
@@ -75,6 +77,8 @@ def mirror_approval(agent_id: str, approver: str) -> str:
         a, _ = _agent(agent_id)
         if a is None or not a.bundle_id:
             raise GovernanceError("no governance bundle for this agent yet; approval not mirrored")
-        get_bundle(a.bundle_id)
-        _bundles[a.bundle_id]["approvals"].append({"approver": approver, "simulated": True})
+        b = _bundles.get(a.bundle_id) or (get_bundle(a.bundle_id) and _bundles.get(a.bundle_id))
+        if not b:
+            raise GovernanceError(f"bundle {a.bundle_id} is not a simulated demo bundle; approval not mirrored")
+        b["approvals"].append({"approver": approver, "simulated": True})
         return "synced"
