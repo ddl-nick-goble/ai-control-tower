@@ -1,9 +1,9 @@
 """T-16: Domino workspace/App proxy prefix handling (P-1..P-4)."""
 import importlib
-import shutil
 import sys
 
 import pytest
+from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
 from conftest import ROOT
@@ -17,17 +17,13 @@ ASSET_JS = "console.log('t16-asset');"
 
 
 @pytest.fixture
-def dist():
-    """Ensure a built frontend exists (frontend/dist is a build artifact)."""
-    d = ROOT / "frontend" / "dist"
-    created = not d.exists()
-    if created:
-        (d / "assets").mkdir(parents=True)
-        (d / "index.html").write_text(INDEX_HTML)
-        (d / "assets" / "t16.js").write_text(ASSET_JS)
-    yield d
-    if created:
-        shutil.rmtree(d)
+def dist(tmp_path):
+    """Stub frontend build in a tmp dir; never touches the real frontend/dist."""
+    d = tmp_path / "dist"
+    (d / "assets").mkdir(parents=True)
+    (d / "index.html").write_text(INDEX_HTML)
+    (d / "assets" / "t16.js").write_text(ASSET_JS)
+    return d
 
 
 @pytest.fixture
@@ -37,6 +33,10 @@ def client(db_env, monkeypatch, dist):
     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
         del sys.modules[m]
     main = importlib.import_module("backend.main")
+    # Swap the app's static frontend mount for the tmp stub dist.
+    main.app.router.routes[:] = [r for r in main.app.router.routes
+                                 if getattr(r, "name", None) != "frontend"]
+    main.app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
     with TestClient(main.app) as c:
         yield c
 
@@ -167,3 +167,24 @@ def test_ac_p4_no_traversal_under_prefix(client, path):
     r = client.get(BASE + path)
     assert r.status_code in (400, 404)
     assert "FastAPI" not in r.text and "root:" not in r.text
+
+
+def test_ac_p4_prefix_no_auth_bypass_on_write(client):
+    body = {"criteria": {}}
+    plain = client.post("/api/agents/nope/tier", json=body)
+    assert plain.status_code == 401
+    for url in (f"{PROXY}/api/agents/nope/tier", f"{BASE}/api/agents/nope/tier"):
+        r = client.post(url, json=body)
+        assert r.status_code == 401
+        assert r.json() == plain.json()
+
+
+@pytest.mark.parametrize("path", [
+    f"{BASE}/proxy/98880x/api/health",
+    f"{BASE}/proxy/98880x/",
+    f"{BASE}X/proxy/9888/api/health",
+    f"{BASE}X/proxy/9888/",
+])
+def test_ac_p4_lookalike_prefix_not_stripped(client, path):
+    assert client.get(path).status_code == 404
+    assert client.post(path, json={}).status_code in (401, 404)
