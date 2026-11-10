@@ -46,3 +46,7 @@ export const demoApi = {
   run: (id) => post(`demo/run/${encodeURIComponent(id)}`),
   reset: () => post('demo/reset'),
 }
+
+export const previewTier = (criteria) => request('tiering/preview', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ criteria }),
+})
