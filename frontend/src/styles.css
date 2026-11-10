@@ -71,6 +71,9 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
 
 .f-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:4px }
 
-.demo-banner { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 16px; background:#fff7e6; border-bottom:1px solid #f0c36d; color:#6b4a00; font-size:13px }
+.demo-banner { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 24px; background:#fff7e6; border-bottom:1px solid #f0c36d; color:#6b4a00; font-size:13px }
 .demo-banner ul { display:flex; flex-wrap:wrap; gap:4px 8px; list-style:none; margin:0; padding:0; flex:1 }
 .demo-banner li { background:#fff; border:1px solid #f0c36d; border-radius:10px; padding:1px 8px }
+
+.chip-demo, .stand-in-chip { background:#fff7e6; border:1px solid #b07a00; color:#5c3f00; font-size:12px }
+.toast { position:fixed; bottom:16px; right:24px; background:#1f2937; color:#fff; padding:10px 16px; border-radius:6px; font-size:14px; z-index:50 }

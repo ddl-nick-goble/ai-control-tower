@@ -113,6 +113,9 @@ def normalize_span(span: dict, agent_id: str | None, native_id: str | None = Non
     skip = set(AGENT_KEYS) | {"gen_ai.tool.call.arguments", "tool.parameters", "mlflow.spanInputs"}
     attrs = {k: _maybe_json(v) for k, v in a.items() if k not in skip}
     attrs["service.name"] = (span.get("resource") or {}).get("service.name")
+    attrs["act.llm.provider"] = a.get("act.llm.provider") or (span.get("resource") or {}).get("act.llm.provider")
+    if kind == "model_call" and not attrs["act.llm.provider"] and "mock-llm" in str(a.get("gen_ai.request.model") or span.get("name") or ""):
+        attrs["act.llm.provider"] = "mock"
     if native_id:
         attrs["native_agent_id"] = native_id
     if span.get("end_ns") and span.get("start_ns"):

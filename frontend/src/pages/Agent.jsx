@@ -46,7 +46,7 @@ export function Identity({ agent }) {
       {noDistinct && (
         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
       )}
-      {id.simulated && <p className="muted" data-testid="identity-simulated"><span className="chip">{id.label || 'simulated service account (demo)'}</span></p>}
+      {id.simulated && <p className="muted" data-testid="identity-simulated"><span className="chip chip-demo">{id.label || 'simulated service account (demo)'}</span></p>}
       <dl className="kv">
         <dt>Type</dt><dd>{id.type || '-'}</dd>
         <dt>Issuer</dt><dd>{id.issuer || '-'}</dd>
@@ -90,7 +90,7 @@ function Dependencies({ id }) {
           <h3>Models</h3>
           <ul className="plain">
             {data.models.map((m, i) => (
-              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="chip" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
+              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="chip chip-demo" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
             ))}
             {!data.models.length && <li className="muted">none</li>}
           </ul>
@@ -142,7 +142,7 @@ function Governance({ gov }) {
   const sim = standIn(useHealth(), 'governance')
   return (
     <Panel title="Governance bundle">
-      {sim && <p className="muted" data-testid="demo-governance-label"><span className="chip">{sim.label}</span></p>}
+      {sim && <p className="muted" data-testid="demo-governance-label"><span className="chip chip-demo">{sim.label}</span></p>}
       <dl className="kv">
         <dt>Bundle</dt><dd data-testid="bundle-id">{gov.bundle_id || 'not yet created'}</dd>
         <dt>Stage</dt><dd>{gov.stage || '-'}</dd>
@@ -186,7 +186,7 @@ function Approvals({ id, gov, onChanged }) {
       {gov && gov.approvals.length ? (
         <table className="table compact"><thead><tr><th>Approver</th><th>Decision</th><th>When</th><th>Expires</th></tr></thead>
           <tbody>{gov.approvals.map((a) => (
-            <tr key={a.id}><td>{clean(a.approver)}{/simulated/i.test(a.approver || '') && <> <span className="chip">simulated</span></>}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
+            <tr key={a.id}><td>{clean(a.approver)}{/simulated/i.test(a.approver || '') && <> <span className="chip chip-demo">simulated</span></>}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
           ))}</tbody></table>
       ) : <p className="muted">No approvals recorded.</p>}
     </Panel>

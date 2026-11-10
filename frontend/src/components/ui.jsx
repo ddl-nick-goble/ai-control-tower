@@ -37,14 +37,22 @@ function DemoBanner({ health: h }) {
   const [err, setErr] = React.useState(null)
   const reset = async () => {
     setBusy(true); setErr(null)
-    try { await demoApi.reset(); window.location.reload() } catch (e) { setErr(e.message); setBusy(false) }
+    try { await demoApi.reset(); sessionStorage.setItem('act-demo-reset', '1'); window.location.reload() } catch (e) { setErr(e.message); setBusy(false) }
   }
+  const [note, setNote] = React.useState(false)
+  React.useEffect(() => {
+    if (sessionStorage.getItem('act-demo-reset')) {
+      sessionStorage.removeItem('act-demo-reset'); setNote(true)
+      const t = setTimeout(() => setNote(false), 5000); return () => clearTimeout(t)
+    }
+  }, [])
   return (
     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
       <strong>Demo mode: simulated data and stand-ins</strong>
       <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
       <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
       {err && <span className="alert error" role="alert">{err}</span>}
+      {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
     </div>
   )
 }
