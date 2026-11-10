@@ -11,7 +11,7 @@ Updated: 2026-11-09 18:25 (workspace). Integration branch: `main`. Build spend a
 3. `git worktree list`, `git branch -r`. Resume the task under "In progress".
 
 ## Merged to main
-T-1, T-2, T-3, T-4, T-5, T-5b (ingest fix), T-6, T-7, T-7L (classifier v1/v2 + endpoint), T-7L2 (input validation, champion v6), T-8, T-9, T-10, T-11, T-12 (b8aefb6), T-14 (a40b9e5).
+T-1, T-2, T-3, T-4, T-5, T-5b (ingest fix), T-6, T-7, T-7L (classifier v1/v2 + endpoint), T-7L2 (input validation, champion v6), T-8, T-9, T-10, T-11, T-12 (b8aefb6), T-14 (a40b9e5), T-13 (9b28369). ALL TASKS MERGED.
 Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (live-only).
 
 ## In progress
@@ -20,7 +20,7 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
 
 ## Next
 - **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
-- **T-13** built (a39d492): seed, docs and polish; 468 backend passed, 34 e2e passed. Round 2 done (bb7303d, 478 passed). Round 3 = demo polish (validation card, champion label, owner, label spacing, pack labels, styled selects, badge contrast, card port 8766 in DEMO.md); tests at 178c7fc (7 failing), builder running. Round 2 earlier: (seed DB-path check, simulated approver marking, narrow drift allowance, docs). The demo walk by ui-tester is running. Then final full suites and qa-summary.md. Test baseline 344eeee on task/T-13 (worktree .worktrees/T-13); the builder starts after T-14 merges (rebase onto main first). Scope: docs/architecture.md (3 Mermaid diagrams), docs/DEMO.md, jobs/seed_demo.py, README.
+- **T-13** merged (9b28369). Final full suites on main running (backend + e2e into /mnt/data/ai-control-tower/qa/final/); next: write /mnt/data/ai-control-tower/qa/qa-summary.md.
   - Seed demo: intake, the weekend-drift run, and POST /api/agents/{id}/governance for each agent before any approval.
   - Set ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost so the fixture card server works.
   - Deferred polish to apply, from plan.md: evidence-pack heading hierarchy, ARN wrapping, the fixtures/README line 8 wording, and the app.sh build step for a published App.

@@ -1,0 +1,202 @@
+diff --git a/backend/evidence.py b/backend/evidence.py
+index 3ef359e..f0c387c 100644
+--- a/backend/evidence.py
++++ b/backend/evidence.py
+@@ -220,7 +220,9 @@ def _violation(v):
+     reason = v.get("reason")
+     obs = v.get("observed_value", v.get("observed"))
+     lim = v.get("limit")
+-    parts = [f"tool {esc(v.get('tool'))}", f"reason {esc(reason)}"]
++    label = {"tool_not_in_manifest": "Outside manifest", "value_limit_exceeded": "Over limit",
++             "value_unverifiable": "Unverifiable value"}.get(reason, "Other violation")
++    parts = [f"tool {esc(v.get('tool'))}", f"reason {label}"]
+     have = lambda x: x is not None and x != ""  # noqa: E731
+     if have(obs) or reason == "value_limit_exceeded":
+         parts.append(f"observed {esc(obs) if have(obs) else 'not recorded'}")
+diff --git a/config/local_agents.json b/config/local_agents.json
+index fd88f6e..5875d7c 100644
+--- a/config/local_agents.json
++++ b/config/local_agents.json
+@@ -14,7 +14,7 @@
+       "principal": "${ACT_LOCAL_AGENT_PRINCIPAL:-${ACT_LOCAL_AGENT_OWNER:-unassigned-owner}}",
+       "dependencies": {
+         "models": [
+-          {"name": "break_classifier", "registry_version": "${BREAK_CLASSIFIER_REGISTRY_VERSION:-6}"}
++          {"name": "break_classifier", "alias": "champion", "registry_version": "${BREAK_CLASSIFIER_REGISTRY_VERSION:-6}"}
+         ]
+       }
+     }
+diff --git a/docs/DEMO.md b/docs/DEMO.md
+index 6754f06..278b33f 100644
+--- a/docs/DEMO.md
++++ b/docs/DEMO.md
+@@ -22,8 +22,9 @@ From the repo root, in a Domino workspace (or locally with Python 3.12 and node)
+ python jobs/seed_demo.py
+ #    add --governance to also create the Domino Governance bundles for recon-agent and treasury-sweep-agent
+ 
+-# 2. Serve the fixture agent card (leave running, second terminal)
+-python fixtures/external/serve.py --port 8765
++# 2. Serve the fixture agent card (leave running, second terminal; 8765 is taken by the Domino proxy in
++#    workspaces, any free port works)
++python fixtures/external/serve.py --port 8766
+ 
+ # 3. Start the app (port 9888 in a workspace; it prints its access URL)
+ export ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost
+@@ -37,6 +38,13 @@ bash app.sh
+ Domino workspace, otherwise `./act.db`). Use the same value for both. To use the signed card, start the fixture
+ server with `--signed`; the passport then shows the identity banner "signed and verified".
+ 
++Notes for the walk:
++
++- The red "no distinct identity" flag on recon-agent is expected until a service account publishes it (see
++  `docs/INTEGRATION.md`).
++- Run `python jobs/seed_demo.py --governance` to create the Governance bundles; the agent page then shows the two
++  policies on one bundle.
++
+ ## The walk (about ten minutes)
+ 
+ 1. **Fleet (1 min).** Open the app. The Fleet table lists 12 agents across five sources: 3 AWS AgentCore, 3 Google,
+@@ -64,7 +72,7 @@ server with `--signed`; the passport then shows the identity banner "signed and
+    pack**. The preview opens in OCC 2026-54 order; show the finding in the monitoring section.
+ 7. **PDF (30 s).** Click **Download PDF** (and **Download Markdown** if asked). Open the PDF and show the same finding.
+ 8. **Register an external agent (1 min).** Go to Fleet and click **Register external agent**. Enter the card URL
+-   `http://localhost:8765/.well-known/agent-card.json`, set the consequence criteria (for example Financial exposure 5,
++   `http://localhost:8766/.well-known/agent-card.json`, set the consequence criteria (for example Financial exposure 5,
+    Autonomy 4) and data scopes, and click **Register**.
+ 9. **Passport (30 s).** The passport shows the card fields (name, skills, endpoints), the tier computed from the
+    criteria and the identity banner (unsigned unless the signed card is served). Click **Open the agent page**;
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index 6dcc39f..e4d3833 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -24,6 +24,7 @@ export const api = {
+   agent: (id) => request(`agents/${encodeURIComponent(id)}`),
+   findings: (id) => request(`agents/${encodeURIComponent(id)}/findings`),
+   governance: (id) => request(`agents/${encodeURIComponent(id)}/governance`),
++  validation: (id) => request(`agents/${encodeURIComponent(id)}/validation`),
+   dependencies: (id) => request(`agents/${encodeURIComponent(id)}/dependencies`),
+   approve: (id, body) => request(`agents/${encodeURIComponent(id)}/approve`, {
+     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index bce9cc9..7fc9d9e 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -88,7 +88,7 @@ function Dependencies({ id }) {
+           <h3>Models</h3>
+           <ul className="plain">
+             {data.models.map((m, i) => (
+-              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}</span></li>
++              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span></li>
+             ))}
+             {!data.models.length && <li className="muted">none</li>}
+           </ul>
+@@ -108,6 +108,34 @@ function Dependencies({ id }) {
+   )
+ }
+ 
++function pct(x) { return x == null ? '-' : `${(Number(x) * 100).toFixed(1).replace(/\.0$/, '')}%` }
++const f3 = (x) => (x == null ? '-' : Number(x).toFixed(3))
++
++function Validation({ id }) {
++  const { data, error, loading } = useAsync(
++    () => api.validation(id).catch((e) => { if (e.status === 404) return null; throw e }), [id])
++  const d = (data && data.detail) || {}
++  const judge = d.judge_model_id === 'mock-llm' ? 'mock judge (not a model)' : (d.judge_alias ? `judge ${clean(d.judge_alias)}` : 'judge on file')
++  return (
++    <Panel title="Validation" testid="validation-card">
++      {error && <ErrorBox error={error} />}
++      {loading && <Loading what="validation" />}
++      {!loading && !error && !data && <p className="muted">No validation record</p>}
++      {data && (
++        <dl className="kv">
++          <dt>Mean</dt><dd>{f3(d.mean)}</dd>
++          <dt>p5</dt><dd>{f3(d.p5)}</dd>
++          <dt>p95</dt><dd>{f3(d.p95)}</dd>
++          <dt>Pass rate</dt><dd>{pct(d.pass_rate)}</dd>
++          <dt>Sample</dt><dd>{d.n_prompts} prompts x {d.reps} repetitions</dd>
++          <dt>Judge</dt><dd>{judge}</dd>
++          <dt>Errors / invalid</dt><dd>{d.error_count ?? 0} errors, {d.invalid_count ?? 0} invalid judge replies</dd>
++        </dl>
++      )}
++    </Panel>
++  )
++}
++
+ function Governance({ gov }) {
+   return (
+     <Panel title="Governance bundle">
+@@ -172,12 +200,14 @@ function Findings({ findings }) {
+               <span className="muted">{fmtTs(f.ts)}</span>
+             </div>
+             <Markdown text={clean(f.explanation)} />
++            <div className="f-foot">
+             {f.explanation && (!(f.detail && f.detail.explanation_model) || f.detail.explanation_model === 'mock-llm') && (
+               <span className="muted" data-testid="finding-explanation-source">
+                 {f.detail && f.detail.explanation_model ? 'mock text (not a model)' : 'template text (no model)'}
+               </span>
+             )}
+             {f.run_id && <Link data-testid="finding-timeline-link" to={`/runs/${encodeURIComponent(f.run_id)}`}>View run timeline</Link>}
++            </div>
+           </li>
+         ))}
+       </ul>
+@@ -234,6 +264,7 @@ function AgentView({ id }) {
+         <Identity agent={a} />
+         <Manifest agent={a} />
+         <Dependencies id={id} />
++        <Validation id={id} />
+         {gov.data ? <Governance gov={gov.data} /> : <Panel title="Governance bundle">{gov.error ? <ErrorBox error={gov.error} /> : <Loading what="governance" />}</Panel>}
+         <Approvals id={id} gov={gov.data} onChanged={() => setRev((r) => r + 1)} />
+       </div>
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+index 72bc73a..065ab10 100644
+--- a/frontend/src/pages/Register.jsx
++++ b/frontend/src/pages/Register.jsx
+@@ -61,7 +61,7 @@ export default function Register() {
+           <p className="muted">Score each from 1 (low) to 5 (high).</p>
+           {CRITERIA.map(([k, name, prompt]) => (
+             <p key={k}><label>{name}: <span className="muted">{prompt}</span><br />
+-              <select data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
++              <select className="select" data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
+                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+               </select>
+             </label></p>
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 620ad79..6b508ef 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -1,4 +1,4 @@
+-:root { --bg:#f6f7f9; --card:#fff; --ink:#1f2a37; --muted:#6b7280; --line:#e3e6ea; --brand:#543fde; --red:#c62828; --amber:#b26a00; --green:#2e7d32; }
++:root { --bg:#f6f7f9; --card:#fff; --ink:#1f2a37; --muted:#6b7280; --line:#e3e6ea; --brand:#543fde; --red:#c62828; --amber:#8a5300; --green:#2e7d32; }
+ * { box-sizing: border-box }
+ body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif }
+ a { color:var(--brand); text-decoration:none } a:hover { text-decoration:underline }
+@@ -19,7 +19,7 @@ select:focus { outline:2px solid var(--brand); outline-offset:1px }
+ .chip { display:inline-block; padding:1px 8px; border-radius:10px; background:#eef0f4; font-size:12px }
+ .pill { display:inline-block; padding:1px 8px; border-radius:4px; background:#eef0f4; font-size:12px }
+ .badge { display:inline-block; padding:2px 10px; border-radius:4px; font-weight:600; font-size:12px; color:#fff; background:#6b7280 }
+-.tier-1 { background:var(--red) } .tier-2 { background:var(--amber) } .tier-3 { background:#1565c0 } .tier-4 { background:var(--green) }
++.tier-1 { background:var(--red) } .tier-2 { background:var(--amber) } .tier-3 { background:#0d47a1 } .tier-4 { background:var(--green) }
+ .count.hot { color:var(--red); font-weight:700 }
+ .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; margin-bottom:16px; align-items:start }
+ .panel { background:var(--card); border:1px solid var(--line); border-radius:6px; margin-bottom:16px }
+@@ -68,3 +68,5 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
+ .evidence-preview h3 { font-size:16px; text-transform:none; letter-spacing:0; color:var(--ink); margin:20px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line) }
+ .evidence-preview section:first-child h3 { border-bottom:2px solid var(--ink) }
+ .host { font-size:12px; color:var(--muted); margin-left:6px }
++
++.f-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:4px }
+diff --git a/jobs/seed_demo.py b/jobs/seed_demo.py
+index 727c580..67e7690 100644
+--- a/jobs/seed_demo.py
++++ b/jobs/seed_demo.py
+@@ -170,7 +170,9 @@ def seed(db_path=None, governance=False) -> dict:
+     user = os.environ.get("DOMINO_STARTING_USERNAME") or "seed-user"
+     explicit_provider = os.environ.get("ACT_LLM_PROVIDER")
+     provider = explicit_provider or ("gateway" if os.environ.get("LLM_GATEWAY_URL") else "mock")
++    owner = None if os.environ.get("ACT_LOCAL_AGENT_OWNER") else user
+     with _env(ACT_DB=str(db_path) if db_path else None, DOMINO_STARTING_USERNAME=user,
++              ACT_LOCAL_AGENT_OWNER=owner,
+               ACT_LLM_PROVIDER=provider,
+               ACT_DOMINO_LOCAL_AGENTS=(os.environ.get("ACT_DOMINO_LOCAL_AGENTS")
+                                        or str(ROOT / "config" / "local_agents.json")),
