@@ -146,7 +146,10 @@ def _validate(agent_id, summary):
         summary["validation"] = "skipped (record exists)"
         return
     from jobs import validate
+    from backend import demo
     try:
+        if demo.enabled():  # demo mode keeps validation local: no MLflow server round trips
+            raise ConnectionError("demo mode")
         res = validate.run_validation(validate.load_prompts(), reps=5)
         note = ""
     except Exception as e:  # noqa: BLE001 - MLflow tracking unavailable: score without MLflow runs
