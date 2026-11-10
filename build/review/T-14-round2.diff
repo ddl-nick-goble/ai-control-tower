@@ -1,0 +1,416 @@
+diff --git a/act_llm_mock.py b/act_llm_mock.py
+index a880df5..d4febc1 100644
+--- a/act_llm_mock.py
++++ b/act_llm_mock.py
+@@ -109,7 +109,10 @@ def _recon_step(messages):
+         return use("fetch_ledger", {"name": "custodian_ledger"})
+     if "compare_entries" not in names:
+         return use("compare_entries", {"ledger_a": "gl_ledger", "ledger_b": "custodian_ledger"})
+-    breaks = next((r for b, r in calls if b["name"] == "compare_entries" and isinstance(r, list)), [])
++    cmp_res = next((r for b, r in calls if b["name"] == "compare_entries"), None)
++    if isinstance(cmp_res, dict) and cmp_res.get("error"):  # a tool failure is reported, never "no breaks"
++        return _resp([{"type": "text", "text": f"compare_entries failed: {cmp_res['error']}"}], "end_turn")
++    breaks = cmp_res if isinstance(cmp_res, list) else []
+     breaks = [b for b in breaks if isinstance(b, dict) and b.get("ref")]
+     top = max(breaks, key=_size) if breaks else None
+     if top and "propose_adjustment" not in names:
+diff --git a/adapters/domino.py b/adapters/domino.py
+index 354af35..467d896 100644
+--- a/adapters/domino.py
++++ b/adapters/domino.py
+@@ -15,6 +15,7 @@ import os
+ import re
+ import time
+ from datetime import datetime, timezone
++from pathlib import Path
+ 
+ import requests
+ 
+@@ -201,8 +202,16 @@ class DominoAdapter(AdapterBase):
+         path = (os.environ.get("ACT_DOMINO_LOCAL_AGENTS") or "").strip()
+         if not path:
+             return []
++        try:
++            entries = self._expand(json.loads(Path(path).read_text())).get("agents", [])
++            if not isinstance(entries, list) or not all(isinstance(e, dict) and e.get("native_id") and e.get("name")
++                                                        for e in entries):
++                raise ValueError("'agents' must be a list of entries with native_id and name")
++        except (OSError, ValueError, AttributeError) as e:
++            log.warning("ACT_DOMINO_LOCAL_AGENTS=%s ignored, no local agents added: %s", path, e)
++            return []
+         out = []
+-        for e in self._expand(json.loads(open(path).read())).get("agents", []):
++        for e in entries:
+             principal = e.get("principal") or e.get("owner")
+             allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
+             ident = (self._identity(principal) if principal in allow else
+diff --git a/agents/recon_agent/act_export.py b/agents/recon_agent/act_export.py
+index 83ac55f..f99e4f5 100644
+--- a/agents/recon_agent/act_export.py
++++ b/agents/recon_agent/act_export.py
+@@ -82,8 +82,10 @@ class ActTraceBuffer:
+ 
+     def payload(self):
+         return {"resourceSpans": [{
+-            "resource": {"attributes": _attrs({"service.name": self.service_name,
+-                                                "gen_ai.agent.id": self.agent_id})},
++            "resource": {"attributes": _attrs({
++                "service.name": self.service_name, "gen_ai.agent.id": self.agent_id,
++                "act.llm.provider": ("mock" if (os.environ.get("ACT_LLM_PROVIDER") or "").strip().lower() == "mock"
++                                     else None)})},
+             "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
+         }]}
+ 
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+index dd08c16..4002a48 100644
+--- a/agents/recon_agent/agent.py
++++ b/agents/recon_agent/agent.py
+@@ -38,15 +38,15 @@ TOOL_SPECS = [
+ ]
+ 
+ 
+-def classify_break(br: dict):
+-    """Return (class, source) where source is "local" (predict()) or "endpoint" (Domino sync endpoint)."""
+-    payload = {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
+-    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
+-    if not url:
+-        if os.environ.get("DOMINO_RUN_ID"):
+-            log.warning("BREAK_CLASSIFIER_ENDPOINT_URL is unset in a Domino run; using the local classifier")
+-        from models.break_classifier.predict import predict
+-        return predict(payload)["class"], "local"
++UNCLASSIFIED = "unclassified"
++_registry_cache = {}
++
++
++def _payload(br):
++    return {k: br.get(k, 0) for k in ("amount_diff", "days_diff", "missing_side")}
++
++
++def _from_endpoint(url, payload):
+     key = os.environ.get("BREAK_CLASSIFIER_ACCESS_KEY")
+     if not key:
+         raise RuntimeError("BREAK_CLASSIFIER_ACCESS_KEY is required when BREAK_CLASSIFIER_ENDPOINT_URL is set")
+@@ -56,7 +56,45 @@ def classify_break(br: dict):
+     res = r.json().get("result")
+     if isinstance(res, (list, tuple)):  # registry (MLflow pyfunc) endpoints return {"result": ["<class>"]}
+         res = res[0] if res else None
+-    return str(res["class"] if isinstance(res, dict) else res), "endpoint"
++    return str(res["class"] if isinstance(res, dict) else res)
++
++
++def _from_registry(payload):
++    """Best effort: MLflow registry models:/break_classifier@champion with a short timeout."""
++    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
++    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
++    if "m" not in _registry_cache:
++        import mlflow.pyfunc
++        _registry_cache["m"] = mlflow.pyfunc.load_model("models:/break_classifier@champion")
++    import pandas as pd
++    out = _registry_cache["m"].predict(pd.DataFrame([payload]))
++    out = list(out)[0] if hasattr(out, "__len__") else out
++    return str(out["class"] if isinstance(out, dict) else out)
++
++
++def classify_break(br: dict, notes=None):
++    """Return (class, source). Order: endpoint (URL+key) -> BREAK_CLASSIFIER_MODEL_PATH -> MLflow registry
++    models:/break_classifier@champion -> ("unclassified", "unavailable"). Never raises: a classifier
++    failure must not hide the break; reasons are appended to `notes`."""
++    payload = _payload(br)
++    notes = notes if notes is not None else []
++    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
++    if url:
++        try:
++            return _from_endpoint(url, payload), "endpoint"
++        except Exception as e:  # noqa: BLE001
++            notes.append(f"endpoint failed ({type(e).__name__}: {str(e)[:120]})")
++    if os.environ.get("BREAK_CLASSIFIER_MODEL_PATH"):
++        try:
++            from models.break_classifier.predict import predict
++            return predict(payload)["class"], "local"
++        except Exception as e:  # noqa: BLE001
++            notes.append(f"model path failed ({type(e).__name__}: {str(e)[:120]})")
++    try:
++        return _from_registry(payload), "registry"
++    except Exception as e:  # noqa: BLE001
++        notes.append(f"registry models:/break_classifier@champion failed ({type(e).__name__}: {str(e)[:120]})")
++    return UNCLASSIFIED, "unavailable"
+ 
+ 
+ def _dispatch(name, inp, buf, store):
+@@ -69,8 +107,16 @@ def _dispatch(name, inp, buf, store):
+         for br in breaks:
+             with buf.execute_tool("break_classifier", {k: br[k] for k in
+                                   ("amount_diff", "days_diff", "missing_side")}) as a:
+-                br["classification"], a["act.classifier.source"] = classify_break(br)
++                notes = []
++                br["classification"], a["act.classifier.source"] = classify_break(br, notes)
+                 a["gen_ai.tool.call.result"] = br["classification"]
++                if notes:
++                    a["act.classifier.error"] = "; ".join(notes)[:500]
++                    store.setdefault("warnings", [])
++                    for n in notes:
++                        w = f"break classifier unavailable: {n}"
++                        if w not in store["warnings"]:
++                            store["warnings"].append(w)
+         store["breaks"] = breaks
+         return breaks
+     if name == "propose_adjustment":
+@@ -108,7 +154,10 @@ def _run(prompt: str, buf: ActTraceBuffer) -> dict:
+             results.append({"type": "tool_result", "tool_use_id": u["id"],
+                             "content": json.dumps(out, default=str), "is_error": err})
+         messages.append({"role": "user", "content": results})
+-    return {"summary": text, "breaks": store.get("breaks", []), "proposals": proposals}
++    warnings = store.get("warnings", [])
++    if warnings:  # surfaced in the output; breaks are reported regardless
++        text = (text.rstrip() + "\nWarning: " + "\nWarning: ".join(warnings)).strip()
++    return {"summary": text, "breaks": store.get("breaks", []), "proposals": proposals, "warnings": warnings}
+ 
+ 
+ @add_tracing(name="recon_agent", span_type="AGENT")
+diff --git a/agents/recon_agent/llm.py b/agents/recon_agent/llm.py
+index d131676..dfbccdd 100644
+--- a/agents/recon_agent/llm.py
++++ b/agents/recon_agent/llm.py
+@@ -5,10 +5,14 @@ https://<apps host>/apps/<vanity>); nothing is hardcoded and no provider key is
+ Model names are gateway aliases (for example "sonnet", "haiku"). The in-run access token is
+ read fresh from $DOMINO_API_PROXY/access-token (default http://localhost:8899) on every call.
+ """
++import logging
+ import os
+ 
+ import requests
+ 
++log = logging.getLogger(__name__)
++_warned = False
++
+ DEFAULT_PROXY = "http://localhost:8899"
+ ANTHROPIC_VERSION = "2023-06-01"
+ 
+@@ -17,6 +21,15 @@ class GatewayError(RuntimeError):
+     pass
+ 
+ 
++def warn_if_mock() -> None:
++    """Log once per process that LLM calls are answered by the offline mock, not a model."""
++    global _warned
++    if not _warned and (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
++        _warned = True
++        log.warning("ACT_LLM_PROVIDER=mock: LLM calls are answered by the offline mock-llm stand-in, "
++                    "NOT a model. Unset it and set LLM_GATEWAY_URL to use the LLM Gateway.")
++
++
+ def _token() -> str:
+     proxy = (os.environ.get("DOMINO_API_PROXY") or DEFAULT_PROXY).rstrip("/")
+     try:
+@@ -70,6 +83,7 @@ def create_message(model_alias, messages, tools=None, system=None, max_tokens=10
+     "model" is the model id the gateway reports having served (alias resolved upstream).
+     """
+     if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
++        warn_if_mock()
+         from act_llm_mock import create_message as _mock  # deterministic offline stand-in, model "mock-llm"
+         return _mock(model_alias, messages, tools=tools, system=system, max_tokens=max_tokens, tags=tags,
+                      timeout=timeout, **extra)
+diff --git a/backend/drift.py b/backend/drift.py
+index 97f24ab..0ece997 100644
+--- a/backend/drift.py
++++ b/backend/drift.py
+@@ -5,6 +5,7 @@ ACT detects and records only; it never blocks anything in the agent's runtime.
+ import json
+ import logging
+ import math
++import os
+ import re
+ import threading
+ import time
+@@ -247,14 +248,18 @@ def find_violations(events, manifest: dict) -> list[dict]:
+ def fallback_explanation(v: dict, agent_name: str, tier: int) -> str:
+     who = f"Agent {agent_name} (Tier {tier})"
+     if v["reason"] == "value_limit_exceeded":
+-        return (f"{who} called {v['tool']} with value {v['observed_value']}, above its approved "
+-                f"limit of {v['limit']}.")
++        return (f"{who}: {v['tool']} amount {v['observed_value']} exceeds the manifest limit "
++                f"{v['limit']} (approved limit exceeded).")
+     if v["reason"] == "value_unverifiable":
+         return (f"{who} called {v['tool']} with a value that could not be verified against its "
+                 f"approved limit of {v['limit']} ({v.get('note', 'unverifiable')}).")
+     return f"{who} called {v['tool']}, which is not in its approved manifest."
+ 
+ 
++def _mock_provider() -> bool:
++    return (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock"
++
++
+ def _llm_explanation(v: dict, agent_name: str, tier: int):
+     from . import llm
+     prompt = (f"In one plain sentence for a bank risk officer, explain this AI agent scope drift. "
+@@ -313,7 +318,7 @@ def detect_run(run_id: str) -> int | None:
+                     observed_value=None if first["observed_value"] is None else str(first["observed_value"]),
+                     limit=None if first["limit"] is None else str(first["limit"]))
+         detail = {"violations": viol, "tier": tier}
+-        need_llm = True
++        need_llm = not _mock_provider()  # mock: the template stands, never passed off as model output
+         if cur is None:
+             detail.update(explanation=fb, explanation_model=None)
+             conn.execute(insert(db.findings).values(**vals, message=fb, status="open",
+diff --git a/backend/llm.py b/backend/llm.py
+index 1780161..988f84c 100644
+--- a/backend/llm.py
++++ b/backend/llm.py
+@@ -7,10 +7,14 @@ https://<apps host>/apps/<vanity>); nothing is hardcoded and no provider key is
+ Model names are gateway aliases (for example "sonnet", "haiku"). The in-run access token is
+ read fresh from $DOMINO_API_PROXY/access-token (default http://localhost:8899) on every call.
+ """
++import logging
+ import os
+ 
+ import requests
+ 
++log = logging.getLogger(__name__)
++_warned = False
++
+ DEFAULT_PROXY = "http://localhost:8899"
+ ANTHROPIC_VERSION = "2023-06-01"
+ 
+@@ -19,6 +23,15 @@ class GatewayError(RuntimeError):
+     pass
+ 
+ 
++def warn_if_mock() -> None:
++    """Log once per process that LLM calls are answered by the offline mock, not a model."""
++    global _warned
++    if not _warned and (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
++        _warned = True
++        log.warning("ACT_LLM_PROVIDER=mock: LLM calls are answered by the offline mock-llm stand-in, "
++                    "NOT a model. Unset it and set LLM_GATEWAY_URL to use the LLM Gateway.")
++
++
+ def _token() -> str:
+     proxy = (os.environ.get("DOMINO_API_PROXY") or DEFAULT_PROXY).rstrip("/")
+     try:
+@@ -72,6 +85,7 @@ def create_message(model_alias, messages, tools=None, system=None, max_tokens=10
+     "model" is the model id the gateway reports having served (alias resolved upstream).
+     """
+     if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
++        warn_if_mock()
+         from act_llm_mock import create_message as _mock  # deterministic offline stand-in, model "mock-llm"
+         return _mock(model_alias, messages, tools=tools, system=system, max_tokens=max_tokens, tags=tags,
+                      timeout=timeout, **extra)
+diff --git a/backend/main.py b/backend/main.py
+index 5f7f781..806da16 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
+ from fastapi.responses import JSONResponse
+ from fastapi.staticfiles import StaticFiles
+ 
+-from . import db, routes
++from . import db, llm, routes
+ from .domino_identity import get_user
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+@@ -19,6 +19,7 @@ DIST = ROOT / "frontend" / "dist"
+ 
+ @asynccontextmanager
+ async def lifespan(_app):
++    llm.warn_if_mock()
+     db.init_db()
+     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
+     yield
+@@ -40,7 +41,8 @@ async def write_guard(request, call_next):
+ 
+ @app.get("/api/health")
+ def health():
+-    return {"status": "ok"}
++    return {"status": "ok",
++            "llm_provider": "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"}
+ 
+ 
+ for _m in pkgutil.iter_modules(routes.__path__):
+diff --git a/config/local_agents.json b/config/local_agents.json
+index 19c2953..fd88f6e 100644
+--- a/config/local_agents.json
++++ b/config/local_agents.json
+@@ -1,17 +1,17 @@
+ {
+-  "_note": "Locally hosted agents merged into the Domino adapter listing when ACT_DOMINO_LOCAL_AGENTS points here. Strings may use ${VAR:-default}. Remove the entry once the agent is deployed as a Domino Agent (see docs/INTEGRATION.md).",
++  "_note": "Locally hosted agents merged into the Domino adapter listing when ACT_DOMINO_LOCAL_AGENTS points here. Strings may use ${VAR:-default}. Owner defaults to a placeholder: set ACT_LOCAL_AGENT_OWNER. Remove the entry once the agent is deployed as a Domino Agent (see docs/INTEGRATION.md).",
+   "agents": [
+     {
+       "native_id": "local-recon-agent",
+       "name": "recon-agent",
+       "description": "Ledger reconciliation assistant. Hosting: workspace (not deployed); it runs in a Domino workspace or Job and exports OTLP spans to ACT.",
+-      "owner": "${ACT_LOCAL_AGENT_OWNER:-nick_goble}",
++      "owner": "${ACT_LOCAL_AGENT_OWNER:-unassigned-owner}",
+       "version": "1",
+       "status": "workspace (not deployed)",
+       "tools": ["fetch_ledger", "compare_entries", "propose_adjustment"],
+       "data_scopes": ["ledger.gl", "ledger.custodian"],
+       "systems": [],
+-      "principal": "${ACT_LOCAL_AGENT_PRINCIPAL:-${ACT_LOCAL_AGENT_OWNER:-nick_goble}}",
++      "principal": "${ACT_LOCAL_AGENT_PRINCIPAL:-${ACT_LOCAL_AGENT_OWNER:-unassigned-owner}}",
+       "dependencies": {
+         "models": [
+           {"name": "break_classifier", "registry_version": "${BREAK_CLASSIFIER_REGISTRY_VERSION:-6}"}
+diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
+index 5de08f9..7a212ff 100644
+--- a/docs/INTEGRATION.md
++++ b/docs/INTEGRATION.md
+@@ -2,18 +2,19 @@
+ 
+ ACT runs end to end today with stand-ins for four live pieces: the LLM Gateway, a deployed Domino Agent, a
+ service-account identity and a second approver. Each is swapped by environment variable only, and each stand-in
+-labels itself honestly in the UI and the evidence pack. Set variables as Domino project or user variables
++labels itself honestly: template text in the console, the mock judge in the validation record and the evidence pack. Set variables as Domino project or user variables
+ (secrets as secret variables), then restart the App or rerun the Job.
+ 
+ | Switch | Current state | What is mocked | Go live |
+ |---|---|---|---|
+-| `ACT_LLM_PROVIDER` | `mock` for the demo (unset = `gateway`) | All LLM calls: recon agent tool loop, validation judge, drift explanation. Responses carry model `mock-llm`. | Unset it, or set `gateway`, and set `LLM_GATEWAY_URL` (next row). |
++| `ACT_LLM_PROVIDER` | `mock` for the demo (unset = `gateway`) | Recon agent tool loop and validation judge (responses carry model `mock-llm`). Drift explanations make no LLM call in mock mode: a deterministic template is used. `GET /api/health` reports `llm_provider`; a warning is logged at startup. | Unset it, or set `gateway`, and set `LLM_GATEWAY_URL` (next row). |
+ | `LLM_GATEWAY_URL` | Not set | Needed only with the `gateway` provider | 1. Open the gateway App once in a browser and accept consent: https://apps.se-demo.domino.tech/apps/llmgateway/ . 2. Set `LLM_GATEWAY_URL` to that URL. 3. Confirm `GET <url>/v1/models` (with the in-run bearer) lists the `sonnet` and `haiku` aliases, or change the aliases in `agents/recon_agent/llm.py` callers. 4. Unset `ACT_LLM_PROVIDER`. Outside Domino also set `LLM_GATEWAY_TOKEN`. |
+-| `ACT_DOMINO_LOCAL_AGENTS` | Points at `config/local_agents.json`: lists `recon-agent` (native id `local-recon-agent`, hosting "workspace (not deployed)") | The agent is not a deployed Domino Agent; it runs in a workspace or Job. Spans and the classifier call are real. | Deploy `agents/recon_agent` as a Domino Agent. Set `RECON_AGENT_ID` to the Domino app id of that Agent, unset `ACT_DOMINO_LOCAL_AGENTS` (or delete the entry), rerun intake. The deployed Agent then appears from the Apps API. Its ACT id changes, so rerun validation (below) for the new id. |
+-| `ACT_LOCAL_AGENT_OWNER`, `ACT_LOCAL_AGENT_PRINCIPAL` | Owner defaults to `nick_goble` | Owner of the local entry | Set to the real owner; the principal defaults to the owner. |
++| `ACT_DOMINO_LOCAL_AGENTS` | Points at `config/local_agents.json`: lists `recon-agent` (native id `local-recon-agent`, hosting "workspace (not deployed)") | The agent is not a deployed Domino Agent; it runs in a workspace or Job. Spans and the classifier call are real. | Deploy `agents/recon_agent` as a Domino Agent. Set `RECON_AGENT_ID` to the Domino app id of that Agent, unset `ACT_DOMINO_LOCAL_AGENTS` (or delete the entry), rerun intake. The deployed Agent then appears from the Apps API. Its ACT id changes, so rerun validation (below) for the new id. Cleanup: archive or delete the old `act:domino` row for `local-recon-agent` once the real Agent is deployed, so the placeholder does not linger beside it. |
++| `ACT_LOCAL_AGENT_OWNER`, `ACT_LOCAL_AGENT_PRINCIPAL` | Owner defaults to the placeholder `unassigned-owner` | Owner of the local entry | Set to the real owner; the principal defaults to the owner. |
+ | `ACT_SERVICE_ACCOUNTS` | Not set: the agent's identity is reported as a workspace user, `distinct: false` (honest) | The distinct service-account identity | Create a Domino service account for the agent, run the Agent or Job as it, set `ACT_SERVICE_ACCOUNTS` to a comma-separated list of those principals. Intake then records `domino_service_account`, `distinct: true`. The local entry's principal must be in the list. |
+ | Second approver | Approval requires a different Domino user than the one who registered the agent (HTTP 403 otherwise). With one user, approval cannot be completed. | Nothing is mocked; the control is real | Sign in to the ACT App as a second Domino user (any user with App access) and use Approve on the agent. The registrant is recorded at intake or registration; same user id or username is refused and audited. |
+ | `BREAK_CLASSIFIER_ENDPOINT_URL`, `BREAK_CLASSIFIER_ACCESS_KEY` | Unset: the local model (`models/break_classifier`) is used (span attribute `act.classifier.source=local`) | The registry endpoint | Set the URL of the sync endpoint `break-classifier` (serves registry model `break_classifier`, champion v6) and the endpoint access key (secret). Spans then show source `endpoint`. `BREAK_CLASSIFIER_REGISTRY_VERSION` (default `6`) is the version recorded in the dependency list. |
++| `ACT_DOMINO_LOCAL_AGENTS` bad file | A missing or invalid file logs a warning and adds no local agents; intake is unaffected | | |
+ | `ACT_URL` | Unset for in-process runs | Job-to-App HTTP | Set to the ACT App URL so `jobs/validate.py` posts with the in-run bearer. Unset: the job writes the record straight to the ACT database (same validation rules as the route). |
+ | `ACT_TRACES_URL` | Set per run | None | OTLP endpoint of ACT (`<app>/v1/traces`); unset means no export. |
+ | `ACT_EXTERNAL_ALLOW_HOSTS` | Not set: external agent-card fetches are refused | Hosts allowed for external card fetch | Comma-separated hostnames to permit. Private, link-local and port 8899 stay refused. |
+@@ -30,8 +31,16 @@ python -m agents.recon_agent "Reconcile the GL and custodian ledgers"   # one ru
+ ```
+ 
+ Mock labels: validation records carry `judge_model_id` `mock-llm` and the evidence pack says "mock judge (not a
+-model) — rerun with the LLM Gateway for a model-graded record". Drift explanations are stored with
+-`explanation_model` `mock-llm` and the pack's monitoring section marks them as mock template text.
++model) — rerun with the LLM Gateway for a model-graded record". Drift explanations in mock mode are
++template text with no model (`explanation_model` absent); the console labels them "template text (no model)"
++next to the explanation. Mock spans carry the resource attribute `act.llm.provider=mock`.
++
++Classifier order: endpoint (`BREAK_CLASSIFIER_ENDPOINT_URL` + key), then `BREAK_CLASSIFIER_MODEL_PATH`, then the
++MLflow registry `models:/break_classifier@champion` (best effort, short timeout), else class `unclassified` with a
++"break classifier unavailable: ..." warning in the output. Breaks are always reported.
++
++All commands and relative paths here (`config/local_agents.json`, `python -m agents.recon_agent`) assume the
++repo root as the working directory.
+ 
+ ## Validation rerun as a Domino Job
+ 
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index e245d92..102d3a9 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -172,6 +172,11 @@ function Findings({ findings }) {
+               <span className="muted">{fmtTs(f.ts)}</span>
+             </div>
+             <Markdown text={clean(f.explanation)} />
++            {f.explanation && (!(f.detail && f.detail.explanation_model) || f.detail.explanation_model === 'mock-llm') && (
++              <span className="muted" data-testid="finding-explanation-source">
++                {f.detail && f.detail.explanation_model ? 'mock text (not a model)' : 'template text (no model)'}
++              </span>
++            )}
+             {f.run_id && <Link data-testid="finding-timeline-link" to={`/runs/${encodeURIComponent(f.run_id)}`}>View run timeline</Link>}
+           </li>
+         ))}

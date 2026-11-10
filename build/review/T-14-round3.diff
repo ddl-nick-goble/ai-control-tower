@@ -1,0 +1,132 @@
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+index 4002a48..769b318 100644
+--- a/agents/recon_agent/agent.py
++++ b/agents/recon_agent/agent.py
+@@ -4,7 +4,9 @@ Proposals only; ACT receives the OTel spans as evidence."""
+ import json
+ import logging
+ import os
++import re
+ import sys
++import threading
+ 
+ import requests
+ 
+@@ -59,15 +61,67 @@ def _from_endpoint(url, payload):
+     return str(res["class"] if isinstance(res, dict) else res)
+ 
+ 
++_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
++_HOST_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:/\S*)?")
++REGISTRY_TIMEOUT_S = 8.0
++
++
++def _safe_msg(e):
++    """Exception message with URLs and hostnames removed."""
++    msg = _HOST_RE.sub("<host>", _URL_RE.sub("<url>", str(e)))
++    return msg.replace("\n", " ")[:120]
++
++
++def _note(step, e):
++    """Sanitised failure note: step name, exception type and a URL-free message."""
++    return f"{step} failed ({type(e).__name__}: {_safe_msg(e)})"
++
++
++def _load_registry_model():
++    import mlflow.pyfunc
++    wanted = {"MLFLOW_HTTP_REQUEST_TIMEOUT": "5", "MLFLOW_HTTP_REQUEST_MAX_RETRIES": "0"}
++    set_here = [k for k in wanted if k not in os.environ]
++    for k in set_here:
++        os.environ[k] = wanted[k]
++    try:
++        return mlflow.pyfunc.load_model("models:/break_classifier@champion")
++    finally:
++        for k in set_here:
++            os.environ.pop(k, None)
++
++
++def _registry_model():
++    """Load the registry model at most once per process (failures are memoised) within a wall-clock cap."""
++    if "m" in _registry_cache:
++        return _registry_cache["m"]
++    if "err" in _registry_cache:
++        raise _registry_cache["err"]
++    box = {}
++
++    def work():
++        try:
++            box["m"] = _load_registry_model()
++        except BaseException as e:  # noqa: BLE001
++            box["err"] = e
++
++    t = threading.Thread(target=work, daemon=True)
++    t.start()
++    t.join(REGISTRY_TIMEOUT_S)
++    if "m" in box:
++        _registry_cache["m"] = box["m"]
++        return box["m"]
++    err = box.get("err")
++    if err is None:
++        err = TimeoutError(f"registry lookup exceeded {REGISTRY_TIMEOUT_S:g}s")
++    _registry_cache["err"] = err
++    raise err
++
++
+ def _from_registry(payload):
+-    """Best effort: MLflow registry models:/break_classifier@champion with a short timeout."""
+-    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
+-    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+-    if "m" not in _registry_cache:
+-        import mlflow.pyfunc
+-        _registry_cache["m"] = mlflow.pyfunc.load_model("models:/break_classifier@champion")
++    """Best effort: MLflow registry models:/break_classifier@champion."""
++    model = _registry_model()
+     import pandas as pd
+-    out = _registry_cache["m"].predict(pd.DataFrame([payload]))
++    out = model.predict(pd.DataFrame([payload]))
+     out = list(out)[0] if hasattr(out, "__len__") else out
+     return str(out["class"] if isinstance(out, dict) else out)
+ 
+@@ -83,17 +137,17 @@ def classify_break(br: dict, notes=None):
+         try:
+             return _from_endpoint(url, payload), "endpoint"
+         except Exception as e:  # noqa: BLE001
+-            notes.append(f"endpoint failed ({type(e).__name__}: {str(e)[:120]})")
++            notes.append(_note("endpoint", e))
+     if os.environ.get("BREAK_CLASSIFIER_MODEL_PATH"):
+         try:
+             from models.break_classifier.predict import predict
+             return predict(payload)["class"], "local"
+         except Exception as e:  # noqa: BLE001
+-            notes.append(f"model path failed ({type(e).__name__}: {str(e)[:120]})")
++            notes.append(_note("model path", e))
+     try:
+         return _from_registry(payload), "registry"
+     except Exception as e:  # noqa: BLE001
+-        notes.append(f"registry models:/break_classifier@champion failed ({type(e).__name__}: {str(e)[:120]})")
++        notes.append(_note("registry", e))
+     return UNCLASSIFIED, "unavailable"
+ 
+ 
+@@ -147,7 +201,7 @@ def _run(prompt: str, buf: ActTraceBuffer) -> dict:
+                     out = _dispatch(u["name"], u.get("input") or {}, buf, store)
+                     err = False
+                 except Exception as e:  # noqa: BLE001
+-                    out, err = {"error": str(e)}, True
++                    out, err = {"error": _note(u["name"], e)}, True
+                 a["gen_ai.tool.call.result"] = json.dumps(out, default=str)[:2000]
+             if u["name"] == "propose_adjustment" and not err:
+                 proposals.append(out)
+diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
+index 7a212ff..e8d00be 100644
+--- a/docs/INTEGRATION.md
++++ b/docs/INTEGRATION.md
+@@ -13,7 +13,7 @@ labels itself honestly: template text in the console, the mock judge in the vali
+ | `ACT_LOCAL_AGENT_OWNER`, `ACT_LOCAL_AGENT_PRINCIPAL` | Owner defaults to the placeholder `unassigned-owner` | Owner of the local entry | Set to the real owner; the principal defaults to the owner. |
+ | `ACT_SERVICE_ACCOUNTS` | Not set: the agent's identity is reported as a workspace user, `distinct: false` (honest) | The distinct service-account identity | Create a Domino service account for the agent, run the Agent or Job as it, set `ACT_SERVICE_ACCOUNTS` to a comma-separated list of those principals. Intake then records `domino_service_account`, `distinct: true`. The local entry's principal must be in the list. |
+ | Second approver | Approval requires a different Domino user than the one who registered the agent (HTTP 403 otherwise). With one user, approval cannot be completed. | Nothing is mocked; the control is real | Sign in to the ACT App as a second Domino user (any user with App access) and use Approve on the agent. The registrant is recorded at intake or registration; same user id or username is refused and audited. |
+-| `BREAK_CLASSIFIER_ENDPOINT_URL`, `BREAK_CLASSIFIER_ACCESS_KEY` | Unset: the local model (`models/break_classifier`) is used (span attribute `act.classifier.source=local`) | The registry endpoint | Set the URL of the sync endpoint `break-classifier` (serves registry model `break_classifier`, champion v6) and the endpoint access key (secret). Spans then show source `endpoint`. `BREAK_CLASSIFIER_REGISTRY_VERSION` (default `6`) is the version recorded in the dependency list. |
++| `BREAK_CLASSIFIER_ENDPOINT_URL`, `BREAK_CLASSIFIER_ACCESS_KEY` | Fallback order: endpoint (URL + `BREAK_CLASSIFIER_ACCESS_KEY`) -> `BREAK_CLASSIFIER_MODEL_PATH` (local model) -> registry champion (`models:/break_classifier@champion`) -> `unclassified` with a warning | The registry endpoint | Set the URL of the sync endpoint `break-classifier` (serves registry model `break_classifier`, champion v6) and the endpoint access key (secret). Spans then show source `endpoint`. `BREAK_CLASSIFIER_REGISTRY_VERSION` (default `6`) is the version recorded in the dependency list. |
+ | `ACT_DOMINO_LOCAL_AGENTS` bad file | A missing or invalid file logs a warning and adds no local agents; intake is unaffected | | |
+ | `ACT_URL` | Unset for in-process runs | Job-to-App HTTP | Set to the ACT App URL so `jobs/validate.py` posts with the in-run bearer. Unset: the job writes the record straight to the ACT database (same validation rules as the route). |
+ | `ACT_TRACES_URL` | Set per run | None | OTLP endpoint of ACT (`<app>/v1/traces`); unset means no export. |
