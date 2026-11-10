@@ -220,7 +220,9 @@ def _violation(v):
     reason = v.get("reason")
     obs = v.get("observed_value", v.get("observed"))
     lim = v.get("limit")
-    parts = [f"tool {esc(v.get('tool'))}", f"reason {esc(reason)}"]
+    label = {"tool_not_in_manifest": "Outside manifest", "value_limit_exceeded": "Over limit",
+             "value_unverifiable": "Unverifiable value"}.get(reason, "Other violation")
+    parts = [f"tool {esc(v.get('tool'))}", f"reason {label}"]
     have = lambda x: x is not None and x != ""  # noqa: E731
     if have(obs) or reason == "value_limit_exceeded":
         parts.append(f"observed {esc(obs) if have(obs) else 'not recorded'}")
@@ -272,7 +274,8 @@ def _dedupe(cites):
 def _approvals(d, aid):
     lines, cites = [], []
     for a in d["approvals"]:
-        lines.append(f"Approval by {esc(a.approver)}: decision {esc(a.decision)}, date {fmt_ts(a.created_at)} UTC, "
+        sim = " [simulated approval (demo stand-in for a second Domino user)]" if "simulated" in (a.approver or "").lower() else ""
+        lines.append(f"Approval by {esc(a.approver)}{sim}: decision {esc(a.decision)}, date {fmt_ts(a.created_at)} UTC, "
                      f"expires {fmt_ts(a.expires_at)} UTC" + (f", note {esc(a.note)}" if a.note else ""))
         cites.append(_c("approvals", a.id))
     for o in d["overrides"]:

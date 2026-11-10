@@ -14,7 +14,7 @@
       "principal": "${ACT_LOCAL_AGENT_PRINCIPAL:-${ACT_LOCAL_AGENT_OWNER:-unassigned-owner}}",
       "dependencies": {
         "models": [
-          {"name": "break_classifier", "registry_version": "${BREAK_CLASSIFIER_REGISTRY_VERSION:-6}"}
+          {"name": "break_classifier", "alias": "champion", "registry_version": "${BREAK_CLASSIFIER_REGISTRY_VERSION:-6}"}
         ]
       }
     }

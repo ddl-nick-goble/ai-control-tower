@@ -23,8 +23,8 @@ function describeError(err) {
     502: 'The agent card could not be fetched from that address.',
     504: 'The agent card server took too long to respond.',
   }[err.status] || 'Registration failed.'
-  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '')
-  return d ? `${lead} ${d}` : lead
+  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '').replace(/\bcard_url\b/g, 'The card URL')
+  return d && err.status !== 502 ? `${lead} ${d}` : lead
 }
 
 export default function Register() {
@@ -61,7 +61,7 @@ export default function Register() {
           <p className="muted">Score each from 1 (low) to 5 (high).</p>
           {CRITERIA.map(([k, name, prompt]) => (
             <p key={k}><label>{name}: <span className="muted">{prompt}</span><br />
-              <select data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
+              <select className="select" data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </label></p>

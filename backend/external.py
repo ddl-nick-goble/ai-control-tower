@@ -22,6 +22,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import logging
 import os
 import socket
 import threading
@@ -33,6 +34,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
+log = logging.getLogger(__name__)
 
 FETCH_TIMEOUT = 5.0
 MAX_BYTES = 1_000_000
@@ -213,7 +216,8 @@ def fetch_card(url: str) -> dict:
     except (OSError, http.client.HTTPException) as e:
         if expired.is_set() or time.monotonic() >= deadline:
             raise timeout_err
-        raise ExternalError(502, f"could not fetch the Agent Card: {type(e).__name__}")
+        log.info("agent card fetch failed: %s", type(e).__name__)
+        raise ExternalError(502, "could not fetch the Agent Card from that address")
     try:
         card = json.loads(buf.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):

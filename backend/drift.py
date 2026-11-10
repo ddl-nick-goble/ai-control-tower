@@ -189,11 +189,18 @@ def _manifest(conn, agent_id: str) -> dict | None:
     return m
 
 
-def _span_violations(e, allowed, limits) -> list[dict]:
+def _declared_call(ev, tool, declared) -> bool:
+    """A call to a declared model dependency that carries the act.classifier.source marker."""
+    return bool(declared) and tool in declared and "act.classifier.source" in (ev.get("attrs") or {})
+
+
+def _span_violations(e, allowed, limits, declared=()) -> list[dict]:
     ev = e.event or {}
     if ev.get("kind") != "tool_call":
         return []
     tool = ev.get("name")
+    if tool not in allowed and _declared_call(ev, tool, declared):
+        allowed = set(allowed) | {tool}
     base = {"tool": tool, "span_id": e.span_id or ev.get("span_id"), "ts": e.ts or ev.get("ts")}
     if tool not in allowed:
         return [{**base, "reason": "tool_not_in_manifest", "observed_value": None, "limit": None}]
@@ -225,7 +232,17 @@ def _span_violations(e, allowed, limits) -> list[dict]:
     return []
 
 
-def find_violations(events, manifest: dict) -> list[dict]:
+def allowed_declared_calls(events, declared) -> list[dict]:
+    out = []
+    for e in events:
+        ev = e.event or {}
+        if ev.get("kind") == "tool_call" and _declared_call(ev, ev.get("name"), declared):
+            out.append({"tool": ev.get("name"), "span_id": e.span_id or ev.get("span_id"),
+                        "ts": e.ts or ev.get("ts")})
+    return out
+
+
+def find_violations(events, manifest: dict, declared=()) -> list[dict]:
     allowed = set(manifest.get("tools") or [])
     limits = dict(manifest.get("value_limits") or {})
     for k, v in (manifest.get("value_limits_detail") or {}).items():
@@ -233,7 +250,7 @@ def find_violations(events, manifest: dict) -> list[dict]:
     out = []
     for e in events:
         try:
-            out.extend(_span_violations(e, allowed, limits))
+            out.extend(_span_violations(e, allowed, limits, declared))
         except Exception:  # one bad span must never drop the run's other violations
             log.warning("drift check failed for span %s", getattr(e, "span_id", None), exc_info=True)
             ev = e.event or {}
@@ -304,7 +321,11 @@ def detect_run(run_id: str) -> int | None:
         man = _manifest(conn, agent_id) if ag else None
         if man is None:
             return None
-        viol = find_violations(evs, man)
+        # a call to a declared model dependency (the recon agent's break_classifier) that carries the
+        # act.classifier.source marker is declared behaviour; value limits still apply
+        declared = [r.name for r in conn.execute(select(db.dependencies.c.name).where(
+            db.dependencies.c.agent_id == agent_id, db.dependencies.c.kind == "model")) if r.name]
+        viol = find_violations(evs, man, set(declared))
         if not viol:
             return None
         tier = _tier(ag.tier)
@@ -318,6 +339,9 @@ def detect_run(run_id: str) -> int | None:
                     observed_value=None if first["observed_value"] is None else str(first["observed_value"]),
                     limit=None if first["limit"] is None else str(first["limit"]))
         detail = {"violations": viol, "tier": tier}
+        allowed_calls = allowed_declared_calls(evs, set(declared))
+        if allowed_calls:
+            detail["allowed_via_declared_dependency"] = allowed_calls
         need_llm = not _mock_provider()  # mock: the template stands, never passed off as model output
         if cur is None:
             detail.update(explanation=fb, explanation_model=None)

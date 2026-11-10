@@ -42,6 +42,7 @@ TOOL_SPECS = [
 
 UNCLASSIFIED = "unclassified"
 _registry_cache = {}
+_registry_lock = threading.Lock()
 
 
 def _payload(br):
@@ -62,7 +63,10 @@ def _from_endpoint(url, payload):
 
 
 _URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
-_HOST_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:/\S*)?")
+_HOST_RE = re.compile(
+    r"""\bhost=(['"])[^'"]*\1"""                         # host='name' / host="name"
+    r"|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/\S*)?"       # IPv4 address, optional port and path
+    r"|\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:/\S*)?")  # dotted hostname
 REGISTRY_TIMEOUT_S = 8.0
 
 
@@ -92,10 +96,19 @@ def _load_registry_model():
 
 def _registry_model():
     """Load the registry model at most once per process (failures are memoised) within a wall-clock cap."""
-    if "m" in _registry_cache:
+    if "m" in _registry_cache:  # fast path without the lock
         return _registry_cache["m"]
     if "err" in _registry_cache:
         raise _registry_cache["err"]
+    with _registry_lock:  # re-check inside it so only one thread loads
+        if "m" in _registry_cache:
+            return _registry_cache["m"]
+        if "err" in _registry_cache:
+            raise _registry_cache["err"]
+        return _load_registry_once()
+
+
+def _load_registry_once():
     box = {}
 
     def work():

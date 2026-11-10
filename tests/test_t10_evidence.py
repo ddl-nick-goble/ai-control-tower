@@ -408,17 +408,17 @@ def test_ac12_missing_values_omitted_and_present_values_shown(client):
                   detail={"violations": [{"tool": "list_credentials", "reason": "tool_not_in_manifest",
                                           "observed_value": None, "limit": None}]})
     _seed_finding(aid, run_id="r2", type="value_limit", reason="value_limit_exceeded", tool="transfer_funds",
-                  observed_value="7500", limit="5000",
+                  observed_value="4750000", limit="250000",
                   detail={"violations": [{"tool": "transfer_funds", "reason": "value_limit_exceeded",
-                                          "observed_value": 7500, "limit": 5000}]})
+                                          "observed_value": 4750000, "limit": 250000}]})
     md = Path(_gen(client, aid).json()["markdown_path"]).read_text()
-    lines = [ln for ln in md.splitlines() if "reason tool_not_in_manifest" in ln or "tool_not_in_manifest" in ln]
+    lines = [ln for ln in md.splitlines() if "Outside manifest" in ln and "list_credentials" in ln]
     assert lines
     for ln in lines:
         assert not re.search(r"\b(observed|limit)\b", ln, re.I), ln
-    vl = [ln for ln in md.splitlines() if "value_limit_exceeded" in ln]
+    vl = [ln for ln in md.splitlines() if "Over limit" in ln and "transfer_funds" in ln]
     assert vl
-    assert any("7500" in ln and "5000" in ln for ln in vl), vl
+    assert any("4750000" in ln and "250000" in ln for ln in vl), vl
 
 
 def test_ac7_pack_cites_model_dependency(client):

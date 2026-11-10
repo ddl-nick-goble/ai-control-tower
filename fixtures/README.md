@@ -22,7 +22,7 @@ platform's free-form slot. Exactly one agent per platform has `identity.type == 
 
 treasury-sweep-agent manifest: tools get_balance, sweep_plan, get_fx_rate, transfer_funds, post_journal_entry (no list_credentials);
 `value_limits.transfer_funds = {amount: 250000, currency: USD}`; criteria autonomous / moves_money (Tier 1).
-`gen_ai.agent.id` in OTel runs is the AWS `agentRuntimeId`.
+In every run, `gen_ai.agent.id` is the platform-native id of the agent (see the matching rule below).
 
 ## Matching rule and synthetic extensions
 
