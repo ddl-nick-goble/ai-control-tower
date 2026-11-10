@@ -79,19 +79,19 @@ def test_evidence_preview_readable_violation_reasons(page, context, shot, seeded
 
 
 def test_register_criteria_styled_like_fleet_filter(page, shot, seeded):
-    page.goto("./")
-    fleet_cls = page.get_by_test_id("source-filter").get_attribute("class")
+    # T-18: criteria are now segmented radiogroups; they must still be visibly styled controls (rounded, bordered).
     page.goto("./#/register")
-    ctl = page.locator('[data-testid^="criterion-"]')
+    ctl = page.locator('[data-testid^="criterion-"][role=radiogroup]')
     expect(ctl.first).to_be_visible()
     n = ctl.count()
-    assert n >= 1
+    assert n == 7
     for i in range(n):
         c = ctl.nth(i)
-        cls = c.get_attribute("class")
-        radius = float(c.evaluate("e => parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0"))
-        assert cls == fleet_cls or radius > 0, (c.get_attribute("data-testid"), cls, fleet_cls, radius)
-        assert cls == fleet_cls, (c.get_attribute("data-testid"), cls, fleet_cls)
+        opts = c.get_by_role("radio")
+        assert opts.count() == 5
+        radius = float(c.evaluate("e => parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0")) or float(
+            opts.first.evaluate("e => parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0"))
+        assert radius > 0, (c.get_attribute("data-testid"), radius)
     shot("then")
 
 
