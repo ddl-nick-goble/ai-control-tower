@@ -309,3 +309,87 @@ def test_d10_off_governance_is_not_the_simulated_store(off, monkeypatch):
     except Exception:
         return  # real client, no Domino configured
     assert not str(bid).startswith("demo-")
+
+
+# ---- spec points added: shared-DB guard, env fill, audit identity ----
+def _audit_rows(action):
+    from backend import db
+    with db.engine.connect() as cx:
+        return cx.execute(select(db.audit_events).where(db.audit_events.c.action == action)).all()
+
+
+def _insert_plain_agent(name="plain-agent"):
+    from backend import db
+    with db.engine.begin() as cx:
+        cx.execute(db.agents.insert().values(
+            id=f"act:test:{name}", source_platform="test", native_id=name, name=name, owner="o", tier="low",
+            status="discovered", registered_by="regu", registered_by_username="regu", last_seen="2026-01-01T00:00:00+00:00",
+            record={"name": name}))
+
+
+def test_demo_reset_never_wipes_non_demo_db(tmp_path, monkeypatch):
+    # phase 1: demo off, create a non-demo DB holding real-looking agents
+    _setup(monkeypatch, tmp_path, False)
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app):
+        _insert_plain_agent("plain-1")
+        _insert_plain_agent("plain-2")
+        before = _counts()
+    assert before["agents"] == 2
+    _purge()
+    # phase 2: demo on, same DB file
+    monkeypatch.setenv("ACT_DEMO_MODE", "1")
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        names = {a["name"] for a in c.get("/api/agents").json()}
+        assert names == {"plain-1", "plain-2"}  # startup did not seed
+        assert _counts() == before
+        r = c.post("/api/demo/reset", headers=HDR)
+        assert r.status_code == 409, r.text
+        assert _counts() == before
+        assert {a["name"] for a in c.get("/api/agents").json()} == {"plain-1", "plain-2"}
+    _purge()
+
+
+def test_demo_defaults_leave_explicitly_empty_variable(tmp_path, monkeypatch):
+    import os
+    _setup(monkeypatch, tmp_path, True)
+    monkeypatch.setenv("RECON_AGENT_ID", "")
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        assert c.get("/api/health").json()["demo_mode"] is True
+        assert os.environ["RECON_AGENT_ID"] == ""
+        # unset ones still filled
+        assert os.environ.get("ACT_LLM_PROVIDER") == "mock"
+    _purge()
+
+
+def test_demo_approval_audit_identifies_real_user_and_simulated(demo):
+    rid = _agent(demo)["id"]
+    r = demo.post(f"/api/demo/approve/{rid}", headers=HDR)
+    assert r.status_code == 200, r.text
+    rows = _audit_rows("approved")
+    assert len(rows) == 1
+    row = rows[0]
+    blob = json.dumps(row.detail)
+    assert row.actor_user_id == "demo-approver-simulated"
+    assert row.detail.get("simulated") is True
+    assert row.detail.get("requested_by") == "u1"
+    assert "tester" in blob
+
+
+def test_normal_approve_ignores_client_supplied_audit_fields(off):
+    from backend import db
+    _insert_plain_agent("plain-x")
+    aid = "act:test:plain-x"
+    hdr = {"X-Domino-User-Id": "approver1", "X-Domino-User": "approver1"}
+    r = off.post(f"/api/agents/{aid}/approve", headers=hdr,
+                 json={"simulated": True, "requested_by": "evil", "requested_by_username": "evil",
+                       "audit_extra": {"simulated": True}, "run_id": None})
+    assert r.status_code == 200, r.text
+    rows = _audit_rows("approved")
+    assert len(rows) == 1
+    d = rows[0].detail
+    assert "simulated" not in d and "requested_by" not in d and "requested_by_username" not in d
+    assert "evil" not in json.dumps(d)
+    assert rows[0].actor_user_id == "approver1"
