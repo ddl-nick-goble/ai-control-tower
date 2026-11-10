@@ -206,3 +206,58 @@ def test_ac7_readme_mentions_entrypoints():
     t = (ROOT / "README.md").read_text()
     for s in ("seed_demo", "app.sh", "docs/INTEGRATION.md"):
         assert s in t, s
+
+
+# ---- round 2 contracts ----
+
+def test_ac_seed_refuses_mismatched_db_path(demo_env, tmp_path):
+    """backend.db already bound to ACT_DB=A: seed(db_path=B) must raise naming both paths, not write to A."""
+    importlib.import_module("backend.db")
+    other = tmp_path / "other" / "b.db"
+    with pytest.raises(Exception) as ei:
+        _seed_mod().seed(db_path=str(other))
+    msg = str(ei.value)
+    assert str(demo_env) in msg and str(other) in msg
+    assert not other.exists()
+
+
+def test_ac_seed_summary_has_resolved_db_path(seeded, demo_env):
+    c, mod = seeded
+    s = mod.seed(db_path=str(demo_env))
+    assert Path(s["db_path"]).resolve() == Path(demo_env).resolve()
+
+
+def test_ac_main_prints_db_path_first(demo_env, capsys):
+    mod = _seed_mod()
+    mod.main([])
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert lines and str(demo_env) in lines[0], lines[:2]
+
+
+def test_ac_simulated_approver_marked_in_record(seeded):
+    c, mod = seeded
+    aid = _by_name(c, "recon-agent")["id"]
+    mod.approve_as_second_user(aid)
+    from backend import db
+    with db.engine.connect() as cx:
+        ap = cx.execute(db.approvals.select().where(db.approvals.c.agent_id == aid)).first()
+    assert "simulated" in ap.approver.lower()
+
+
+def test_ac_evidence_pack_says_approval_simulated(seeded, tmp_path, monkeypatch):
+    c, mod = seeded
+    monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
+    aid = _by_name(c, "recon-agent")["id"]
+    mod.approve_as_second_user(aid)
+    r = c.post(f"/api/agents/{aid}/evidence-pack",
+               headers={"X-Domino-User-Id": "alice", "X-Domino-User": "alice"})
+    assert r.status_code == 200, r.text
+    text = Path(r.json()["markdown_path"]).read_text()
+    parts = re.split(r"^##\s+", text, flags=re.M)
+    sec = next(p for p in parts if p.lower().startswith("approvals"))
+    assert "simulated" in sec.lower(), sec
+
+
+def test_ac_architecture_doc_states_table_count():
+    t = (ROOT / "docs" / "architecture.md").read_text().lower()
+    assert "core tables" in t or "overrides" in t
