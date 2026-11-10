@@ -109,14 +109,18 @@ export function Segmented({ name, question, value, onChange, testid, rowTestId, 
         <p className="ds-helper" data-testid="criterion-question">{question}</p>
       </div>
       <div className="ds-criterion-control">
+        <span className="ds-segmented-end" aria-hidden="true">{lowLabel}</span>
         <div role="radiogroup" aria-labelledby={id} className="ds-segmented" data-testid={testid}>
           {options.map((n, i) => (
             <button key={n} type="button" role="radio" aria-checked={n === value} ref={(el) => { refs.current[i] = el }}
+                    aria-describedby={i === 0 ? `${id}-lo` : i === options.length - 1 ? `${id}-hi` : undefined}
                     tabIndex={n === value ? 0 : -1} className="ds-segment" onClick={() => onChange(n)}
                     onKeyDown={(e) => onKey(e, i)}>{n}</button>
           ))}
         </div>
-        <div className="ds-segmented-ends" aria-hidden="true"><span>{lowLabel}</span><span>{highLabel}</span></div>
+        <span className="ds-segmented-end" aria-hidden="true">{highLabel}</span>
+        <span id={`${id}-lo`} className="ds-sr">{lowLabel}</span>
+        <span id={`${id}-hi`} className="ds-sr">{highLabel}</span>
       </div>
     </div>
   )
@@ -144,6 +148,15 @@ export function ChipInput({ label, help, value, onChange, suggestions = [], plac
       setText(parts[parts.length - 1])
     } else setText(v)
   }
+  const [live, setLive] = React.useState('')
+  const prev = React.useRef(value)
+  React.useEffect(() => {
+    const before = prev.current
+    const added = value.filter((x) => !before.includes(x)), removed = before.filter((x) => !value.includes(x))
+    prev.current = value
+    if (added.length) setLive(`Added scope ${added.join(', ')}. ${value.length} in total.`)
+    else if (removed.length) setLive(`Removed scope ${removed.join(', ')}. ${value.length} in total.`)
+  }, [value])
   const open = suggestions.filter((s) => !value.includes(s))
   return (
     <div className="ds-field">
@@ -162,6 +175,7 @@ export function ChipInput({ label, help, value, onChange, suggestions = [], plac
                placeholder={value.length ? '' : placeholder} autoComplete="off" />
       </div>
       {help && <p className="ds-helper">{help}</p>}
+      <div className="ds-sr" role="status" aria-live="polite" aria-atomic="true">{live}</div>
       {open.length > 0 && (
         <div className="ds-suggest" role="group" aria-label="Suggested scopes">
           <span className="ds-suggest-label">Suggestions</span>

@@ -1,4 +1,6 @@
 """POST /api/tiering/preview: read-only tier preview for the Register page (scores via backend/tiering.py)."""
+import math
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ..domino_identity import User, require_user
@@ -14,14 +16,16 @@ def preview_tier(body=Body(...), user: User = Depends(require_user)):
     crit = body["criteria"]
     if not crit:
         raise HTTPException(422, "criteria must not be empty")
-    for k, v in crit.items():
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            if not any(b in str(k).lower() for b in ("backtest", "benchmark")):
-                raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
-        elif float(v) != int(v):
-            raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
     try:
+        for k, v in crit.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                if not any(b in str(k).lower() for b in ("backtest", "benchmark")):
+                    raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
+            elif not math.isfinite(v) or not float(v).is_integer():
+                raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
         res = score_tier(dict(crit))
-    except (TieringInputRejected, ValueError, TypeError) as e:
+    except HTTPException:
+        raise
+    except (TieringInputRejected, ValueError, TypeError, OverflowError) as e:
         raise HTTPException(422, str(e))
     return {"tier": res.tier, "score": res.score, "reasoning": res.reasoning}

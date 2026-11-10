@@ -16,23 +16,25 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ds-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
 
 /* page header */
+.ds-container { width: 100%; max-width: 1232px; margin-inline: auto; padding-inline: 0 }  /* inside .content (24px padding, 1280 max) */
 .ds-page { padding-top: var(--ds-s1) }
+.ds-dim { opacity: .5; transition: opacity .12s }
 .ds-page-header { margin-bottom: var(--ds-s4) }
 .ds-breadcrumb ol { display: flex; gap: var(--ds-s1); list-style: none; margin: 0 0 var(--ds-s2); padding: 0; font-size: 13px; color: var(--ds-muted) }
 .ds-breadcrumb li + li::before { content: "/"; margin-right: var(--ds-s1); color: var(--ds-line-strong) }
-.ds-breadcrumb a { color: var(--ds-muted); border-radius: 4px } .ds-breadcrumb a:hover { color: var(--ds-accent); text-decoration: underline }
+.ds-breadcrumb a { color: var(--ds-accent); border-radius: 4px } .ds-breadcrumb a:hover { color: var(--ds-accent-hover); text-decoration: underline }
 .ds-breadcrumb [aria-current] { color: var(--ds-ink); font-weight: 500 }
 .ds-page-header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--ds-s2) }
 .ds-title { font-size: 28px; line-height: 36px; font-weight: 650; letter-spacing: -.01em; color: var(--ds-ink); margin: 0 }
 .ds-description { margin: var(--ds-s1) 0 0; font-size: 15px; line-height: 24px; color: var(--ds-muted) }
 
-/* layout */
-.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start }
-.ds-form { display: flex; flex-direction: column; gap: var(--ds-s3); min-width: 0; max-width: 720px }
-.ds-side { min-width: 0 }
+/* layout: below 1200 one centred column, summary first; from 1200 form + sticky summary filling the container */
+.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start; max-width: 720px; margin-inline: auto }
+.ds-form { display: flex; flex-direction: column; gap: var(--ds-s3); min-width: 0 }
+.ds-side { min-width: 0; order: -1 }
 @media (min-width: 1200px) {
-  .ds-layout { grid-template-columns: minmax(0, 720px) 320px; gap: var(--ds-s4) }
-  .ds-side { position: sticky; top: var(--ds-s3) }
+  .ds-layout { grid-template-columns: minmax(0, 1fr) 340px; gap: var(--ds-s4); max-width: none }
+  .ds-side { order: 0; position: sticky; top: var(--ds-s3) }
 }
 
 /* cards and sections */
@@ -59,21 +61,23 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ds-input:focus-visible { outline: none; border-color: var(--ds-accent); box-shadow: 0 0 0 3px rgba(84, 63, 222, .25) }
 .ds-input[aria-invalid="true"] { border-color: var(--ds-danger) }
 .ds-input[aria-invalid="true"]:focus-visible { box-shadow: 0 0 0 3px rgba(180, 35, 24, .2) }
-.ds-field-error { margin: 6px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-danger); font-weight: 500 }
+.ds-field-error { overflow-wrap: anywhere; margin: 6px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-danger); font-weight: 500 }
 
 /* criteria */
 .ds-criteria { display: flex; flex-direction: column }
-.ds-criterion { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--ds-s1) var(--ds-s3); padding: var(--ds-s2) 0; border-top: 1px solid var(--ds-line) }
+.ds-criterion { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--ds-s1) var(--ds-s3); padding: 12px 0; border-top: 1px solid var(--ds-line) }
 .ds-criterion:first-child { border-top: 0; padding-top: 0 } .ds-criterion:last-child { padding-bottom: 0 }
+.ds-criterion .ds-helper { margin-top: 0 }
 .ds-criterion-text { flex: 1 1 260px; min-width: 0 }
-.ds-criterion-control { flex: none; width: 240px }
-.ds-segmented { display: grid; grid-template-columns: repeat(5, 1fr); padding: 3px; gap: 2px; background: #eceff3; border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
-.ds-segment { height: 34px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 14px; font-weight: 500;
+.ds-criterion-control { flex: none; display: flex; align-items: center; gap: var(--ds-s1) }
+.ds-segmented { width: 220px }
+.ds-segmented { display: grid; grid-template-columns: repeat(5, 1fr); padding: 2px; gap: 2px; background: #eceff3; border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
+.ds-segment { height: 26px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 14px; font-weight: 500;
   cursor: pointer; font-variant-numeric: tabular-nums; transition: background .12s, color .12s }
 .ds-segment:hover { background: #dfe3e9 }
 .ds-segment[aria-checked="true"] { background: var(--ds-accent); color: #fff; font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .2) }
 .ds-segment:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
-.ds-segmented-ends { display: flex; justify-content: space-between; margin-top: 4px; padding: 0 4px; font-size: 12px; color: var(--ds-muted) }
+.ds-segmented-end { font-size: 12px; color: var(--ds-muted); width: 28px } .ds-segmented-end:first-child { text-align: right }
 
 /* chips */
 .ds-chip-box { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 44px; padding: 6px 8px; cursor: text }
@@ -98,7 +102,7 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ds-btn:disabled { background: #e6e9ee; border-color: #e6e9ee; color: #6b7280; cursor: not-allowed }
 .ds-btn[aria-busy="true"]:disabled { background: var(--ds-accent); border-color: var(--ds-accent); color: #fff; cursor: progress; opacity: .85 }
 .ds-btn:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
-.ds-form-footer { display: flex; justify-content: flex-end; gap: var(--ds-s2); padding: var(--ds-s2) 0 var(--ds-s3); border-top: 1px solid var(--ds-line) }
+.ds-form-footer { position: sticky; bottom: 0; z-index: 5; display: flex; justify-content: flex-end; gap: var(--ds-s2); padding: var(--ds-s2) 0; background: var(--ds-bg); border-top: 1px solid var(--ds-line) }
 
 /* alert */
 .ds-alert { display: flex; gap: 12px; padding: var(--ds-s2); border-radius: var(--ds-radius); border: 1px solid; font-size: 14px; line-height: 20px }
