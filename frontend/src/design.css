@@ -29,11 +29,11 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ds-description { margin: var(--ds-s1) 0 0; font-size: 15px; line-height: 24px; color: var(--ds-muted) }
 
 /* layout: below 1200 one centred column, summary first; from 1200 form + sticky summary filling the container */
-.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start; max-width: 720px; margin-inline: auto }
+.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start; max-width: 720px }
 .ds-form { display: flex; flex-direction: column; gap: var(--ds-s3); min-width: 0 }
 .ds-side { min-width: 0; order: -1 }
 @media (min-width: 1200px) {
-  .ds-layout { grid-template-columns: minmax(0, 720px) minmax(320px, 1fr); gap: var(--ds-s4); max-width: none; margin-inline: 0 }
+  .ds-layout { grid-template-columns: minmax(0, 720px) minmax(320px, 1fr); gap: var(--ds-s4); max-width: none }
   .ds-side { order: 0; position: sticky; top: var(--ds-s3) }
 }
 
