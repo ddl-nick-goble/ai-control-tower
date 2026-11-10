@@ -532,10 +532,6 @@ def test_c1_alert_does_not_repeat_field_message(page, shot):
 
 def test_c2_focus_moves_after_failed_submit(page, shot):
     url, alert = _reject(page)
-    ok = page.evaluate("""() => { const a = document.activeElement;
-        return !!a && (a === document.querySelector('[data-testid=card-url-input]') ||
-          a.matches('[data-testid=register-error]') || !!a.closest('[data-testid=register-error]') ||
-          a.id === document.querySelector('label[for]') ?.htmlFor); }""")
     focused_url = url.evaluate("e => e === document.activeElement")
     focused_alert = alert.evaluate("e => e === document.activeElement || e.contains(document.activeElement)")
     assert focused_url or focused_alert, "focus stayed on the submit button"
