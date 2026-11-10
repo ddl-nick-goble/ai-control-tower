@@ -1,3 +1,25 @@
+**One-command demo: ACT_DEMO_MODE=1 bash app.sh**
+
+(`bash app.sh --demo` does the same.) Demo mode runs the whole demo with none of the live prerequisites: no LLM
+Gateway consent, no deployed Domino Agent, no service account, no second Domino user, no live Governance and no
+classifier endpoint key. Every stand-in is labelled in the UI (a banner on every page) and in `GET /api/health`
+(`demo_mode`, `stand_ins`).
+
+- Defaults, filled only where a variable is unset: `ACT_LLM_PROVIDER=mock`,
+  `ACT_DOMINO_LOCAL_AGENTS=config/local_agents.json`, `RECON_AGENT_ID=local-recon-agent`,
+  `ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost`. `ACT_DB` defaults to a separate demo database
+  (`/mnt/data/ai-control-tower/act/demo.db` when that folder exists, else `.act-demo/act.db` in the repo), never the shared `act.db`.
+- On startup an empty database is seeded in-process: the 12 fixture agents including recon-agent, the weekend-drift run with one
+  open `scope_drift` finding, and a validation record from the mock judge. Restarting does not duplicate anything.
+- Stand-ins: simulated Governance (bundle ids start with `demo-`, both policies on recon-agent); a deterministic local
+  "demo classifier (not the endpoint)" (spans carry `act.classifier.source=demo`); a simulated service account
+  `svc-act-recon-demo`; a simulated second approver `demo-approver-simulated` ("Approve as demo approver" on the agent page,
+  `POST /api/demo/approve/{agent_id}`; the normal approve route still refuses the registrant with 403); "Run recon agent"
+  (`POST /api/demo/run/{agent_id}`) runs one mock recon run in-process.
+- "Reset demo" in the banner (`POST /api/demo/reset`) wipes the demo database and reseeds it.
+- With `ACT_DEMO_MODE` unset none of this exists: no banner, `/api/demo/*` returns 404, and governance and the classifier behave as before.
+- Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
+
 # Ten-minute demo
 
 The walk: fleet, recon-agent, approve as a second user, treasury-sweep-agent, run timeline, evidence pack, PDF,

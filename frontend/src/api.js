@@ -35,3 +35,14 @@ export const api = {
 export const registerExternal = (body) => request('agents/external', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 })
+
+// Demo mode (served only when ACT_DEMO_MODE=1 on the server).
+let healthPromise = null
+export const health = () => (healthPromise ||= request('health').catch(() => ({ demo_mode: false, stand_ins: [] })))
+export const standIn = (h, name) => ((h && h.stand_ins) || []).find((s) => s.name === name)
+const post = (path) => request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+export const demoApi = {
+  approve: (id) => post(`demo/approve/${encodeURIComponent(id)}`),
+  run: (id) => post(`demo/run/${encodeURIComponent(id)}`),
+  reset: () => post('demo/reset'),
+}

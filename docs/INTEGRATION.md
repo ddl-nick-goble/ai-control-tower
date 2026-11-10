@@ -7,6 +7,7 @@ labels itself honestly: template text in the console, the mock judge in the vali
 
 | Switch | Current state | What is mocked | Go live |
 |---|---|---|---|
+| `ACT_DEMO_MODE` | Unset (off). `1` or `bash app.sh --demo` turns on demo mode | Everything that needs a live prerequisite: mock LLM, locally hosted recon agent, simulated Governance (`demo-` bundle ids), demo classifier (`act.classifier.source=demo`), simulated service account `svc-act-recon-demo`, simulated second approver `demo-approver-simulated`; separate demo DB; auto-seed. All labelled in the UI banner and `GET /api/health`. See [DEMO.md](DEMO.md). | Unset `ACT_DEMO_MODE` and use the rows below, one stand-in at a time. |
 | `ACT_LLM_PROVIDER` | `mock` for the demo (unset = `gateway`) | Recon agent tool loop and validation judge (responses carry model `mock-llm`). Drift explanations make no LLM call in mock mode: a deterministic template is used. `GET /api/health` reports `llm_provider`; a warning is logged at startup. | Unset it, or set `gateway`, and set `LLM_GATEWAY_URL` (next row). |
 | `LLM_GATEWAY_URL` | Not set | Needed only with the `gateway` provider | 1. Open the gateway App once in a browser and accept consent: https://apps.se-demo.domino.tech/apps/llmgateway/ . 2. Set `LLM_GATEWAY_URL` to that URL. 3. Confirm `GET <url>/v1/models` (with the in-run bearer) lists the `sonnet` and `haiku` aliases, or change the aliases in `agents/recon_agent/llm.py` callers. 4. Unset `ACT_LLM_PROVIDER`. Outside Domino also set `LLM_GATEWAY_TOKEN`. |
 | `ACT_DOMINO_LOCAL_AGENTS` | Points at `config/local_agents.json`: lists `recon-agent` (native id `local-recon-agent`, hosting "workspace (not deployed)") | The agent is not a deployed Domino Agent; it runs in a workspace or Job. Spans and the classifier call are real. | Deploy `agents/recon_agent` as a Domino Agent. Set `RECON_AGENT_ID` to the Domino app id of that Agent, unset `ACT_DOMINO_LOCAL_AGENTS` (or delete the entry), rerun intake. The deployed Agent then appears from the Apps API. Its ACT id changes, so rerun validation (below) for the new id. Cleanup: archive or delete the old `act:domino` row for `local-recon-agent` once the real Agent is deployed, so the placeholder does not linger beside it. |
@@ -20,6 +21,8 @@ labels itself honestly: template text in the console, the mock judge in the vali
 | `ACT_EXTERNAL_ALLOW_HOSTS` | Not set: external agent-card fetches are refused | Hosts allowed for external card fetch | Comma-separated hostnames to permit. Private, link-local and port 8899 stay refused. |
 | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
 | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
+
+Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
 
 ## Running the stand-ins
 

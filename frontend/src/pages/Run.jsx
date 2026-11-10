@@ -6,7 +6,12 @@ import { ErrorBox, Loading, useAsync } from '../components/ui'
 
 // Never show provider/model ids from trace data.
 function label(ev) {
-  if (ev.kind === 'model_call') return 'LLM call · frontier model via gateway'
+  if (ev.kind === 'model_call') {
+    const a = ev.attrs || {}
+    const mock = String(a['act.llm.provider'] || '').toLowerCase() === 'mock'
+      || /mock-llm/i.test(`${ev.name || ''} ${a['gen_ai.request.model'] || ''}`)
+    return mock ? 'LLM call · mock LLM (demo, no gateway call)' : 'LLM call · frontier model via gateway'
+  }
   return clean(ev.name)
 }
 

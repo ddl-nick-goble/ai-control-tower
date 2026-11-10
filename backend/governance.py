@@ -9,7 +9,7 @@ import threading
 import requests
 from sqlalchemy import select
 
-from . import db
+from . import db, demo, demo_governance
 
 log = logging.getLogger(__name__)
 TIMEOUT = 15
@@ -101,6 +101,8 @@ def _agent(agent_id):
 
 def ensure_bundle(agent_id: str) -> str:
     """Idempotent: one bundle per agent. Stored on agents.bundle_id."""
+    if demo.enabled():
+        return demo_governance.ensure_bundle(agent_id)
     with _lock:
         try:
             a, deps = _agent(agent_id)
@@ -141,6 +143,8 @@ def ensure_bundle(agent_id: str) -> str:
 
 
 def get_bundle(bundle_id):
+    if demo.enabled():
+        return demo_governance.get_bundle(bundle_id)
     d = _call("GET", f"/bundles/{bundle_id}")
     if isinstance(d, dict) and d.get("id") == bundle_id:
         return d
@@ -158,6 +162,8 @@ def _policy_struct(policy_id):
 
 def attach_evidence(bundle_id: str, kind: str, payload: dict):
     """kind 'model_version' attaches a ModelVersion; any other kind is answered as policy evidence."""
+    if demo.enabled():
+        return demo_governance.attach_evidence(bundle_id, kind, payload)
     payload = payload or {}
     if kind == "model_version":
         return _call("POST", f"/bundles/{bundle_id}/attachments", {
@@ -195,11 +201,15 @@ def attach_evidence(bundle_id: str, kind: str, payload: dict):
 
 
 def expected_policy_names() -> list:
+    if demo.enabled():
+        return [demo_governance.AGENTIC_NAME, demo_governance.MODEL_NAME]
     return [AGENTIC_NAME, MODEL_NAME]
 
 
 def mirror_approval(agent_id: str, approver: str) -> str:
     """Best-effort RequestSubmitted then RequestApproved. Returns 'synced' | 'skipped'. Raises GovernanceError."""
+    if demo.enabled():
+        return demo_governance.mirror_approval(agent_id, approver)
     a, _ = _agent(agent_id)
     bid = a.bundle_id
     if not bid:  # mirror never creates bundles (POST /api/agents/{id}/governance does)

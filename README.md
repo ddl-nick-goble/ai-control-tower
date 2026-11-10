@@ -25,7 +25,7 @@ available it serves the existing build without failing. **A published Domino App
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): integration map, trace-path sequence and data model (Mermaid).
-- [docs/DEMO.md](docs/DEMO.md): the ten-minute demo script, cold-start commands and what is mocked.
+- [docs/DEMO.md](docs/DEMO.md): the ten-minute demo script, cold-start commands and what is mocked. One-command demo: `ACT_DEMO_MODE=1 bash app.sh` (demo mode, see the first section of DEMO.md and the `ACT_DEMO_MODE` row in [docs/INTEGRATION.md](docs/INTEGRATION.md)).
 - [docs/INTEGRATION.md](docs/INTEGRATION.md): every switch that moves a stand-in to a live piece.
 - [docs/governance-api.md](docs/governance-api.md), [docs/BORROWED.md](docs/BORROWED.md): Governance API notes and borrowed schemas.
 

@@ -11,7 +11,7 @@ from pathlib import Path
 import jsonschema
 from sqlalchemy import func, select
 
-from . import chain, db, governance
+from . import chain, db, demo, governance
 from .normalize import _audit
 
 log = logging.getLogger(__name__)
@@ -128,6 +128,8 @@ def _identity(d, aid):
         lines.append(f"Principal: {esc(i.principal) or '-'} (kind {esc(i.kind) or '-'}, "
                      f"scopes {esc(', '.join(map(str, i.scopes or []))) or 'none'})")
         cites.append(_c("identities", i.id))
+    if ident.get("simulated"):
+        lines.append(f"Identity label: {demo.SERVICE_ACCOUNT_LABEL}")
     if not d["identities"]:
         lines.append("No distinct identity recorded: the agent acts under a shared or borrowed credential.")
     models = [x for x in d["deps"] if x.kind == "model"]
@@ -301,6 +303,8 @@ def _records(d, aid, paths=None):
     if paths:
         lines.append(f"Files: {esc(paths['markdown'])} and {esc(paths['pdf'])}, saved in the project dataset at "
                      f"{esc(paths['location'])}")
+        if demo.enabled():
+            lines.append(f"Governance: {demo.GOVERNANCE_LABEL}; no call was made to Domino Governance")
         lines.append("Governance: this pack is recorded against bundle " + esc(paths["bundle"]) if paths.get("bundle")
                      else "Governance: no Governance bundle for this agent; the pack is recorded in the project dataset only")
     return _bullets(lines), _dedupe(cites)

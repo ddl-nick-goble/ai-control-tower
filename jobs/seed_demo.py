@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -60,10 +61,30 @@ def _count(table, agent_id):
         return cx.execute(select(func.count()).select_from(table).where(table.c.agent_id == agent_id)).scalar() or 0
 
 
-def _run_recon(agent_id, summary):
+_recon_lock = threading.Lock()
+
+
+def run_recon_once(agent_id) -> str:
+    """Run the recon agent once in-process (always) and return the id of the new run."""
+    from backend import db
+    from sqlalchemy import select
+
+    def run_ids():
+        with db.engine.connect() as cx:
+            return {r[0] for r in cx.execute(select(db.runs.c.id).where(db.runs.c.agent_id == agent_id))}
+    with _recon_lock:
+        before = run_ids()
+        _run_recon(agent_id, {}, force=True)
+        new = run_ids() - before
+    if not new:
+        raise RuntimeError("the recon run produced no run in ACT")
+    return sorted(new)[-1]
+
+
+def _run_recon(agent_id, summary, force=False):
     """Run the recon agent once; its spans go to the ACT ingest in-process instead of over HTTP."""
     from backend import db
-    if _count(db.runs, agent_id):
+    if not force and _count(db.runs, agent_id):
         summary["recon_run"] = "skipped (already has runs)"
         return
     from agents.recon_agent import act_export
@@ -125,7 +146,10 @@ def _validate(agent_id, summary):
         summary["validation"] = "skipped (record exists)"
         return
     from jobs import validate
+    from backend import demo
     try:
+        if demo.enabled():  # demo mode keeps validation local: no MLflow server round trips
+            raise ConnectionError("demo mode")
         res = validate.run_validation(validate.load_prompts(), reps=5)
         note = ""
     except Exception as e:  # noqa: BLE001 - MLflow tracking unavailable: score without MLflow runs

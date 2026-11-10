@@ -27,11 +27,16 @@ CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents", "rec
 BASE = "act-recon"
 
 
+def _demo():
+    """Demo mode keeps tracing local: the agent's own ACT spans are the record, no MLflow round trips."""
+    return (os.environ.get("ACT_DEMO_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def add_tracing(name, **kw):
     """Domino @add_tracing, or a no-op. A tracing failure re-runs nothing twice: errors raised by
     the wrapped function propagate; only setup failures fall back to an untraced call."""
     def deco(fn):
-        if _domino_add_tracing is None:
+        if _domino_add_tracing is None or _demo():
             return fn
         started = {}
 
@@ -76,7 +81,7 @@ def agent_run(summary_metrics=None, config_path=CONFIG):
     """Set experiment act-recon-<project>-<user>, then yield the Domino agent MLflow run
     (None when the SDK or tracking server is unavailable)."""
     ctx = None
-    if DominoAgentContext is not None:
+    if DominoAgentContext is not None and not _demo():
         try:
             setup_experiment(BASE)
             ctx = DominoAgentContext(agent_config_path=config_path,

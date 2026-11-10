@@ -19,6 +19,8 @@ from pathlib import Path
 
 import requests
 
+from backend import demo
+
 from .base import AdapterBase, SourceAgent, SourceRun
 
 log = logging.getLogger(__name__)
@@ -214,8 +216,11 @@ class DominoAdapter(AdapterBase):
         for e in entries:
             principal = e.get("principal") or e.get("owner")
             allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
-            ident = (self._identity(principal) if principal in allow else
-                     {"type": "domino_workspace_user", "principal": principal or "unknown", "distinct": False})
+            if demo.enabled() and e["native_id"] == (os.environ.get("RECON_AGENT_ID") or "local-recon-agent"):
+                ident = demo.service_account_identity()  # labelled stand-in: no real service account in demo mode
+            else:
+                ident = (self._identity(principal) if principal in allow else
+                         {"type": "domino_workspace_user", "principal": principal or "unknown", "distinct": False})
             out.append(SourceAgent(
                 platform="domino", native_id=e["native_id"], name=e["name"], description=e.get("description", ""),
                 version=str(e.get("version", "1")), owner=e.get("owner"), status=e.get("status", ""),
@@ -227,11 +232,14 @@ class DominoAdapter(AdapterBase):
         return out
 
     def list_agents(self):
-        agents = [self._to_agent(it) for it in self._fetch_apps()]  # listing errors propagate to intake
+        # demo mode: no live Domino listing, only the locally hosted agents below
+        agents = [] if demo.enabled() else [self._to_agent(it) for it in self._fetch_apps()]  # errors propagate to intake
         have = {a.native_id for a in agents}
         return agents + [a for a in self._local_agents() if a.native_id not in have]
 
     def get_agent(self, native_id):
+        if demo.enabled():
+            return super().get_agent(native_id)
         it = self._call("GET", f"/api/apps/v1/apps/{native_id}")
         if isinstance(it, dict) and (it.get("id") or it.get("name")):
             return self._to_agent(it)
@@ -239,6 +247,8 @@ class DominoAdapter(AdapterBase):
 
     # -- runs and access events -----------------------------------------------
     def list_runs(self, native_id, since=None):
+        if demo.enabled():
+            return []
         exp = self._experiment(native_id)
         if not exp:
             return []
@@ -254,6 +264,8 @@ class DominoAdapter(AdapterBase):
 
     def access_events(self, native_id, since=None, limit=100):
         """Audit Trail events touching this agent (client-side filter on entity id)."""
+        if demo.enabled():
+            return []
         start = int(since.timestamp() * 1000) if hasattr(since, "timestamp") else int(since or (time.time() - 86400) * 1000)
         d = self._call("GET", "/api/audittrail/v1/auditevents", {"startTimestamp": start, "limit": limit})
         evs = (d or {}).get("events") or [] if isinstance(d, dict) else []
