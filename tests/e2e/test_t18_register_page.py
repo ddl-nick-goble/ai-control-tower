@@ -337,8 +337,12 @@ def test_r7_server_error_plain_language(page, shot):
     err = page.get_by_test_id("register-error")
     expect(err).to_be_visible(timeout=15000)
     expect(err).to_have_attribute("role", "alert")
-    expect(err).to_contain_text(re.compile(r"not allowed", re.I))
-    t = err.inner_text()
+    expect(err).to_contain_text(re.compile(r"fix|highlighted", re.I))
+    expect(err).not_to_contain_text(re.compile(r"not allowed", re.I))
+    field_err = page.get_by_test_id("card-url-error")
+    expect(field_err).to_be_visible()
+    expect(field_err).to_contain_text(re.compile(r"not allowed", re.I))
+    t = err.inner_text() + " " + field_err.inner_text()
     assert "{" not in t and "detail" not in t.lower(), t
     # the alert sits above the first section
     assert err.bounding_box()["y"] < page.get_by_test_id("register-section").first.bounding_box()["y"]

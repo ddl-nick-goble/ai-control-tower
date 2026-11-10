@@ -178,8 +178,13 @@ def test_ac11_errors_visible(page, authed, shot):
     page.get_by_role("button", name="Register agent", exact=True).click()
     err = page.get_by_test_id("register-error")
     expect(err).to_be_visible(timeout=15000)
-    expect(err).to_contain_text(re.compile(r"not allowed", re.I))
-    assert not re.match(r"\s*\d{3}\b", err.inner_text()), f"error starts with a status code: {err.inner_text()!r}"
+    expect(err).to_have_attribute("role", "alert")
+    expect(err).to_contain_text(re.compile(r"fix the highlighted field", re.I))
+    field_err = page.get_by_test_id("card-url-error")
+    expect(field_err).to_be_visible()
+    expect(field_err).to_contain_text(re.compile(r"not allowed", re.I))
+    for el in (err, field_err):
+        assert not re.match(r"\s*\d{3}\b", el.inner_text()), f"error starts with a status code: {el.inner_text()!r}"
     shot("then")
 
 

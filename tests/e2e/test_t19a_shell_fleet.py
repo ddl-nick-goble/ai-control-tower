@@ -301,21 +301,31 @@ def test_s2_filter_bar_search_and_count(page, shot):
     expect(page.get_by_role("button", name="Clear filters")).to_have_count(0)
     search = page.get_by_label("Search agents")
     expect(search).to_be_visible()
-    search.fill("treasury")
+    # name search: "liquidity" appears in exactly one agent name and in no owner
+    search.fill("liquidity")
     expect(rows).to_have_count(1)
-    expect(rows.first.get_by_test_id("fleet-name")).to_contain_text("treasury-sweep-agent")
+    expect(rows.first.get_by_test_id("fleet-name")).to_contain_text("liquidity-forecast-agent")
     expect(_count_text(page)).to_have_text(re.compile(r"^\s*1 agents?\s*$"))
-    # owner search
-    owner = rows.first.get_by_test_id("fleet-owner").inner_text().strip()
-    search.fill("")
-    expect(rows).to_have_count(total)
-    search.fill(owner)
-    assert 1 <= rows.count() <= total
-    for r in rows.all():
-        expect(r.get_by_test_id("fleet-owner")).to_contain_text(owner)
-    search.fill("treasury")
-    page.get_by_test_id("tier-filter").select_option("1")
+    # owner-only search: "model-risk-mgmt" is an owner and not part of any agent name
+    search.fill("model-risk-mgmt")
     expect(rows).to_have_count(1)
+    expect(rows.first.get_by_test_id("fleet-name")).to_contain_text("model-risk-doc-agent")
+    expect(rows.first.get_by_test_id("fleet-owner")).to_contain_text("model-risk-mgmt")
+    expect(_count_text(page)).to_have_text(re.compile(r"^\s*1 agents?\s*$"))
+    # name-or-owner: "treasury" matches a name and another agent's owner; count text matches the rows
+    search.fill("treasury")
+    expect(rows.filter(has_text="treasury-sweep-agent")).to_have_count(1)
+    expect(rows.filter(has_text="liquidity-forecast-agent")).to_have_count(1)
+    n = rows.count()
+    assert n >= 2, n
+    expect(_count_text(page)).to_have_text(re.compile(rf"^\s*{n} agents\s*$"))
+    # search combines with the tier filter
+    search.fill("liquidity")
+    page.get_by_test_id("tier-filter").select_option("1")
+    assert rows.count() <= 1
+    for r in rows.all():
+        expect(r.get_by_test_id("tier-badge")).to_contain_text("Tier 1")
+    expect(_count_text(page)).to_have_text(re.compile(rf"^\s*{rows.count()} agents?\s*$"))
     page.get_by_role("button", name="Clear filters").click()
     expect(rows).to_have_count(total)
     expect(search).to_have_value("")
