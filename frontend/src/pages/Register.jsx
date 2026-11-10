@@ -77,6 +77,8 @@ export default function Register() {
     setBusy(true); setError(null)
     try {
       const agent = await registerExternal({ card_url: url.trim(), criteria: { ...vals, data_scopes: scopes } })
+      // Hold the busy state briefly so the transition to the new agent page does not flash.
+      await new Promise((r) => setTimeout(r, 700))
       nav(`/agents/${encodeURIComponent(agent.id)}`)
     } catch (err) {
       setError(describeError(err))
