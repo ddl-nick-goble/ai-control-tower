@@ -401,3 +401,35 @@ def test_r9_fleet_button_opens_page(page, shot):
     expect(page).to_have_url(re.compile(r"#/register"))
     expect(page.get_by_test_id("register-summary")).to_be_visible()
     shot("then")
+
+
+def test_r7_server_rejection_marks_url_invalid(page, shot):
+    _open(page)
+    url = page.get_by_label("Agent card URL")
+    url.fill("http://169.254.169.254/latest")
+    page.get_by_role("button", name="Register agent", exact=True).click()
+    err = page.get_by_test_id("register-error")
+    expect(err).to_be_visible(timeout=15000)
+    expect(err).to_have_attribute("role", "alert")
+    expect(url).to_have_attribute("aria-invalid", "true")
+    shot("then")
+
+
+def test_r1_1024_summary_above_first_section(page, shot):
+    page.set_viewport_size({"width": 1024, "height": 768})
+    _open(page)
+    summary = page.get_by_test_id("register-summary")
+    first = page.get_by_test_id("register-section").first
+    expect(summary).to_be_visible()
+    assert summary.bounding_box()["y"] < first.bounding_box()["y"], "summary not above section 1"
+    assert _no_hscroll(page)
+    shot("then")
+
+
+def test_r5_preview_unavailable(page, shot):
+    page.route(re.compile(r"api/tiering/preview"), lambda r: r.fulfill(
+        status=500, content_type="application/json", body='{"detail":"boom"}'))
+    _open(page)
+    _set_all(page, 5)
+    expect(page.get_by_test_id("register-summary")).to_contain_text("Preview unavailable")
+    shot("then")

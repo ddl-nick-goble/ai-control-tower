@@ -16,6 +16,8 @@ def shot(page, request):
 
     def _shot(step: str) -> str:
         path = run_dir / f"{request.node.originalname}-{step}.png"
+        page.evaluate("window.scrollTo(0, 0)")
+        page.wait_for_timeout(250)
         page.screenshot(path=str(path), full_page=True)
         return str(path)
 
