@@ -16,7 +16,7 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
 
 ## In progress
 - **T-12** merged (b8aefb6). Post-merge on main: 424 backend passed, 33/33 e2e passed (QA dir wave6-main). Wave 6 complete.
-- **T-14** merged (a40b9e5): mock LLM provider (ACT_LLM_PROVIDER), recon-agent hosted locally (ACT_DOMINO_LOCAL_AGENTS), in-process validation, docs/INTEGRATION.md. Post-merge backend run in progress.
+- **T-14** merged (a40b9e5): mock LLM provider (ACT_LLM_PROVIDER), recon-agent hosted locally (ACT_DOMINO_LOCAL_AGENTS), in-process validation, docs/INTEGRATION.md. Post-merge on main: 457 passed, 3 skipped.
 
 ## Next
 - **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
