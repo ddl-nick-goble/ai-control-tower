@@ -139,10 +139,10 @@ index e69de29..b32075f 100644
 +_demo.apply_defaults()  # ACT_DEMO_MODE=1: fill env defaults before any submodule reads them
 diff --git a/backend/demo.py b/backend/demo.py
 new file mode 100644
-index 0000000..73530eb
+index 0000000..e2e910a
 --- /dev/null
 +++ b/backend/demo.py
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,211 @@
 +"""Demo mode: one switch (ACT_DEMO_MODE=1) that runs the whole demo without the live prerequisites.
 +
 +Everything demo-specific hangs off this module so the stand-ins stay behind clear seams:
@@ -186,6 +186,7 @@ index 0000000..73530eb
 +}
 +
 +_applied: list = []
++_db_new = False  # ACT_DB was filled by demo defaults, or its file did not exist at startup
 +
 +
 +def enabled() -> bool:
@@ -210,7 +211,11 @@ index 0000000..73530eb
 +            _applied.append(k)
 +    for k, v in _ENV_DEFAULTS.items():
 +        fill(k, v)
-+    fill("ACT_DB", default_db_path()) if "ACT_DB" not in os.environ else None
++    global _db_new
++    if "ACT_DB" not in os.environ:
++        fill("ACT_DB", default_db_path())
++    # Record, before anything opens the DB, whether the file is new or demo-owned by default.
++    _db_new = "ACT_DB" in _applied or not Path(os.environ["ACT_DB"]).expanduser().exists()
 +    demo_dir = Path(os.environ["ACT_DB"]).expanduser().resolve().parent
 +    if "MLFLOW_TRACKING_URI" not in os.environ:  # keep tracking local: no outbound call
 +        fill("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
@@ -300,22 +305,39 @@ index 0000000..73530eb
 +        pass
 +
 +
++def _may_claim() -> bool:
++    return _db_new or (os.environ.get("ACT_DEMO_ALLOW_DB") or "").strip().lower() in ("1", "true", "yes", "on")
++
++
 +def ensure_seeded():
 +    """Seed an empty DB to the demo state. Idempotent: a populated demo DB is left alone.
-+    Raises DemoGuardError for the shared DB or a non-demo DB that already has data."""
-+    from sqlalchemy import func, select
++    Raises DemoGuardError for the shared DB, a non-demo DB that already has data, or an unmarked
++    DB that demo mode may not claim (a hand-set ACT_DB needs ACT_DEMO_ALLOW_DB=1)."""
++    from sqlalchemy import func, select, text
 +    from . import db
 +    _check_not_shared()
 +    db.init_db()
 +    with db.engine.connect() as cx:
 +        n = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
 +        marked = _marker_present(cx)
++    if n and not marked:
++        _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
++    if not marked and not _may_claim():
++        _refuse(f"refusing to claim {db.DB_PATH} as a demo database: ACT_DB was set by hand; "
++                "set ACT_DEMO_ALLOW_DB=1 to let demo mode seed and reset it")
 +    if n:
-+        if not marked:
-+            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
 +        return None
++    # Claim + re-check in one transaction: the marker insert takes the write lock, so of two
++    # processes only one sees rowcount 1 and seeds; a DB that filled meanwhile rolls the claim back.
++    with db.engine.begin() as cx:
++        cx.execute(text("CREATE TABLE IF NOT EXISTS act_demo_marker (id INTEGER PRIMARY KEY, note TEXT)"))
++        r = cx.execute(text("INSERT OR IGNORE INTO act_demo_marker (id, note) VALUES (1, 'created by ACT demo mode')")).rowcount
++        n2 = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
++        if n2 and r:
++            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
++        if n2 or (r == 0 and marked is False):
++            return None  # another process seeded / is seeding
 +    log.warning("demo mode: seeding an empty database (%s)", db.DB_PATH)
-+    _write_marker()
 +    return _seed()
 +
 +
@@ -334,10 +356,10 @@ index 0000000..73530eb
 +    return _seed()
 diff --git a/backend/demo_governance.py b/backend/demo_governance.py
 new file mode 100644
-index 0000000..a3cf1eb
+index 0000000..24918e9
 --- /dev/null
 +++ b/backend/demo_governance.py
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,85 @@
 +"""Simulated Governance store for demo mode: local, no HTTP to Domino. Selected in backend/governance.py."""
 +import hashlib
 +import threading
@@ -377,13 +399,14 @@ index 0000000..a3cf1eb
 +        a, deps = _agent(agent_id)
 +        if a is None:
 +            raise GovernanceError(f"unknown agent {agent_id}")
-+        demo_bid = "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
-+        replace = bool(a.bundle_id) and not str(a.bundle_id).startswith("demo-")  # never relabel a real bundle
-+        bid = a.bundle_id if a.bundle_id and not replace else demo_bid
++        if a.bundle_id and not str(a.bundle_id).startswith("demo-"):
++            raise GovernanceError(f"agent {agent_id} has a non-demo bundle id {a.bundle_id}; "
++                                  "the simulated Governance store will not relabel it")
++        bid = a.bundle_id or "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
 +        want_model = a.source_platform == "domino" or any(d.kind == "model" for d in deps)
 +        names = [AGENTIC_NAME] + ([MODEL_NAME] if want_model else [])
 +        b = _entry(bid, f"ACT {agent_id}", names)
-+        if not a.bundle_id or replace:
++        if not a.bundle_id:
 +            with db.engine.begin() as cx:
 +                cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
 +                    bundle_id=bid, governance={"policies": names, "stage": b["stage"]}))
@@ -510,7 +533,7 @@ index 39a1114..e0137fd 100644
      bid = a.bundle_id
      if not bid:  # mirror never creates bundles (POST /api/agents/{id}/governance does)
 diff --git a/backend/main.py b/backend/main.py
-index 806da16..ba95993 100644
+index e2db481..03e7d78 100644
 --- a/backend/main.py
 +++ b/backend/main.py
 @@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
@@ -519,19 +542,20 @@ index 806da16..ba95993 100644
  
 -from . import db, llm, routes
 +from . import db, demo, llm, routes
+ from .prefix import ProxyPrefixMiddleware
  from .domino_identity import get_user
  
- ROOT = Path(__file__).resolve().parent.parent
-@@ -21,8 +21,17 @@ DIST = ROOT / "frontend" / "dist"
+@@ -22,8 +22,18 @@ DIST = ROOT / "frontend" / "dist"
  async def lifespan(_app):
      llm.warn_if_mock()
      db.init_db()
++    _app.state.demo_guard = None
 +    if demo.enabled():
 +        demo.warn_live_switches()
 +        try:
 +            await run_in_threadpool(demo.ensure_seeded)
-+        except demo.DemoGuardError:
-+            pass  # already logged; the app starts without seeding
++        except demo.DemoGuardError as e:
++            _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
      db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
 -    yield
 +    try:
@@ -541,14 +565,15 @@ index 806da16..ba95993 100644
  
  
  app = FastAPI(title="Agent Control Tower", lifespan=lifespan)
-@@ -41,12 +50,14 @@ async def write_guard(request, call_next):
+@@ -42,12 +52,15 @@ async def write_guard(request, call_next):
  
  @app.get("/api/health")
  def health():
 -    return {"status": "ok",
 -            "llm_provider": "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"}
 +    return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
-+            "llm_provider": demo.effective_llm_provider()}
++            "llm_provider": demo.effective_llm_provider(),
++            "demo_guard": getattr(app.state, "demo_guard", None)}
  
  
  for _m in pkgutil.iter_modules(routes.__path__):
@@ -665,10 +690,10 @@ index 0000000..64cf09b
 +        raise HTTPException(409, str(e))
 +    return {"status": "reset", "agents": summary.get("agents")}
 diff --git a/docs/DEMO.md b/docs/DEMO.md
-index 278b33f..a51fd0a 100644
+index 278b33f..7315822 100644
 --- a/docs/DEMO.md
 +++ b/docs/DEMO.md
-@@ -1,3 +1,24 @@
+@@ -1,3 +1,25 @@
 +**One-command demo: ACT_DEMO_MODE=1 bash app.sh**
 +
 +(`bash app.sh --demo` does the same.) Demo mode runs the whole demo with none of the live prerequisites: no LLM
@@ -689,12 +714,13 @@ index 278b33f..a51fd0a 100644
 +  (`POST /api/demo/run/{agent_id}`) runs one mock recon run in-process.
 +- "Reset demo" in the banner (`POST /api/demo/reset`) wipes the demo database and reseeds it.
 +- With `ACT_DEMO_MODE` unset none of this exists: no banner, `/api/demo/*` returns 404, and governance and the classifier behave as before.
++- Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
 +
  # Ten-minute demo
  
  The walk: fleet, recon-agent, approve as a second user, treasury-sweep-agent, run timeline, evidence pack, PDF,
 diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
-index e8d00be..1172db9 100644
+index e8d00be..255cdab 100644
 --- a/docs/INTEGRATION.md
 +++ b/docs/INTEGRATION.md
 @@ -7,6 +7,7 @@ labels itself honestly: template text in the console, the mock judge in the vali
@@ -705,6 +731,15 @@ index e8d00be..1172db9 100644
  | `ACT_LLM_PROVIDER` | `mock` for the demo (unset = `gateway`) | Recon agent tool loop and validation judge (responses carry model `mock-llm`). Drift explanations make no LLM call in mock mode: a deterministic template is used. `GET /api/health` reports `llm_provider`; a warning is logged at startup. | Unset it, or set `gateway`, and set `LLM_GATEWAY_URL` (next row). |
  | `LLM_GATEWAY_URL` | Not set | Needed only with the `gateway` provider | 1. Open the gateway App once in a browser and accept consent: https://apps.se-demo.domino.tech/apps/llmgateway/ . 2. Set `LLM_GATEWAY_URL` to that URL. 3. Confirm `GET <url>/v1/models` (with the in-run bearer) lists the `sonnet` and `haiku` aliases, or change the aliases in `agents/recon_agent/llm.py` callers. 4. Unset `ACT_LLM_PROVIDER`. Outside Domino also set `LLM_GATEWAY_TOKEN`. |
  | `ACT_DOMINO_LOCAL_AGENTS` | Points at `config/local_agents.json`: lists `recon-agent` (native id `local-recon-agent`, hosting "workspace (not deployed)") | The agent is not a deployed Domino Agent; it runs in a workspace or Job. Spans and the classifier call are real. | Deploy `agents/recon_agent` as a Domino Agent. Set `RECON_AGENT_ID` to the Domino app id of that Agent, unset `ACT_DOMINO_LOCAL_AGENTS` (or delete the entry), rerun intake. The deployed Agent then appears from the Apps API. Its ACT id changes, so rerun validation (below) for the new id. Cleanup: archive or delete the old `act:domino` row for `local-recon-agent` once the real Agent is deployed, so the placeholder does not linger beside it. |
+@@ -21,6 +22,8 @@ labels itself honestly: template text in the console, the mock judge in the vali
+ | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
+ | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
+ 
++Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
++
+ ## Running the stand-ins
+ 
+ ```
 diff --git a/frontend/src/api.js b/frontend/src/api.js
 index e4d3833..dc8b9c0 100644
 --- a/frontend/src/api.js
@@ -725,7 +760,7 @@ index e4d3833..dc8b9c0 100644
 +  reset: () => post('demo/reset'),
 +}
 diff --git a/frontend/src/components/ui.jsx b/frontend/src/components/ui.jsx
-index 74adb6c..78132a9 100644
+index 74adb6c..4af6c02 100644
 --- a/frontend/src/components/ui.jsx
 +++ b/frontend/src/components/ui.jsx
 @@ -1,6 +1,7 @@
@@ -736,7 +771,7 @@ index 74adb6c..78132a9 100644
  
  export function TierBadge({ tier }) {
    if (tier == null) return <span className="badge tier-none" data-testid="tier-badge" data-tier="">Unrated</span>
-@@ -25,9 +26,42 @@ export function ErrorBox({ error }) {
+@@ -25,9 +26,45 @@ export function ErrorBox({ error }) {
    return <div className="alert error" role="alert">{error?.status ? `${error.status}: ` : ''}{clean(error?.message || String(error))}</div>
  }
  
@@ -755,9 +790,11 @@ index 74adb6c..78132a9 100644
 +  }
 +  const [note, setNote] = React.useState(false)
 +  React.useEffect(() => {
++    // StrictMode-safe: the flag is cleared by the timer, not by the first effect run.
 +    if (sessionStorage.getItem('act-demo-reset')) {
-+      sessionStorage.removeItem('act-demo-reset'); setNote(true)
-+      const t = setTimeout(() => setNote(false), 5000); return () => clearTimeout(t)
++      setNote(true)
++      const t = setTimeout(() => { sessionStorage.removeItem('act-demo-reset'); setNote(false) }, 5000)
++      return () => clearTimeout(t)
 +    }
 +  }, [])
 +  return (
@@ -765,6 +802,7 @@ index 74adb6c..78132a9 100644
 +      <strong>Demo mode: simulated data and stand-ins</strong>
 +      <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
 +      <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
++      {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
 +      {err && <span className="alert error" role="alert">{err}</span>}
 +      {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
 +    </div>
@@ -997,10 +1035,10 @@ index 67e7690..e41deb0 100644
      except Exception as e:  # noqa: BLE001 - MLflow tracking unavailable: score without MLflow runs
 diff --git a/tests/e2e/test_t15_demo_mode.py b/tests/e2e/test_t15_demo_mode.py
 new file mode 100644
-index 0000000..dfbab01
+index 0000000..fda2b62
 --- /dev/null
 +++ b/tests/e2e/test_t15_demo_mode.py
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,238 @@
 +"""T-15 e2e: one-switch demo mode (D-2..D-10).
 +
 +One app on port 9889 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
@@ -1163,6 +1201,7 @@ index 0000000..dfbab01
 +    expect(page.get_by_test_id("run-item")).to_have_count(2, timeout=30000)
 +    page.goto("./#/")
 +    page.get_by_role("button", name="Reset demo").click()
++    shot("after-reset-click")
 +    _assert_fresh_fleet(page)
 +    page.goto("./#/")
 +    _open_recon(page)
@@ -1209,6 +1248,8 @@ index 0000000..dfbab01
 +    runs = page.get_by_test_id("run-item")
 +    expect(runs).to_have_count(1)
 +    page.get_by_role("button", name="Run recon agent").click()
++    expect(page.get_by_role("button", name="Run recon agent")).to_be_visible()
++    shot("agent-after-run-click")
 +    expect(runs).to_have_count(2, timeout=30000)
 +    runs.first.get_by_role("link").first.click()
 +    expect(page.get_by_test_id("timeline-page")).to_be_visible()
@@ -1238,10 +1279,10 @@ index 0000000..dfbab01
 +    _stop(_APP["proc"], _APP["logf"])  # leave port 9888 free for later modules
 diff --git a/tests/test_t15_demo_mode.py b/tests/test_t15_demo_mode.py
 new file mode 100644
-index 0000000..0864beb
+index 0000000..d345362
 --- /dev/null
 +++ b/tests/test_t15_demo_mode.py
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,395 @@
 +"""T-15 tests: demo mode (D-1..D-8, D-10). Written from the spec, API side only.
 +
 +Contracts assumed: ACT_DEMO_MODE=1 read from env when the app is built/started; GET /api/health gives
@@ -1553,6 +1594,90 @@ index 0000000..0864beb
 +    except Exception:
 +        return  # real client, no Domino configured
 +    assert not str(bid).startswith("demo-")
++
++
++# ---- spec points added: shared-DB guard, env fill, audit identity ----
++def _audit_rows(action):
++    from backend import db
++    with db.engine.connect() as cx:
++        return cx.execute(select(db.audit_events).where(db.audit_events.c.action == action)).all()
++
++
++def _insert_plain_agent(name="plain-agent"):
++    from backend import db
++    with db.engine.begin() as cx:
++        cx.execute(db.agents.insert().values(
++            id=f"act:test:{name}", source_platform="test", native_id=name, name=name, owner="o", tier="low",
++            status="discovered", registered_by="regu", registered_by_username="regu", last_seen="2026-01-01T00:00:00+00:00",
++            record={"name": name}))
++
++
++def test_demo_reset_never_wipes_non_demo_db(tmp_path, monkeypatch):
++    # phase 1: demo off, create a non-demo DB holding real-looking agents
++    _setup(monkeypatch, tmp_path, False)
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app):
++        _insert_plain_agent("plain-1")
++        _insert_plain_agent("plain-2")
++        before = _counts()
++    assert before["agents"] == 2
++    _purge()
++    # phase 2: demo on, same DB file
++    monkeypatch.setenv("ACT_DEMO_MODE", "1")
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        names = {a["name"] for a in c.get("/api/agents").json()}
++        assert names == {"plain-1", "plain-2"}  # startup did not seed
++        assert _counts() == before
++        r = c.post("/api/demo/reset", headers=HDR)
++        assert r.status_code == 409, r.text
++        assert _counts() == before
++        assert {a["name"] for a in c.get("/api/agents").json()} == {"plain-1", "plain-2"}
++    _purge()
++
++
++def test_demo_defaults_leave_explicitly_empty_variable(tmp_path, monkeypatch):
++    import os
++    _setup(monkeypatch, tmp_path, True)
++    monkeypatch.setenv("RECON_AGENT_ID", "")
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        assert c.get("/api/health").json()["demo_mode"] is True
++        assert os.environ["RECON_AGENT_ID"] == ""
++        # unset ones still filled
++        assert os.environ.get("ACT_LLM_PROVIDER") == "mock"
++    _purge()
++
++
++def test_demo_approval_audit_identifies_real_user_and_simulated(demo):
++    rid = _agent(demo)["id"]
++    r = demo.post(f"/api/demo/approve/{rid}", headers=HDR)
++    assert r.status_code == 200, r.text
++    rows = _audit_rows("approved")
++    assert len(rows) == 1
++    row = rows[0]
++    blob = json.dumps(row.detail)
++    assert row.actor_user_id == "demo-approver-simulated"
++    assert row.detail.get("simulated") is True
++    assert row.detail.get("requested_by") == "u1"
++    assert "tester" in blob
++
++
++def test_normal_approve_ignores_client_supplied_audit_fields(off):
++    from backend import db
++    _insert_plain_agent("plain-x")
++    aid = "act:test:plain-x"
++    hdr = {"X-Domino-User-Id": "approver1", "X-Domino-User": "approver1"}
++    r = off.post(f"/api/agents/{aid}/approve", headers=hdr,
++                 json={"simulated": True, "requested_by": "evil", "requested_by_username": "evil",
++                       "audit_extra": {"simulated": True}, "run_id": None})
++    assert r.status_code == 200, r.text
++    rows = _audit_rows("approved")
++    assert len(rows) == 1
++    d = rows[0].detail
++    assert "simulated" not in d and "requested_by" not in d and "requested_by_username" not in d
++    assert "evil" not in json.dumps(d)
++    assert rows[0].actor_user_id == "approver1"
 diff --git a/tracing_setup.py b/tracing_setup.py
 index be64fb5..c438aed 100644
 --- a/tracing_setup.py

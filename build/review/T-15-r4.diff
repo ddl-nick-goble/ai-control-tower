@@ -1,0 +1,174 @@
+diff --git a/backend/demo.py b/backend/demo.py
+index 73530eb..e2e910a 100644
+--- a/backend/demo.py
++++ b/backend/demo.py
+@@ -41,6 +41,7 @@ _ENV_DEFAULTS = {
+ }
+ 
+ _applied: list = []
++_db_new = False  # ACT_DB was filled by demo defaults, or its file did not exist at startup
+ 
+ 
+ def enabled() -> bool:
+@@ -65,7 +66,11 @@ def apply_defaults() -> None:
+             _applied.append(k)
+     for k, v in _ENV_DEFAULTS.items():
+         fill(k, v)
+-    fill("ACT_DB", default_db_path()) if "ACT_DB" not in os.environ else None
++    global _db_new
++    if "ACT_DB" not in os.environ:
++        fill("ACT_DB", default_db_path())
++    # Record, before anything opens the DB, whether the file is new or demo-owned by default.
++    _db_new = "ACT_DB" in _applied or not Path(os.environ["ACT_DB"]).expanduser().exists()
+     demo_dir = Path(os.environ["ACT_DB"]).expanduser().resolve().parent
+     if "MLFLOW_TRACKING_URI" not in os.environ:  # keep tracking local: no outbound call
+         fill("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
+@@ -155,22 +160,39 @@ def _check_not_shared() -> None:
+         pass
+ 
+ 
++def _may_claim() -> bool:
++    return _db_new or (os.environ.get("ACT_DEMO_ALLOW_DB") or "").strip().lower() in ("1", "true", "yes", "on")
++
++
+ def ensure_seeded():
+     """Seed an empty DB to the demo state. Idempotent: a populated demo DB is left alone.
+-    Raises DemoGuardError for the shared DB or a non-demo DB that already has data."""
+-    from sqlalchemy import func, select
++    Raises DemoGuardError for the shared DB, a non-demo DB that already has data, or an unmarked
++    DB that demo mode may not claim (a hand-set ACT_DB needs ACT_DEMO_ALLOW_DB=1)."""
++    from sqlalchemy import func, select, text
+     from . import db
+     _check_not_shared()
+     db.init_db()
+     with db.engine.connect() as cx:
+         n = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
+         marked = _marker_present(cx)
++    if n and not marked:
++        _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
++    if not marked and not _may_claim():
++        _refuse(f"refusing to claim {db.DB_PATH} as a demo database: ACT_DB was set by hand; "
++                "set ACT_DEMO_ALLOW_DB=1 to let demo mode seed and reset it")
+     if n:
+-        if not marked:
+-            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
+         return None
++    # Claim + re-check in one transaction: the marker insert takes the write lock, so of two
++    # processes only one sees rowcount 1 and seeds; a DB that filled meanwhile rolls the claim back.
++    with db.engine.begin() as cx:
++        cx.execute(text("CREATE TABLE IF NOT EXISTS act_demo_marker (id INTEGER PRIMARY KEY, note TEXT)"))
++        r = cx.execute(text("INSERT OR IGNORE INTO act_demo_marker (id, note) VALUES (1, 'created by ACT demo mode')")).rowcount
++        n2 = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
++        if n2 and r:
++            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
++        if n2 or (r == 0 and marked is False):
++            return None  # another process seeded / is seeding
+     log.warning("demo mode: seeding an empty database (%s)", db.DB_PATH)
+-    _write_marker()
+     return _seed()
+ 
+ 
+diff --git a/backend/demo_governance.py b/backend/demo_governance.py
+index a3cf1eb..24918e9 100644
+--- a/backend/demo_governance.py
++++ b/backend/demo_governance.py
+@@ -37,13 +37,14 @@ def ensure_bundle(agent_id: str) -> str:
+         a, deps = _agent(agent_id)
+         if a is None:
+             raise GovernanceError(f"unknown agent {agent_id}")
+-        demo_bid = "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
+-        replace = bool(a.bundle_id) and not str(a.bundle_id).startswith("demo-")  # never relabel a real bundle
+-        bid = a.bundle_id if a.bundle_id and not replace else demo_bid
++        if a.bundle_id and not str(a.bundle_id).startswith("demo-"):
++            raise GovernanceError(f"agent {agent_id} has a non-demo bundle id {a.bundle_id}; "
++                                  "the simulated Governance store will not relabel it")
++        bid = a.bundle_id or "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
+         want_model = a.source_platform == "domino" or any(d.kind == "model" for d in deps)
+         names = [AGENTIC_NAME] + ([MODEL_NAME] if want_model else [])
+         b = _entry(bid, f"ACT {agent_id}", names)
+-        if not a.bundle_id or replace:
++        if not a.bundle_id:
+             with db.engine.begin() as cx:
+                 cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
+                     bundle_id=bid, governance={"policies": names, "stage": b["stage"]}))
+diff --git a/backend/main.py b/backend/main.py
+index 9a9b760..03e7d78 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -22,12 +22,13 @@ DIST = ROOT / "frontend" / "dist"
+ async def lifespan(_app):
+     llm.warn_if_mock()
+     db.init_db()
++    _app.state.demo_guard = None
+     if demo.enabled():
+         demo.warn_live_switches()
+         try:
+             await run_in_threadpool(demo.ensure_seeded)
+-        except demo.DemoGuardError:
+-            pass  # already logged; the app starts without seeding
++        except demo.DemoGuardError as e:
++            _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
+     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
+     try:
+         yield
+@@ -52,7 +53,8 @@ async def write_guard(request, call_next):
+ @app.get("/api/health")
+ def health():
+     return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
+-            "llm_provider": demo.effective_llm_provider()}
++            "llm_provider": demo.effective_llm_provider(),
++            "demo_guard": getattr(app.state, "demo_guard", None)}
+ 
+ 
+ for _m in pkgutil.iter_modules(routes.__path__):
+diff --git a/docs/DEMO.md b/docs/DEMO.md
+index a51fd0a..7315822 100644
+--- a/docs/DEMO.md
++++ b/docs/DEMO.md
+@@ -18,6 +18,7 @@ classifier endpoint key. Every stand-in is labelled in the UI (a banner on every
+   (`POST /api/demo/run/{agent_id}`) runs one mock recon run in-process.
+ - "Reset demo" in the banner (`POST /api/demo/reset`) wipes the demo database and reseeds it.
+ - With `ACT_DEMO_MODE` unset none of this exists: no banner, `/api/demo/*` returns 404, and governance and the classifier behave as before.
++- Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
+ 
+ # Ten-minute demo
+ 
+diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
+index 1172db9..255cdab 100644
+--- a/docs/INTEGRATION.md
++++ b/docs/INTEGRATION.md
+@@ -22,6 +22,8 @@ labels itself honestly: template text in the console, the mock judge in the vali
+ | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
+ | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
+ 
++Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
++
+ ## Running the stand-ins
+ 
+ ```
+diff --git a/frontend/src/components/ui.jsx b/frontend/src/components/ui.jsx
+index 78132a9..4af6c02 100644
+--- a/frontend/src/components/ui.jsx
++++ b/frontend/src/components/ui.jsx
+@@ -41,9 +41,11 @@ function DemoBanner({ health: h }) {
+   }
+   const [note, setNote] = React.useState(false)
+   React.useEffect(() => {
++    // StrictMode-safe: the flag is cleared by the timer, not by the first effect run.
+     if (sessionStorage.getItem('act-demo-reset')) {
+-      sessionStorage.removeItem('act-demo-reset'); setNote(true)
+-      const t = setTimeout(() => setNote(false), 5000); return () => clearTimeout(t)
++      setNote(true)
++      const t = setTimeout(() => { sessionStorage.removeItem('act-demo-reset'); setNote(false) }, 5000)
++      return () => clearTimeout(t)
+     }
+   }, [])
+   return (
+@@ -51,6 +53,7 @@ function DemoBanner({ health: h }) {
+       <strong>Demo mode: simulated data and stand-ins</strong>
+       <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
+       <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
++      {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
+       {err && <span className="alert error" role="alert">{err}</span>}
+       {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
+     </div>
