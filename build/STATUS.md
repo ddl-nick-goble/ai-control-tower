@@ -13,7 +13,10 @@ Final results on `main`:
 QA summary with pass or fail per AC: /mnt/data/ai-control-tower/qa/qa-summary.md
 Demo walk (9 of 9 steps OK): /mnt/data/ai-control-tower/qa/T-13-demo/
 
-## T-15 demo mode (Nick chose option (a): round 4 in progress)
+## T-16, T-17 merged (App Preview fix)
+App Preview runs app.sh from the latest commit in a fresh runtime with no Node. frontend/dist is now committed (T-17, 09235dc) and /preview/<id>/, /apps/<id>/ and the workspace proxy prefix are served (T-16 fcca1c8). Rebuild and commit frontend/dist after any frontend change.
+
+## T-15 demo mode (round 4 done; awaiting Nick: merge now, or one more round for the two-process double-seed race)
 Branch task/T-15 @ 3492bed, worktree .worktrees/T-15. D-1..D-11 pass: 17/17 demo backend tests, 495 backend passed (3 live-only skips), 9/9 demo e2e, 50/50 full e2e. Visual fixes done.
 One blocking review item is open: demo auto-seed will claim any EMPTY database it is pointed at (e.g. ACT_DEMO_MODE=1 ACT_DB=<a fresh real DB>), after which "Reset demo" can wipe it. The default demo DB path is safe; the risk only applies when ACT_DB is set by hand. Fix is small (claim only DBs the demo created itself, or require ACT_DEMO_ALLOW_DB=1), plus two should-fix items (see plan.md).
 Options: (a) one more builder round for these, then merge; (b) merge as is and log the item.
