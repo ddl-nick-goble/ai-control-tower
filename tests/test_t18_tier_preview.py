@@ -117,3 +117,63 @@ def test_ac_r5_anonymous_post_blocked_by_write_guard(client):
 def test_ac_r5_identified_user_gets_200(client):
     r = _post(client, ALL5, headers=HDR)
     assert r.status_code == 200
+
+
+# ---- non-finite numbers must be 422, not 500 ----
+@pytest.mark.parametrize("tok", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999"])
+def test_ac_r5_nonfinite_values_422(client, tok):
+    parts = ", ".join(f'"{k}": {tok if i == 0 else 3}' for i, k in enumerate(NAMES))
+    r = client.post(URL, content='{"criteria": {' + parts + '}}',
+                    headers={**HDR, "Content-Type": "application/json"})
+    assert r.status_code == 422, (r.status_code, r.text)
+
+
+# ---- parity with external registration ----
+@pytest.fixture
+def ext_client(db_env, monkeypatch):
+    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+    monkeypatch.setenv("ACT_EXTERNAL_ALLOW_HOSTS", "127.0.0.1,localhost")
+    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
+        del sys.modules[m]
+    main = importlib.import_module("backend.main")
+    with TestClient(main.app) as c:
+        yield c
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("shape", ["uniform", "mixed", "mixed2"])
+def test_ac_r5_preview_tier_equals_external_registration_tier(ext_client, n, shape):
+    import http.server
+    import json
+    import threading
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    card = json.loads((root / "fixtures" / "external" / "agent-card.json").read_text())
+    card["name"] = f"Parity Bot {n} {shape}"
+    card["skills"] = [{"id": "summarise", "name": "Summarise", "description": "d", "tags": ["text"]}]
+    body = json.dumps(card).encode()
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        crit = {"uniform": {k: n for k in NAMES}, "mixed": MIXED, "mixed2": MIXED2}[shape]
+        url = f"http://127.0.0.1:{srv.server_address[1]}/.well-known/agent-card.json"
+        reg = ext_client.post("/api/agents/external", json={"card_url": url, "criteria": crit}, headers=HDR)
+        assert reg.status_code in (200, 201), reg.text
+        rec = ext_client.get(f"/api/agents/{reg.json()['id']}", headers=HDR).json()
+        pv = _post(ext_client, crit)
+        assert pv.status_code == 200, pv.text
+        assert pv.json()["tier"] == rec["tier"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
