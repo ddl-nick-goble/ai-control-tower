@@ -1,0 +1,241 @@
+diff --git a/backend/main.py b/backend/main.py
+index 806da16..e2db481 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
+ from fastapi.staticfiles import StaticFiles
+ 
+ from . import db, llm, routes
++from .prefix import ProxyPrefixMiddleware
+ from .domino_identity import get_user
+ 
+ ROOT = Path(__file__).resolve().parent.parent
+@@ -62,6 +63,10 @@ if DIST.is_dir():
+     app.mount("/", StaticFiles(directory=str(DIST), html=True), name="frontend")
+ 
+ 
++# Outermost middleware: strip the Domino proxy prefix before routing and the write guard.
++app.add_middleware(ProxyPrefixMiddleware, host_path=os.environ.get("DOMINO_RUN_HOST_PATH", ""))
++
++
+ def in_workspace() -> bool:
+     return "notebookSession" in os.environ.get("DOMINO_RUN_HOST_PATH", "")
+ 
+diff --git a/backend/prefix.py b/backend/prefix.py
+new file mode 100644
+index 0000000..3641f3d
+--- /dev/null
++++ b/backend/prefix.py
+@@ -0,0 +1,37 @@
++"""Pure-ASGI middleware: serve requests that arrive under the Domino proxy prefix.
++
++Domino forwards with the full URL prefix kept: DOMINO_RUN_HOST_PATH
++(published App) or DOMINO_RUN_HOST_PATH + "proxy/<port>/" (workspace App Preview).
++The prefix is stripped so the app sees the same path as an unprefixed request.
++"""
++import re
++from urllib.parse import quote
++
++
++class ProxyPrefixMiddleware:
++    def __init__(self, app, host_path: str = ""):
++        self.app = app
++        base = (host_path or "").strip().rstrip("/")
++        self.pattern = re.compile(rf"^({re.escape(base)}(?:/proxy/\d+)?)(/.*)?$") if base else None
++
++    async def __call__(self, scope, receive, send):
++        if self.pattern is None or scope["type"] not in ("http", "websocket"):
++            return await self.app(scope, receive, send)
++        m = self.pattern.match(scope["path"])
++        if not m:
++            return await self.app(scope, receive, send)
++        prefix, rest = m.group(1), m.group(2)
++        if rest is None:  # bare prefix: relative asset URLs need the trailing slash
++            if scope["type"] == "http":
++                loc = quote(scope["path"], safe="/%:@") + "/"
++                if scope.get("query_string"):
++                    loc += "?" + scope["query_string"].decode("latin-1")
++                await send({"type": "http.response.start", "status": 307,
++                            "headers": [(b"location", loc.encode("latin-1")), (b"content-length", b"0")]})
++                await send({"type": "http.response.body", "body": b""})
++                return
++            rest = "/"
++        scope = dict(scope, path=rest)
++        if scope.get("raw_path"):
++            scope["raw_path"] = rest.encode("latin-1", "ignore")
++        await self.app(scope, receive, send)
+diff --git a/tests/test_t16_proxy_prefix.py b/tests/test_t16_proxy_prefix.py
+new file mode 100644
+index 0000000..2f9ed5c
+--- /dev/null
++++ b/tests/test_t16_proxy_prefix.py
+@@ -0,0 +1,169 @@
++"""T-16: Domino workspace/App proxy prefix handling (P-1..P-4)."""
++import importlib
++import shutil
++import sys
++
++import pytest
++from fastapi.testclient import TestClient
++
++from conftest import ROOT
++
++HDR = {"X-Domino-User-Id": "u16", "X-Domino-User": "t16"}
++RUN = "/nick_goble/ai-control-tower/r/notebookSession/abc123run/"
++BASE = RUN.rstrip("/")
++PROXY = f"{BASE}/proxy/9888"
++INDEX_HTML = "<!doctype html><html><body>T16-INDEX</body></html>"
++ASSET_JS = "console.log('t16-asset');"
++
++
++@pytest.fixture
++def dist():
++    """Ensure a built frontend exists (frontend/dist is a build artifact)."""
++    d = ROOT / "frontend" / "dist"
++    created = not d.exists()
++    if created:
++        (d / "assets").mkdir(parents=True)
++        (d / "index.html").write_text(INDEX_HTML)
++        (d / "assets" / "t16.js").write_text(ASSET_JS)
++    yield d
++    if created:
++        shutil.rmtree(d)
++
++
++@pytest.fixture
++def client(db_env, monkeypatch, dist):
++    monkeypatch.setenv("DOMINO_RUN_HOST_PATH", RUN)
++    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        yield c
++
++
++def _asset_name(dist):
++    return sorted((dist / "assets").iterdir())[0].name
++
++
++def test_ac_p1_proxy_prefix_serves_index(client):
++    r = client.get(f"{PROXY}/")
++    assert r.status_code == 200
++    assert "text/html" in r.headers["content-type"]
++    assert r.text == client.get("/").text
++
++
++def test_ac_p1_proxy_prefix_serves_index_html(client):
++    r = client.get(f"{PROXY}/index.html")
++    assert r.status_code == 200
++    assert "text/html" in r.headers["content-type"]
++
++
++def test_ac_p1_proxy_prefix_serves_assets(client, dist):
++    name = _asset_name(dist)
++    plain = client.get(f"/assets/{name}")
++    assert plain.status_code == 200
++    r = client.get(f"{PROXY}/assets/{name}")
++    assert r.status_code == 200
++    assert r.content == plain.content
++
++
++def test_ac_p1_proxy_prefix_api_health(client):
++    r = client.get(f"{PROXY}/api/health")
++    assert r.status_code == 200
++    assert r.json() == client.get("/api/health").json()
++
++
++def test_ac_p1_proxy_prefix_other_port(client):
++    r = client.get(f"{BASE}/proxy/8888/api/health")
++    assert r.status_code == 200
++    assert r.json() == client.get("/api/health").json()
++
++
++def test_ac_p1_proxy_prefix_post_route_same_as_unprefixed(client):
++    body = {"criteria": "not-a-dict"}
++    plain = client.post("/api/agents/nope/tier", json=body, headers=HDR)
++    r = client.post(f"{PROXY}/api/agents/nope/tier", json=body, headers=HDR)
++    assert plain.status_code == 422
++    assert r.status_code == plain.status_code
++    assert r.json() == plain.json()
++
++
++def test_ac_p1_proxy_prefix_post_write_guard_still_applies(client):
++    r = client.post(f"{PROXY}/api/agents/nope/tier", json={"criteria": {}})
++    assert r.status_code == 401
++
++
++def test_ac_p2_published_prefix_serves_index(client):
++    r = client.get(f"{BASE}/")
++    assert r.status_code == 200
++    assert "text/html" in r.headers["content-type"]
++
++
++def test_ac_p2_published_prefix_api_and_assets(client, dist):
++    r = client.get(f"{BASE}/api/health")
++    assert r.status_code == 200
++    assert r.json() == client.get("/api/health").json()
++    name = _asset_name(dist)
++    assert client.get(f"{BASE}/assets/{name}").status_code == 200
++
++
++def test_ac_p2_published_prefix_post_route(client):
++    body = {"criteria": "x"}
++    plain = client.post("/api/agents/nope/tier", json=body, headers=HDR)
++    r = client.post(f"{BASE}/api/agents/nope/tier", json=body, headers=HDR)
++    assert r.status_code == plain.status_code == 422
++
++
++def test_ac_p3_unprefixed_unchanged(client):
++    assert client.get("/").status_code == 200
++    r = client.get("/api/health")
++    assert r.status_code == 200 and r.json()["status"] == "ok"
++
++
++def test_ac_p3_prefix_without_trailing_slash_redirects_or_serves(client):
++    r = client.get(PROXY, follow_redirects=False)
++    if r.status_code in (301, 302, 307, 308):
++        loc = r.headers["location"]
++        assert loc.rstrip("/").endswith("/proxy/9888")
++        assert loc.endswith("/")
++        r2 = client.get(loc)
++        assert r2.status_code == 200 and "text/html" in r2.headers["content-type"]
++    else:
++        assert r.status_code == 200
++        assert "text/html" in r.headers["content-type"]
++
++
++def test_ac_p4_unknown_api_path_404_under_prefix(client):
++    plain = client.get("/api/does-not-exist")
++    assert plain.status_code == 404
++    r = client.get(f"{PROXY}/api/does-not-exist")
++    assert r.status_code == 404
++    assert r.json() == plain.json()
++
++
++def test_ac_p4_unknown_asset_404_under_prefix(client):
++    assert client.get("/assets/nope.js").status_code == 404
++    assert client.get(f"{PROXY}/assets/nope.js").status_code == 404
++
++
++def test_ac_p4_unknown_unprefixed_still_404(client):
++    assert client.get("/api/does-not-exist").status_code == 404
++    assert client.get("/v1/does-not-exist").status_code == 404
++
++
++def test_ac_p4_other_run_prefix_not_served(client):
++    other = "/nick_goble/ai-control-tower/r/notebookSession/OTHERRUN/proxy/9888/api/health"
++    assert client.get(other).status_code == 404
++
++
++@pytest.mark.parametrize("path", [
++    "/proxy/9888/../../etc/passwd",
++    "/proxy/9888/%2e%2e/%2e%2e/etc/passwd",
++    "/proxy/9888/assets/..%2f..%2f..%2fbackend/main.py",
++    "/proxy/9888/..%2fbackend/main.py",
++    "/../backend/main.py",
++])
++def test_ac_p4_no_traversal_under_prefix(client, path):
++    r = client.get(BASE + path)
++    assert r.status_code in (400, 404)
++    assert "FastAPI" not in r.text and "root:" not in r.text

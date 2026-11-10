@@ -1,0 +1,409 @@
+diff --git a/backend/demo.py b/backend/demo.py
+index 8254a57..73530eb 100644
+--- a/backend/demo.py
++++ b/backend/demo.py
+@@ -60,15 +60,38 @@ def apply_defaults() -> None:
+         return
+ 
+     def fill(k, v):
+-        if not os.environ.get(k):
++        if k not in os.environ:
+             os.environ[k] = v
+             _applied.append(k)
+     for k, v in _ENV_DEFAULTS.items():
+         fill(k, v)
+-    if not os.environ.get("ACT_DB"):
+-        fill("ACT_DB", default_db_path())
+-    if not os.environ.get("MLFLOW_TRACKING_URI"):  # keep tracking local: no outbound call
+-        fill("MLFLOW_TRACKING_URI", f"file://{Path(os.environ['ACT_DB']).resolve().parent / 'mlruns'}")
++    fill("ACT_DB", default_db_path()) if "ACT_DB" not in os.environ else None
++    demo_dir = Path(os.environ["ACT_DB"]).expanduser().resolve().parent
++    if "MLFLOW_TRACKING_URI" not in os.environ:  # keep tracking local: no outbound call
++        fill("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
++    if "ACT_EVIDENCE_DIR" not in os.environ:  # demo packs never land beside real packs
++        fill("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
++
++
++def effective_llm_provider() -> str:
++    return "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"
++
++
++def live_switches() -> list:
++    out = []
++    if effective_llm_provider() != "mock":
++        out.append("ACT_LLM_PROVIDER=" + (os.environ.get("ACT_LLM_PROVIDER") or "gateway"))
++    uri = os.environ.get("MLFLOW_TRACKING_URI") or ""
++    if uri and not uri.startswith(("file:", "/")):
++        out.append("MLFLOW_TRACKING_URI (non-file)")
++    out += sorted(k for k, v in os.environ.items() if k.startswith("ACT_LIVE_") and v.strip())
++    return out
++
++
++def warn_live_switches() -> None:
++    sw = live_switches()
++    if enabled() and sw:
++        log.warning("demo mode is on but live switches are set (%s); those parts are NOT simulated", ", ".join(sw))
+ 
+ 
+ def restore_defaults() -> None:
+@@ -78,7 +101,12 @@ def restore_defaults() -> None:
+ 
+ 
+ def stand_ins() -> list:
+-    return [dict(s) for s in STAND_INS] if enabled() else []
++    if not enabled():
++        return []
++    out = [dict(s) for s in STAND_INS]
++    if effective_llm_provider() != "mock":
++        out[0]["label"] = "LLM via gateway (live; ACT_LLM_PROVIDER set explicitly)"
++    return out
+ 
+ 
+ def service_account_identity() -> dict:
+@@ -92,24 +120,70 @@ def _seed(**kw):
+         return seed_demo.seed(governance=True, **kw)
+ 
+ 
++class DemoGuardError(Exception):
++    """Raised when demo seeding/reset is refused because the DB is not demo-owned."""
++
++
++SHARED_DB = Path("/mnt/data/ai-control-tower/act/act.db")
++
++
++def _marker_present(cx) -> bool:
++    from sqlalchemy import text
++    return cx.execute(text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='act_demo_marker'")).first() is not None \
++        and cx.execute(text("SELECT 1 FROM act_demo_marker")).first() is not None
++
++
++def _write_marker() -> None:
++    from sqlalchemy import text
++    from . import db
++    with db.engine.begin() as cx:
++        cx.execute(text("CREATE TABLE IF NOT EXISTS act_demo_marker (id INTEGER PRIMARY KEY, note TEXT)"))
++        cx.execute(text("INSERT OR REPLACE INTO act_demo_marker (id, note) VALUES (1, 'created by ACT demo mode')"))
++
++
++def _refuse(msg):
++    log.warning("demo mode: %s", msg)
++    raise DemoGuardError(msg)
++
++
++def _check_not_shared() -> None:
++    from . import db
++    try:
++        if Path(db.DB_PATH).expanduser().resolve() == SHARED_DB.resolve():
++            _refuse(f"refusing: ACT_DB resolves to the shared database {SHARED_DB}; demo mode only uses a demo-owned DB")
++    except OSError:
++        pass
++
++
+ def ensure_seeded():
+-    """Seed an empty DB to the demo state. Idempotent: a populated DB is left alone."""
++    """Seed an empty DB to the demo state. Idempotent: a populated demo DB is left alone.
++    Raises DemoGuardError for the shared DB or a non-demo DB that already has data."""
+     from sqlalchemy import func, select
+     from . import db
++    _check_not_shared()
+     db.init_db()
+     with db.engine.connect() as cx:
+         n = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
++        marked = _marker_present(cx)
+     if n:
++        if not marked:
++            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
+         return None
+     log.warning("demo mode: seeding an empty database (%s)", db.DB_PATH)
++    _write_marker()
+     return _seed()
+ 
+ 
+ def reset():
+-    """Wipe the demo DB and reseed it to the initial demo state."""
++    """Wipe the demo DB and reseed it. Only a demo-owned DB (marker present) is ever wiped."""
+     from . import db, demo_governance
++    _check_not_shared()
++    with db.engine.connect() as cx:
++        if not _marker_present(cx):
++            _refuse(f"refusing to reset {db.DB_PATH}: it is not a demo-owned database (no demo marker)")
+     with demo_governance.lock:
+         db.metadata.drop_all(db.engine)
+         demo_governance.clear()
+     db.init_db()
++    _write_marker()
+     return _seed()
+diff --git a/backend/demo_governance.py b/backend/demo_governance.py
+index 6c78482..a3cf1eb 100644
+--- a/backend/demo_governance.py
++++ b/backend/demo_governance.py
+@@ -37,11 +37,13 @@ def ensure_bundle(agent_id: str) -> str:
+         a, deps = _agent(agent_id)
+         if a is None:
+             raise GovernanceError(f"unknown agent {agent_id}")
+-        bid = a.bundle_id or "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
++        demo_bid = "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
++        replace = bool(a.bundle_id) and not str(a.bundle_id).startswith("demo-")  # never relabel a real bundle
++        bid = a.bundle_id if a.bundle_id and not replace else demo_bid
+         want_model = a.source_platform == "domino" or any(d.kind == "model" for d in deps)
+         names = [AGENTIC_NAME] + ([MODEL_NAME] if want_model else [])
+         b = _entry(bid, f"ACT {agent_id}", names)
+-        if not a.bundle_id:
++        if not a.bundle_id or replace:
+             with db.engine.begin() as cx:
+                 cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
+                     bundle_id=bid, governance={"policies": names, "stage": b["stage"]}))
+@@ -75,6 +77,8 @@ def mirror_approval(agent_id: str, approver: str) -> str:
+         a, _ = _agent(agent_id)
+         if a is None or not a.bundle_id:
+             raise GovernanceError("no governance bundle for this agent yet; approval not mirrored")
+-        get_bundle(a.bundle_id)
+-        _bundles[a.bundle_id]["approvals"].append({"approver": approver, "simulated": True})
++        b = _bundles.get(a.bundle_id) or (get_bundle(a.bundle_id) and _bundles.get(a.bundle_id))
++        if not b:
++            raise GovernanceError(f"bundle {a.bundle_id} is not a simulated demo bundle; approval not mirrored")
++        b["approvals"].append({"approver": approver, "simulated": True})
+         return "synced"
+diff --git a/backend/main.py b/backend/main.py
+index 667d420..ba95993 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -22,7 +22,11 @@ async def lifespan(_app):
+     llm.warn_if_mock()
+     db.init_db()
+     if demo.enabled():
+-        await run_in_threadpool(demo.ensure_seeded)
++        demo.warn_live_switches()
++        try:
++            await run_in_threadpool(demo.ensure_seeded)
++        except demo.DemoGuardError:
++            pass  # already logged; the app starts without seeding
+     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
+     try:
+         yield
+@@ -47,7 +51,7 @@ async def write_guard(request, call_next):
+ @app.get("/api/health")
+ def health():
+     return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
+-            "llm_provider": "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"}
++            "llm_provider": demo.effective_llm_provider()}
+ 
+ 
+ for _m in pkgutil.iter_modules(routes.__path__):
+diff --git a/backend/routes/approvals.py b/backend/routes/approvals.py
+index 93ac63b..00e4ac7 100644
+--- a/backend/routes/approvals.py
++++ b/backend/routes/approvals.py
+@@ -51,7 +51,7 @@ def approve(agent_id: str, body: dict | None = Body(None), user: User = Depends(
+     return approve_as(agent_id, user, run_id)
+ 
+ 
+-def approve_as(agent_id: str, user: User, run_id=None):
++def approve_as(agent_id: str, user: User, run_id=None, audit_extra=None):
+     """Approve with the real separation-of-duties checks. The demo route calls this with the simulated approver."""
+     now = datetime.now(timezone.utc)
+     actor = (user.user_id, user.username)
+@@ -80,7 +80,7 @@ def approve_as(agent_id: str, user: User, run_id=None):
+                     agent_id=agent_id, approver=user.user_id, decision="approved", created_at=now.isoformat(),
+                     expires_at=expires, run_id=run_id, governance_sync="pending"))
+                 ap_id = res.inserted_primary_key[0]
+-                _audit(cx, "approved", agent_id, {"expires_at": expires, "tier": a.tier, "run_id": run_id},
++                _audit(cx, "approved", agent_id, {"expires_at": expires, "tier": a.tier, "run_id": run_id, **(audit_extra or {})},
+                        actor=actor)
+     if err:
+         raise HTTPException(*err)
+diff --git a/backend/routes/demo.py b/backend/routes/demo.py
+index f40460e..64cf09b 100644
+--- a/backend/routes/demo.py
++++ b/backend/routes/demo.py
+@@ -31,9 +31,10 @@ def state():
+ 
+ 
+ @router.post("/api/demo/approve/{agent_id}")
+-def demo_approve(agent_id: str, _user: User = Depends(require_user)):
++def demo_approve(agent_id: str, user: User = Depends(require_user)):
+     _agent(agent_id)
+-    r = approve_as(agent_id, User(user_id=demo.APPROVER_ID, username=demo.APPROVER_NAME))
++    r = approve_as(agent_id, User(user_id=demo.APPROVER_ID, username=demo.APPROVER_NAME),
++                   audit_extra={"simulated": True, "requested_by": user.user_id, "requested_by_username": user.username})
+     return {**r, "simulated": True, "note": "approved by the simulated demo approver, not a second Domino user"}
+ 
+ 
+@@ -53,5 +54,8 @@ def demo_run(agent_id: str, _user: User = Depends(require_user)):
+ 
+ @router.post("/api/demo/reset")
+ def demo_reset(_user: User = Depends(require_user)):
+-    summary = demo.reset()
++    try:
++        summary = demo.reset()
++    except demo.DemoGuardError as e:
++        raise HTTPException(409, str(e))
+     return {"status": "reset", "agents": summary.get("agents")}
+diff --git a/tests/e2e/test_t15_demo_mode.py b/tests/e2e/test_t15_demo_mode.py
+index 73cdac4..dfbab01 100644
+--- a/tests/e2e/test_t15_demo_mode.py
++++ b/tests/e2e/test_t15_demo_mode.py
+@@ -1,6 +1,6 @@
+ """T-15 e2e: one-switch demo mode (D-2..D-10).
+ 
+-One app on port 9888 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
++One app on port 9889 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
+ data-testid contract (suggested; role/text locators are primary):
+   demo-banner  persistent banner with "Demo mode: simulated data and stand-ins" and the stand-in labels
+ Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agent".
+@@ -18,7 +18,7 @@ import pytest
+ from playwright.sync_api import expect
+ 
+ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+-PORT = "9888"
++PORT = "9889"  # separate from the shared suite app on 9888 so this module never kills it
+ SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-15"
+ 
+ 
+@@ -80,8 +80,14 @@ def _stop(proc, logf):
+ _APP = {}
+ 
+ 
+-@pytest.fixture(scope="session")
+-def base_url(tmp_path_factory):
++@pytest.fixture
++def browser_context_args(browser_context_args, demo_url):
++    """Point this module's pages at the demo app (the plugin's session-scoped base_url stays untouched for other modules)."""
++    return {**browser_context_args, "base_url": demo_url}
++
++
++@pytest.fixture(scope="module")
++def demo_url(tmp_path_factory):
+     """One demo-mode app for the session; the off-by-default test swaps it for a non-demo app."""
+     proc, logf, url = _start(tmp_path_factory.mktemp("t15-demo"), True)
+     _APP.update(proc=proc, logf=logf, url=url)
+@@ -92,12 +98,12 @@ def base_url(tmp_path_factory):
+ 
+ 
+ @pytest.fixture(autouse=True)
+-def _fresh_demo_state(request, base_url):
++def _fresh_demo_state(request, demo_url):
+     """Give each demo test the fresh D-2 state (reset is a no-op failure while the feature is missing)."""
+     if "off_by_default" in request.node.name:
+         return
+     try:
+-        urllib.request.urlopen(urllib.request.Request(base_url + "api/demo/reset", method="POST"), timeout=60)
++        urllib.request.urlopen(urllib.request.Request(demo_url + "api/demo/reset", method="POST"), timeout=60)
+     except Exception:
+         pass
+ 
+@@ -115,7 +121,22 @@ def _open_recon(page):
+     expect(page.get_by_role("heading", name=re.compile("recon-agent"))).to_be_visible()
+ 
+ 
+-def test_d9_banner_every_page(page, shot, base_url):
++def _assert_fresh_fleet(page):
++    recon = page.get_by_test_id("fleet-row").filter(has_text="recon-agent")
++    expect(recon).to_have_count(1, timeout=30000)
++    row = page.get_by_test_id("fleet-row").filter(has_text="treasury-sweep-agent")
++    expect(row).to_have_count(1)
++    expect(row.get_by_test_id("tier-badge")).to_have_text(re.compile(r"Tier 1"))
++    expect(row.get_by_test_id("open-findings")).to_have_text("1")
++    row.get_by_role("link", name="treasury-sweep-agent").click()
++    expect(page.get_by_role("heading", name=re.compile("treasury-sweep-agent"))).to_be_visible()
++    item = page.get_by_test_id("finding-item")
++    expect(item).to_have_count(1)
++    expect(item).to_have_attribute("data-finding-type", "scope_drift")
++    expect(item).to_have_attribute("data-status", "open")
++
++
++def test_d9_banner_every_page(page, shot, demo_url):
+     health = page.request.get("api/health").json()
+     stand_ins = health["stand_ins"]
+     assert health["demo_mode"] is True and len(stand_ins) >= 5
+@@ -133,28 +154,27 @@ def test_d9_banner_every_page(page, shot, base_url):
+     shot("then")
+ 
+ 
+-def test_d8_reset(page, shot, base_url):
++def test_d8_reset(page, shot, demo_url):
+     _open_recon(page)
+     page.get_by_role("button", name="Run recon agent").click()
+     expect(page.get_by_test_id("run-item")).to_have_count(2, timeout=30000)
+     page.goto("./#/")
+     page.get_by_role("button", name="Reset demo").click()
+-    row = page.get_by_test_id("fleet-row").filter(has_text="recon-agent")
+-    expect(row).to_have_count(1, timeout=30000)
+-    expect(row.get_by_test_id("open-findings")).to_have_text("1")
++    _assert_fresh_fleet(page)
++    page.goto("./#/")
+     _open_recon(page)
+     expect(page.get_by_test_id("run-item")).to_have_count(1)
+     assert page.request.post("api/demo/reset").status == 200
+     shot("then")
+ 
+ 
+-def test_d3_governance_label(page, shot, base_url):
++def test_d3_governance_label(page, shot, demo_url):
+     _open_recon(page)
+     expect(page.get_by_text("simulated Governance (demo)").first).to_be_visible()
+     shot("then")
+ 
+ 
+-def test_d4_classifier_label(page, shot, base_url):
++def test_d4_classifier_label(page, shot, demo_url):
+     _open_recon(page)
+     expect(page.get_by_text("demo classifier (not the endpoint)").first).to_be_visible()
+     dep = page.get_by_test_id("dependency-model").filter(has_text="break_classifier")
+@@ -163,7 +183,7 @@ def test_d4_classifier_label(page, shot, base_url):
+     shot("then")
+ 
+ 
+-def test_d5_service_account(page, shot, base_url):
++def test_d5_service_account(page, shot, demo_url):
+     _open_recon(page)
+     expect(page.get_by_text("svc-act-recon-demo").first).to_be_visible()
+     expect(page.get_by_text("simulated service account (demo)").first).to_be_visible()
+@@ -171,7 +191,7 @@ def test_d5_service_account(page, shot, base_url):
+     shot("then")
+ 
+ 
+-def test_d6_demo_approver(page, shot, base_url):
++def test_d6_demo_approver(page, shot, demo_url):
+     _open_recon(page)
+     page.get_by_role("button", name="Approve as demo approver").click()
+     expect(page.get_by_test_id("approve-success")).to_be_visible(timeout=15000)
+@@ -181,7 +201,7 @@ def test_d6_demo_approver(page, shot, base_url):
+     shot("then")
+ 
+ 
+-def test_d7_run_recon_agent(page, shot, base_url):
++def test_d7_run_recon_agent(page, shot, demo_url):
+     _open_recon(page)
+     runs = page.get_by_test_id("run-item")
+     expect(runs).to_have_count(1)
+@@ -193,21 +213,13 @@ def test_d7_run_recon_agent(page, shot, base_url):
+     shot("then")
+ 
+ 
+-def test_d2_fresh_fleet(page, shot, base_url):
++def test_d2_fresh_fleet(page, shot, demo_url):
+     page.goto("./#/")
+-    row = page.get_by_test_id("fleet-row").filter(has_text="recon-agent")
+-    expect(row).to_have_count(1)
+-    expect(row.get_by_test_id("tier-badge")).to_have_text(re.compile(r"Tier 1"))
+-    expect(row.get_by_test_id("open-findings")).to_have_text("1")
+-    _open_recon(page)
+-    item = page.get_by_test_id("finding-item")
+-    expect(item).to_have_count(1)
+-    expect(item).to_have_attribute("data-finding-type", "scope_drift")
+-    expect(item).to_have_attribute("data-status", "open")
++    _assert_fresh_fleet(page)
+     shot("then")
+ 
+ 
+-def test_d10_off_by_default(page, shot, base_url, tmp_path_factory):
++def test_d10_off_by_default(page, shot, demo_url, tmp_path_factory):
+     _stop(_APP["proc"], _APP["logf"])
+     proc, logf, _url = _start(tmp_path_factory.mktemp("t15-off"), False)
+     _APP.update(proc=proc, logf=logf)
+@@ -220,3 +232,4 @@ def test_d10_off_by_default(page, shot, base_url, tmp_path_factory):
+         expect(page.get_by_role("button", name=name)).to_have_count(0)
+     assert page.request.post("api/demo/reset").status == 404
+     shot("then")
++    _stop(_APP["proc"], _APP["logf"])  # leave port 9888 free for later modules

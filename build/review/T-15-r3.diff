@@ -1,0 +1,115 @@
+diff --git a/backend/normalize_span.py b/backend/normalize_span.py
+index b254f00..162959c 100644
+--- a/backend/normalize_span.py
++++ b/backend/normalize_span.py
+@@ -113,6 +113,9 @@ def normalize_span(span: dict, agent_id: str | None, native_id: str | None = Non
+     skip = set(AGENT_KEYS) | {"gen_ai.tool.call.arguments", "tool.parameters", "mlflow.spanInputs"}
+     attrs = {k: _maybe_json(v) for k, v in a.items() if k not in skip}
+     attrs["service.name"] = (span.get("resource") or {}).get("service.name")
++    attrs["act.llm.provider"] = a.get("act.llm.provider") or (span.get("resource") or {}).get("act.llm.provider")
++    if kind == "model_call" and not attrs["act.llm.provider"] and "mock-llm" in str(a.get("gen_ai.request.model") or span.get("name") or ""):
++        attrs["act.llm.provider"] = "mock"
+     if native_id:
+         attrs["native_agent_id"] = native_id
+     if span.get("end_ns") and span.get("start_ns"):
+diff --git a/frontend/src/components/ui.jsx b/frontend/src/components/ui.jsx
+index 3bed41a..78132a9 100644
+--- a/frontend/src/components/ui.jsx
++++ b/frontend/src/components/ui.jsx
+@@ -37,14 +37,22 @@ function DemoBanner({ health: h }) {
+   const [err, setErr] = React.useState(null)
+   const reset = async () => {
+     setBusy(true); setErr(null)
+-    try { await demoApi.reset(); window.location.reload() } catch (e) { setErr(e.message); setBusy(false) }
++    try { await demoApi.reset(); sessionStorage.setItem('act-demo-reset', '1'); window.location.reload() } catch (e) { setErr(e.message); setBusy(false) }
+   }
++  const [note, setNote] = React.useState(false)
++  React.useEffect(() => {
++    if (sessionStorage.getItem('act-demo-reset')) {
++      sessionStorage.removeItem('act-demo-reset'); setNote(true)
++      const t = setTimeout(() => setNote(false), 5000); return () => clearTimeout(t)
++    }
++  }, [])
+   return (
+     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
+       <strong>Demo mode: simulated data and stand-ins</strong>
+       <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
+       <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
+       {err && <span className="alert error" role="alert">{err}</span>}
++      {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
+     </div>
+   )
+ }
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index ade3dd6..8aece2a 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -46,7 +46,7 @@ export function Identity({ agent }) {
+       {noDistinct && (
+         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
+       )}
+-      {id.simulated && <p className="muted" data-testid="identity-simulated"><span className="chip">{id.label || 'simulated service account (demo)'}</span></p>}
++      {id.simulated && <p className="muted" data-testid="identity-simulated"><span className="chip chip-demo">{id.label || 'simulated service account (demo)'}</span></p>}
+       <dl className="kv">
+         <dt>Type</dt><dd>{id.type || '-'}</dd>
+         <dt>Issuer</dt><dd>{id.issuer || '-'}</dd>
+@@ -90,7 +90,7 @@ function Dependencies({ id }) {
+           <h3>Models</h3>
+           <ul className="plain">
+             {data.models.map((m, i) => (
+-              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="chip" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
++              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="chip chip-demo" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
+             ))}
+             {!data.models.length && <li className="muted">none</li>}
+           </ul>
+@@ -142,7 +142,7 @@ function Governance({ gov }) {
+   const sim = standIn(useHealth(), 'governance')
+   return (
+     <Panel title="Governance bundle">
+-      {sim && <p className="muted" data-testid="demo-governance-label"><span className="chip">{sim.label}</span></p>}
++      {sim && <p className="muted" data-testid="demo-governance-label"><span className="chip chip-demo">{sim.label}</span></p>}
+       <dl className="kv">
+         <dt>Bundle</dt><dd data-testid="bundle-id">{gov.bundle_id || 'not yet created'}</dd>
+         <dt>Stage</dt><dd>{gov.stage || '-'}</dd>
+@@ -186,7 +186,7 @@ function Approvals({ id, gov, onChanged }) {
+       {gov && gov.approvals.length ? (
+         <table className="table compact"><thead><tr><th>Approver</th><th>Decision</th><th>When</th><th>Expires</th></tr></thead>
+           <tbody>{gov.approvals.map((a) => (
+-            <tr key={a.id}><td>{clean(a.approver)}{/simulated/i.test(a.approver || '') && <> <span className="chip">simulated</span></>}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
++            <tr key={a.id}><td>{clean(a.approver)}{/simulated/i.test(a.approver || '') && <> <span className="chip chip-demo">simulated</span></>}</td><td>{clean(a.decision)}</td><td className="nowrap">{fmtTs(a.created_at)}</td><td className="nowrap">{fmtTs(a.expires_at)}</td></tr>
+           ))}</tbody></table>
+       ) : <p className="muted">No approvals recorded.</p>}
+     </Panel>
+diff --git a/frontend/src/pages/Run.jsx b/frontend/src/pages/Run.jsx
+index 04abf39..dd5571a 100644
+--- a/frontend/src/pages/Run.jsx
++++ b/frontend/src/pages/Run.jsx
+@@ -6,7 +6,12 @@ import { ErrorBox, Loading, useAsync } from '../components/ui'
+ 
+ // Never show provider/model ids from trace data.
+ function label(ev) {
+-  if (ev.kind === 'model_call') return 'LLM call · frontier model via gateway'
++  if (ev.kind === 'model_call') {
++    const a = ev.attrs || {}
++    const mock = String(a['act.llm.provider'] || '').toLowerCase() === 'mock'
++      || /mock-llm/i.test(`${ev.name || ''} ${a['gen_ai.request.model'] || ''}`)
++    return mock ? 'LLM call · mock LLM (demo, no gateway call)' : 'LLM call · frontier model via gateway'
++  }
+   return clean(ev.name)
+ }
+ 
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 1622236..87f1885 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -71,6 +71,9 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
+ 
+ .f-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:4px }
+ 
+-.demo-banner { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 16px; background:#fff7e6; border-bottom:1px solid #f0c36d; color:#6b4a00; font-size:13px }
++.demo-banner { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 24px; background:#fff7e6; border-bottom:1px solid #f0c36d; color:#6b4a00; font-size:13px }
+ .demo-banner ul { display:flex; flex-wrap:wrap; gap:4px 8px; list-style:none; margin:0; padding:0; flex:1 }
+ .demo-banner li { background:#fff; border:1px solid #f0c36d; border-radius:10px; padding:1px 8px }
++
++.chip-demo, .stand-in-chip { background:#fff7e6; border:1px solid #b07a00; color:#5c3f00; font-size:12px }
++.toast { position:fixed; bottom:16px; right:24px; background:#1f2937; color:#fff; padding:10px 16px; border-radius:6px; font-size:14px; z-index:50 }
