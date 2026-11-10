@@ -46,7 +46,7 @@ export default function Fleet() {
             {list.data.map((a) => (
               <tr key={a.id} data-testid="fleet-row" data-agent-id={a.id}>
                 <td data-testid="fleet-source"><span className="chip">{a.source_platform}</span></td>
-                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{clean(a.name)}</Link></td>
+                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{clean(a.name)}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
                 <td data-testid="fleet-owner">{clean(a.owner) || '-'}</td>
                 <td><TierBadge tier={a.tier} /></td>
                 <td data-testid="fleet-status"><StatusPill status={a.status} /></td>

@@ -1,4 +1,6 @@
 """Fleet inventory, agent record, tier scoring, and intake upsert."""
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import func, select
 
@@ -14,6 +16,17 @@ def _tier(v):
     try:
         return int(v)
     except (TypeError, ValueError):
+        return None
+
+
+def _card_host(record):
+    """Host[:port] of an external agent's card URL, so duplicate names can be told apart; None otherwise."""
+    url = (record or {}).get("card_url")
+    if not isinstance(url, str):
+        return None
+    try:
+        return urlparse(url).netloc.rsplit("@", 1)[-1] or None
+    except ValueError:
         return None
 
 
@@ -33,7 +46,7 @@ def list_agents(source: str | None = None, tier: int | None = None, include_shad
     return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
              "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
              "open_findings": int(open_f.get(r.id, 0)),
-             "origin": (r.record or {}).get("origin", "internal")} for r in rows]
+             "origin": (r.record or {}).get("origin", "internal"), "card_host": _card_host(r.record)} for r in rows]
 
 
 @router.get("/api/agents/{agent_id}")

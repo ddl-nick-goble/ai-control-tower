@@ -62,4 +62,9 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
 .wrap-id { overflow-wrap:anywhere; word-break:break-word }
 .sig-signed { color:#1a7f37; font-weight:600 }
 .sig-unsigned { color:var(--ink) }
-.sig-invalid.warn { color:#9a5b00; background:#fff3cd; border:1px solid #f0c36d; border-radius:4px; padding:2px 8px; display:inline-block; font-weight:600 }
+.sig-invalid.warn { justify-self:start; width:fit-content; color:#9a5b00; background:#fff3cd; border:1px solid #f0c36d; border-radius:4px; padding:2px 8px; display:inline-block; font-weight:600 }
+
+.alert.asserted.verified { background:#e8f5e9; border:1px solid #b7dfbb; color:#1a7f37 }
+.evidence-preview h3 { font-size:16px; text-transform:none; letter-spacing:0; color:var(--ink); margin:20px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line) }
+.evidence-preview section:first-child h3 { border-bottom:2px solid var(--ink) }
+.host { font-size:12px; color:var(--muted); margin-left:6px }

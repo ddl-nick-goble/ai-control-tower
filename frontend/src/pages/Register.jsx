@@ -23,8 +23,8 @@ function describeError(err) {
     502: 'The agent card could not be fetched from that address.',
     504: 'The agent card server took too long to respond.',
   }[err.status] || 'Registration failed.'
-  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '')
-  return d ? `${lead} ${d}` : lead
+  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '').replace(/\bcard_url\b/g, 'The card URL')
+  return d && err.status !== 502 ? `${lead} ${d}` : lead
 }
 
 export default function Register() {

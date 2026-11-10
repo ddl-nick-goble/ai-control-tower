@@ -1,5 +1,6 @@
 """POST /api/agents/external: register a client-side A2A agent from its Agent Card URL."""
 import json
+import logging
 from pathlib import Path
 
 import jsonschema
@@ -13,6 +14,7 @@ from ..normalize import _audit, apply_record
 from ..tiering import TieringInputRejected, score_tier
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 SCHEMA = json.loads((Path(__file__).resolve().parent.parent.parent / "schemas" / "agent-record.json").read_text())
 
 
@@ -46,7 +48,8 @@ def register_external(body=Body(...), user: User = Depends(require_user)):
     try:
         jsonschema.validate(rec, SCHEMA)
     except jsonschema.ValidationError as e:
-        raise HTTPException(422, f"card does not produce a valid record: {e.message}")
+        log.warning("external card produced an invalid record: %s", e.message)
+        raise HTTPException(422, "the Agent Card does not contain the fields needed to build an agent record")
     actor = (user.user_id, user.username)
     with db.engine.begin() as cx:
         apply_record(cx, rec, actor=actor)

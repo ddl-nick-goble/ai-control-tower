@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { clean, fmtTs } from '../format'
+import { clean, fmtStatus, fmtTs } from '../format'
 import Passport from '../components/Passport'
 import Markdown from '../components/Markdown'
 import EvidencePack from '../components/EvidencePack'
@@ -41,7 +41,7 @@ export function Identity({ agent }) {
   return (
     <Panel title="Identity binding" testid="identity-panel">
       {asserted && (
-        <div className="alert asserted" data-testid="identity-card-asserted">Identity asserted by the agent card ({sigText})</div>
+        <div className={`alert asserted${agent.card_signature === 'signed' ? ' verified' : ''}`} data-testid="identity-card-asserted">Identity asserted by the agent card ({sigText})</div>
       )}
       {noDistinct && (
         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
@@ -167,7 +167,7 @@ function Findings({ findings }) {
             <div className="f-head">
               <span className="chip">{f.type}</span>
               <span className={`pill sev-${f.severity}`}>{f.severity}</span>
-              <span className="pill">{f.status}</span>
+              <span className="pill">{fmtStatus(f.status)}</span>
               <strong>{clean(f.tool)}</strong>
               <span className="muted">{fmtTs(f.ts)}</span>
             </div>
