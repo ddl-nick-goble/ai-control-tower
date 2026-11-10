@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, llm, routes
+from .prefix import ProxyPrefixMiddleware
 from .domino_identity import get_user
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +61,10 @@ def _unmatched(rest: str):
 
 if DIST.is_dir():
     app.mount("/", StaticFiles(directory=str(DIST), html=True), name="frontend")
+
+
+# Outermost middleware: strip the Domino proxy prefix before routing and the write guard.
+app.add_middleware(ProxyPrefixMiddleware, host_path=os.environ.get("DOMINO_RUN_HOST_PATH", ""))
 
 
 def in_workspace() -> bool:
