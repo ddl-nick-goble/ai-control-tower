@@ -304,6 +304,12 @@ def detect_run(run_id: str) -> int | None:
         man = _manifest(conn, agent_id) if ag else None
         if man is None:
             return None
+        # a call to a model the manifest declares as a dependency (the recon agent's break_classifier) is
+        # declared behaviour, not a tool outside the manifest
+        declared = [r.name for r in conn.execute(select(db.dependencies.c.name).where(
+            db.dependencies.c.agent_id == agent_id, db.dependencies.c.kind == "model")) if r.name]
+        if declared:
+            man = {**man, "tools": list(man.get("tools") or []) + declared}
         viol = find_violations(evs, man)
         if not viol:
             return None
