@@ -61,7 +61,7 @@ export default function Register() {
           <p className="muted">Score each from 1 (low) to 5 (high).</p>
           {CRITERIA.map(([k, name, prompt]) => (
             <p key={k}><label>{name}: <span className="muted">{prompt}</span><br />
-              <select data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
+              <select className="select" data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
                 {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </label></p>

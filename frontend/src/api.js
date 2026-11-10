@@ -24,6 +24,7 @@ export const api = {
   agent: (id) => request(`agents/${encodeURIComponent(id)}`),
   findings: (id) => request(`agents/${encodeURIComponent(id)}/findings`),
   governance: (id) => request(`agents/${encodeURIComponent(id)}/governance`),
+  validation: (id) => request(`agents/${encodeURIComponent(id)}/validation`),
   dependencies: (id) => request(`agents/${encodeURIComponent(id)}/dependencies`),
   approve: (id, body) => request(`agents/${encodeURIComponent(id)}/approve`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}),

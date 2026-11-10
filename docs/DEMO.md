@@ -22,8 +22,9 @@ From the repo root, in a Domino workspace (or locally with Python 3.12 and node)
 python jobs/seed_demo.py
 #    add --governance to also create the Domino Governance bundles for recon-agent and treasury-sweep-agent
 
-# 2. Serve the fixture agent card (leave running, second terminal)
-python fixtures/external/serve.py --port 8765
+# 2. Serve the fixture agent card (leave running, second terminal; 8765 is taken by the Domino proxy in
+#    workspaces, any free port works)
+python fixtures/external/serve.py --port 8766
 
 # 3. Start the app (port 9888 in a workspace; it prints its access URL)
 export ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost
@@ -36,6 +37,13 @@ bash app.sh
 `ACT_DB` selects the database file for both the seed and the app (default: under `/mnt/data/<project>/act/` in a
 Domino workspace, otherwise `./act.db`). Use the same value for both. To use the signed card, start the fixture
 server with `--signed`; the passport then shows the identity banner "signed and verified".
+
+Notes for the walk:
+
+- The red "no distinct identity" flag on recon-agent is expected until a service account publishes it (see
+  `docs/INTEGRATION.md`).
+- Run `python jobs/seed_demo.py --governance` to create the Governance bundles; the agent page then shows the two
+  policies on one bundle.
 
 ## The walk (about ten minutes)
 
@@ -64,7 +72,7 @@ server with `--signed`; the passport then shows the identity banner "signed and 
    pack**. The preview opens in OCC 2026-54 order; show the finding in the monitoring section.
 7. **PDF (30 s).** Click **Download PDF** (and **Download Markdown** if asked). Open the PDF and show the same finding.
 8. **Register an external agent (1 min).** Go to Fleet and click **Register external agent**. Enter the card URL
-   `http://localhost:8765/.well-known/agent-card.json`, set the consequence criteria (for example Financial exposure 5,
+   `http://localhost:8766/.well-known/agent-card.json`, set the consequence criteria (for example Financial exposure 5,
    Autonomy 4) and data scopes, and click **Register**.
 9. **Passport (30 s).** The passport shows the card fields (name, skills, endpoints), the tier computed from the
    criteria and the identity banner (unsigned unless the signed card is served). Click **Open the agent page**;

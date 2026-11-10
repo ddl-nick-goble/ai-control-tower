@@ -88,7 +88,7 @@ function Dependencies({ id }) {
           <h3>Models</h3>
           <ul className="plain">
             {data.models.map((m, i) => (
-              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}</span></li>
+              <li key={i} data-testid="dependency-model">{clean(m.name)} <span className="chip">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span></li>
             ))}
             {!data.models.length && <li className="muted">none</li>}
           </ul>
@@ -103,6 +103,34 @@ function Dependencies({ id }) {
             {!data.tools.length && <li className="muted">none recorded as dependencies</li>}
           </ul>
         </div>
+      )}
+    </Panel>
+  )
+}
+
+function pct(x) { return x == null ? '-' : `${(Number(x) * 100).toFixed(1).replace(/\.0$/, '')}%` }
+const f3 = (x) => (x == null ? '-' : Number(x).toFixed(3))
+
+function Validation({ id }) {
+  const { data, error, loading } = useAsync(
+    () => api.validation(id).catch((e) => { if (e.status === 404) return null; throw e }), [id])
+  const d = (data && data.detail) || {}
+  const judge = d.judge_model_id === 'mock-llm' ? 'mock judge (not a model)' : (d.judge_alias ? `judge ${clean(d.judge_alias)}` : 'judge on file')
+  return (
+    <Panel title="Validation" testid="validation-card">
+      {error && <ErrorBox error={error} />}
+      {loading && <Loading what="validation" />}
+      {!loading && !error && !data && <p className="muted">No validation record</p>}
+      {data && (
+        <dl className="kv">
+          <dt>Mean</dt><dd>{f3(d.mean)}</dd>
+          <dt>p5</dt><dd>{f3(d.p5)}</dd>
+          <dt>p95</dt><dd>{f3(d.p95)}</dd>
+          <dt>Pass rate</dt><dd>{pct(d.pass_rate)}</dd>
+          <dt>Sample</dt><dd>{d.n_prompts} prompts x {d.reps} repetitions</dd>
+          <dt>Judge</dt><dd>{judge}</dd>
+          <dt>Errors / invalid</dt><dd>{d.error_count ?? 0} errors, {d.invalid_count ?? 0} invalid judge replies</dd>
+        </dl>
       )}
     </Panel>
   )
@@ -172,12 +200,14 @@ function Findings({ findings }) {
               <span className="muted">{fmtTs(f.ts)}</span>
             </div>
             <Markdown text={clean(f.explanation)} />
+            <div className="f-foot">
             {f.explanation && (!(f.detail && f.detail.explanation_model) || f.detail.explanation_model === 'mock-llm') && (
               <span className="muted" data-testid="finding-explanation-source">
                 {f.detail && f.detail.explanation_model ? 'mock text (not a model)' : 'template text (no model)'}
               </span>
             )}
             {f.run_id && <Link data-testid="finding-timeline-link" to={`/runs/${encodeURIComponent(f.run_id)}`}>View run timeline</Link>}
+            </div>
           </li>
         ))}
       </ul>
@@ -234,6 +264,7 @@ function AgentView({ id }) {
         <Identity agent={a} />
         <Manifest agent={a} />
         <Dependencies id={id} />
+        <Validation id={id} />
         {gov.data ? <Governance gov={gov.data} /> : <Panel title="Governance bundle">{gov.error ? <ErrorBox error={gov.error} /> : <Loading what="governance" />}</Panel>}
         <Approvals id={id} gov={gov.data} onChanged={() => setRev((r) => r + 1)} />
       </div>
