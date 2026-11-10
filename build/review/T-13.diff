@@ -1,0 +1,838 @@
+diff --git a/README.md b/README.md
+index 30d02f4..11e86de 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,54 @@
+-# ai-control-tower
+\ No newline at end of file
++# ACT: Agent Control Tower
++
++ACT is an evidence layer for AI agents in a bank. It inventories agents from several platforms, tiers them by
++consequence, records what they actually did (hash-chained events from OpenTelemetry traces), detects drift from
++each agent's permitted-action manifest, mirrors approvals into Domino Governance, and produces a dated evidence
++pack (Markdown and PDF). **It does not enforce anything**: it never blocks an agent or a call. It produces the
++records that a reviewer, an auditor or a regulator can check.
++
++## Quick start
++
++```
++python jobs/seed_demo.py        # cold start to the demo state (add --governance for Domino Governance bundles)
++bash app.sh                     # builds the frontend if needed, serves API + console (9888 in a workspace)
++```
++
++`seed_demo.py` runs intake (12 agents), runs the recon agent once, ingests the weekend-drift run, records a
++validation (5 repetitions) and prints a summary. It is idempotent and never approves an agent. Then follow
++[docs/DEMO.md](docs/DEMO.md) for the ten-minute walk, including the fixture card server and the environment
++variables for registering an external agent.
++
++`app.sh` rebuilds `frontend/dist` with npm when sources are newer. If `frontend/dist` exists and npm is not
++available it serves the existing build without failing. **A published Domino App should ship a prebuilt
++`frontend/dist` or run in an environment with node**; `frontend/dist` is not committed to git.
++
++## Documentation
++
++- [docs/architecture.md](docs/architecture.md): integration map, trace-path sequence and data model (Mermaid).
++- [docs/DEMO.md](docs/DEMO.md): the ten-minute demo script, cold-start commands and what is mocked.
++- [docs/INTEGRATION.md](docs/INTEGRATION.md): every switch that moves a stand-in to a live piece.
++- [docs/governance-api.md](docs/governance-api.md), [docs/BORROWED.md](docs/BORROWED.md): Governance API notes and borrowed schemas.
++
++## Live versus mock
++
++| Piece | Demo state | Switch |
++|---|---|---|
++| Domino Apps and Agents intake, Audit Trail, MLflow, Governance API | Live | Always on inside Domino |
++| AWS, Google, Microsoft, Databricks intake | Replay fixtures shaped like the real APIs; live calls written but untested | `ACT_LIVE_<PLATFORM>=1` |
++| LLM (recon agent loop, validation judge, drift explanations) | Mock provider; explanations are template text | Unset `ACT_LLM_PROVIDER`, set `LLM_GATEWAY_URL` |
++| recon-agent hosting | Local entry, runs in the workspace (not deployed) | `ACT_DOMINO_LOCAL_AGENTS`, deploy as a Domino Agent |
++| `break_classifier` | Live registry model (champion), endpoint when its key is set | `BREAK_CLASSIFIER_ENDPOINT_URL`, `BREAK_CLASSIFIER_ACCESS_KEY` |
++| Service-account identity | Reported as a workspace user, `distinct: false` | `ACT_SERVICE_ACCOUNTS` |
++| Second approver | Control is real; the demo uses a simulated second user | Sign in as a second Domino user |
++| External agent cards | Fixture card served from localhost | `ACT_EXTERNAL_ALLOW_HOSTS`, `ACT_TRUSTED_JWKS_PATH` |
++
++Details and go-live steps are in [docs/INTEGRATION.md](docs/INTEGRATION.md).
++
++## Tests
++
++```
++PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e
++PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright QA_RUN_DIR=<dir> python3 -m pytest tests/e2e -q -p no:cacheprovider
++```
++
++The browser suite serves the app on port 9888 and needs Playwright browsers.
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+index 769b318..d610492 100644
+--- a/agents/recon_agent/agent.py
++++ b/agents/recon_agent/agent.py
+@@ -42,6 +42,7 @@ TOOL_SPECS = [
+ 
+ UNCLASSIFIED = "unclassified"
+ _registry_cache = {}
++_registry_lock = threading.Lock()
+ 
+ 
+ def _payload(br):
+@@ -62,7 +63,10 @@ def _from_endpoint(url, payload):
+ 
+ 
+ _URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+-_HOST_RE = re.compile(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:/\S*)?")
++_HOST_RE = re.compile(
++    r"""\bhost=(['"])[^'"]*\1"""                         # host='name' / host="name"
++    r"|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/\S*)?"       # IPv4 address, optional port and path
++    r"|\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?::\d+)?(?:/\S*)?")  # dotted hostname
+ REGISTRY_TIMEOUT_S = 8.0
+ 
+ 
+@@ -92,10 +96,19 @@ def _load_registry_model():
+ 
+ def _registry_model():
+     """Load the registry model at most once per process (failures are memoised) within a wall-clock cap."""
+-    if "m" in _registry_cache:
++    if "m" in _registry_cache:  # fast path without the lock
+         return _registry_cache["m"]
+     if "err" in _registry_cache:
+         raise _registry_cache["err"]
++    with _registry_lock:  # re-check inside it so only one thread loads
++        if "m" in _registry_cache:
++            return _registry_cache["m"]
++        if "err" in _registry_cache:
++            raise _registry_cache["err"]
++        return _load_registry_once()
++
++
++def _load_registry_once():
+     box = {}
+ 
+     def work():
+diff --git a/app.sh b/app.sh
+index dc95bd8..ae57551 100755
+--- a/app.sh
++++ b/app.sh
+@@ -1,5 +1,7 @@
+ #!/bin/bash
+ # Domino App entry point: rebuilds the frontend when sources are newer than dist, then serves API + static files.
++# Without npm the build is skipped: an existing frontend/dist is served as is (ship a prebuilt dist, or use an
++# environment with node, for a published App). Without both, only the API is served and a warning is printed.
+ set -e
+ cd "$(dirname "$0")"
+ if [ -f package.json ] && command -v npm >/dev/null 2>&1; then
+@@ -14,4 +16,7 @@ if [ -f package.json ] && command -v npm >/dev/null 2>&1; then
+     npm run build
+   fi
+ fi
++if ! command -v npm >/dev/null 2>&1 && [ ! -f frontend/dist/index.html ]; then
++  echo "app.sh: npm is not available and frontend/dist is missing: serving the API only" >&2
++fi
+ exec python3 -m backend.main
+diff --git a/backend/drift.py b/backend/drift.py
+index 0ece997..ff0b8b7 100644
+--- a/backend/drift.py
++++ b/backend/drift.py
+@@ -304,6 +304,12 @@ def detect_run(run_id: str) -> int | None:
+         man = _manifest(conn, agent_id) if ag else None
+         if man is None:
+             return None
++        # a call to a model the manifest declares as a dependency (the recon agent's break_classifier) is
++        # declared behaviour, not a tool outside the manifest
++        declared = [r.name for r in conn.execute(select(db.dependencies.c.name).where(
++            db.dependencies.c.agent_id == agent_id, db.dependencies.c.kind == "model")) if r.name]
++        if declared:
++            man = {**man, "tools": list(man.get("tools") or []) + declared}
+         viol = find_violations(evs, man)
+         if not viol:
+             return None
+diff --git a/backend/external.py b/backend/external.py
+index 867c287..c6d7a68 100644
+--- a/backend/external.py
++++ b/backend/external.py
+@@ -22,6 +22,7 @@ import hashlib
+ import http.client
+ import ipaddress
+ import json
++import logging
+ import os
+ import socket
+ import threading
+@@ -34,6 +35,8 @@ from cryptography.hazmat.primitives import hashes
+ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+ 
++log = logging.getLogger(__name__)
++
+ FETCH_TIMEOUT = 5.0
+ MAX_BYTES = 1_000_000
+ MONEY_WORDS = ("payments", "transfer", "payment", "wire", "funds")
+@@ -213,7 +216,8 @@ def fetch_card(url: str) -> dict:
+     except (OSError, http.client.HTTPException) as e:
+         if expired.is_set() or time.monotonic() >= deadline:
+             raise timeout_err
+-        raise ExternalError(502, f"could not fetch the Agent Card: {type(e).__name__}")
++        log.info("agent card fetch failed: %s", type(e).__name__)
++        raise ExternalError(502, "could not fetch the Agent Card from that address")
+     try:
+         card = json.loads(buf.decode("utf-8"))
+     except (ValueError, UnicodeDecodeError):
+diff --git a/backend/routes/agents.py b/backend/routes/agents.py
+index c8066e6..5307585 100644
+--- a/backend/routes/agents.py
++++ b/backend/routes/agents.py
+@@ -1,4 +1,6 @@
+ """Fleet inventory, agent record, tier scoring, and intake upsert."""
++from urllib.parse import urlparse
++
+ from fastapi import APIRouter, Body, Depends, HTTPException
+ from sqlalchemy import func, select
+ 
+@@ -17,6 +19,17 @@ def _tier(v):
+         return None
+ 
+ 
++def _card_host(record):
++    """Host[:port] of an external agent's card URL, so duplicate names can be told apart; None otherwise."""
++    url = (record or {}).get("card_url")
++    if not isinstance(url, str):
++        return None
++    try:
++        return urlparse(url).netloc.rsplit("@", 1)[-1] or None
++    except ValueError:
++        return None
++
++
+ @router.get("/api/agents")
+ def list_agents(source: str | None = None, tier: int | None = None, include_shadow: bool = False):
+     q = select(db.agents)
+@@ -33,7 +46,7 @@ def list_agents(source: str | None = None, tier: int | None = None, include_shad
+     return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
+              "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
+              "open_findings": int(open_f.get(r.id, 0)),
+-             "origin": (r.record or {}).get("origin", "internal")} for r in rows]
++             "origin": (r.record or {}).get("origin", "internal"), "card_host": _card_host(r.record)} for r in rows]
+ 
+ 
+ @router.get("/api/agents/{agent_id}")
+diff --git a/backend/routes/external.py b/backend/routes/external.py
+index bdfa134..fc3df01 100644
+--- a/backend/routes/external.py
++++ b/backend/routes/external.py
+@@ -1,5 +1,6 @@
+ """POST /api/agents/external: register a client-side A2A agent from its Agent Card URL."""
+ import json
++import logging
+ from pathlib import Path
+ 
+ import jsonschema
+@@ -13,6 +14,7 @@ from ..normalize import _audit, apply_record
+ from ..tiering import TieringInputRejected, score_tier
+ 
+ router = APIRouter()
++log = logging.getLogger(__name__)
+ SCHEMA = json.loads((Path(__file__).resolve().parent.parent.parent / "schemas" / "agent-record.json").read_text())
+ 
+ 
+@@ -46,7 +48,8 @@ def register_external(body=Body(...), user: User = Depends(require_user)):
+     try:
+         jsonschema.validate(rec, SCHEMA)
+     except jsonschema.ValidationError as e:
+-        raise HTTPException(422, f"card does not produce a valid record: {e.message}")
++        log.warning("external card produced an invalid record: %s", e.message)
++        raise HTTPException(422, "the Agent Card does not contain the fields needed to build an agent record")
+     actor = (user.user_id, user.username)
+     with db.engine.begin() as cx:
+         apply_record(cx, rec, actor=actor)
+diff --git a/docs/DEMO.md b/docs/DEMO.md
+new file mode 100644
+index 0000000..772c565
+--- /dev/null
++++ b/docs/DEMO.md
+@@ -0,0 +1,83 @@
++# Ten-minute demo
++
++The walk: fleet, recon-agent, approve as a second user, treasury-sweep-agent, run timeline, evidence pack, PDF,
++register an external agent, passport. Read "What is mocked or local" first; say it out loud at the start of the demo.
++
++## What is mocked or local
++
++| Piece | State in this demo | Where to read more |
++|---|---|---|
++| LLM | The `mock` provider (`ACT_LLM_PROVIDER=mock`, the seed default when `LLM_GATEWAY_URL` is unset). The recon agent loop and the validation judge are offline stand-ins (model `mock-llm`). The drift explanation is a template, labelled "template text (no model)". | docs/INTEGRATION.md, rows `ACT_LLM_PROVIDER`, `LLM_GATEWAY_URL` |
++| recon-agent hosting | A local entry from `config/local_agents.json` (hosting "workspace (not deployed)"). It runs in a workspace or Job, not as a deployed Domino Agent. Its spans and the `break_classifier` registry call are real. | docs/INTEGRATION.md, row `ACT_DOMINO_LOCAL_AGENTS` |
++| Second approver | One person drives the demo, and the registrant may not approve (HTTP 403, audited). The approval is made by a simulated second user, `demo-approver (simulated second user)`, through `python jobs/seed_demo.py --approve recon-agent`. It stands in for a real second Domino user. The control itself is real. | docs/INTEGRATION.md, row "Second approver" |
++| Hyperscaler sources | AWS, Google, Microsoft and Databricks agents come from replay fixtures shaped like the real APIs. Live calls are gated behind `ACT_LIVE_<PLATFORM>=1` and untested here. | README, live-versus-mock table |
++| Service-account identity | recon-agent is reported as a workspace user (`distinct: false`) unless `ACT_SERVICE_ACCOUNTS` is set. | docs/INTEGRATION.md |
++
++## Cold start
++
++From the repo root, in a Domino workspace (or locally with Python 3.12 and node):
++
++```
++# 1. Seed the database: 12 agents, one recon-agent run, the weekend-drift run, one validation record.
++python jobs/seed_demo.py
++#    add --governance to also create the Domino Governance bundles for recon-agent and treasury-sweep-agent
++
++# 2. Serve the fixture agent card (leave running, second terminal)
++python fixtures/external/serve.py --port 8765
++
++# 3. Start the app (port 9888 in a workspace; it prints its access URL)
++export ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost
++export ACT_TRUSTED_JWKS_PATH=fixtures/external/signing-key.pub.jwk.json
++export ACT_LLM_PROVIDER=mock
++export ACT_DOMINO_LOCAL_AGENTS=config/local_agents.json
++bash app.sh
++```
++
++`ACT_DB` selects the database file for both the seed and the app (default: under `/mnt/data/<project>/act/` in a
++Domino workspace, otherwise `./act.db`). Use the same value for both. To use the signed card, start the fixture
++server with `--signed`; the passport then shows the identity banner "signed and verified".
++
++## The walk (about ten minutes)
++
++1. **Fleet (1 min).** Open the app. The Fleet table lists 12 agents across five sources: 3 AWS AgentCore, 3 Google,
++   3 Microsoft Agent 365, 2 Databricks and 1 Domino (recon-agent). A thirteenth row, the external agent, appears
++   after step 8. Use the Source filter to show one platform. Point out tier and status columns.
++2. **recon-agent (2 min).** Click `recon-agent`. Show, panel by panel: Tier and criteria (tier 2), Identity binding,
++   Permitted-action manifest (three tools: fetch_ledger, compare_entries, propose_adjustment), Dependencies
++   (`break_classifier`, the champion version, v6 in the registry), Governance bundle (two policies on one bundle
++   when the seed ran with `--governance`) and Runs. The validation record (mean, p5, p95, pass rate over 5
++   repetitions) has no panel of its own: show it in recon-agent's evidence pack, or at
++   `/api/agents/<id>/validation`. Say that the validation judge is the mock judge here.
++3. **Approve as a second user (1 min).** In the Approvals panel click **Approve** as the signed-in user: it is
++   refused with a message that the user who registered the agent cannot approve it. That is the control working.
++   Then, in a terminal:
++   `python jobs/seed_demo.py --approve recon-agent`
++   Reload the agent page: status approved, an approval by `demo-approver-2`, and an expiry (tier 2: 180 days).
++   This simulated second user stands in for a real second Domino user (docs/INTEGRATION.md).
++4. **treasury-sweep-agent (1 min).** Back to Fleet, open `treasury-sweep-agent` (AWS AgentCore fixture). It is
++   tier 1. Under Findings there is one open `scope_drift` finding from Saturday 2026-11-07 02:14 with a one-line
++   explanation (template text, labelled as such).
++5. **Run timeline (2 min).** In the finding click **View run timeline**. Two events are highlighted: `transfer_funds`
++   with an amount of 4,750,000 against the manifest limit of 250,000, and `list_credentials`, which is not in the
++   manifest.
++6. **Evidence pack (1 min).** Back to treasury-sweep-agent. In the Evidence pack panel click **Generate evidence
++   pack**. The preview opens in OCC 2026-54 order; show the finding in the monitoring section.
++7. **PDF (30 s).** Click **Download PDF** (and **Download Markdown** if asked). Open the PDF and show the same finding.
++8. **Register an external agent (1 min).** Go to Fleet and click **Register external agent**. Enter the card URL
++   `http://localhost:8765/.well-known/agent-card.json`, set the consequence criteria (for example Financial exposure 5,
++   Autonomy 4) and data scopes, and click **Register**.
++9. **Passport (30 s).** The passport shows the card fields (name, skills, endpoints), the tier computed from the
++   criteria and the identity banner (unsigned unless the signed card is served). Click **Open the agent page**;
++   the fleet now has 13 rows and the new one shows its card host.
++
++## Resetting
++
++Delete the database file and rerun `python jobs/seed_demo.py`. The seed is idempotent: running it twice changes
++nothing that already exists, and it never approves an agent.
++
++## If something looks different
++
++- Fleet shows fewer than 12 rows: check `python jobs/seed_demo.py` printed no `intake_errors`.
++- Register returns 422 for a loopback URL: set `ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost` in the app environment
++  and restart.
++- Signed card not verified: set `ACT_TRUSTED_JWKS_PATH` as above.
+diff --git a/docs/architecture.md b/docs/architecture.md
+new file mode 100644
+index 0000000..b38bc60
+--- /dev/null
++++ b/docs/architecture.md
+@@ -0,0 +1,167 @@
++# ACT architecture
++
++ACT (Agent Control Tower) is an evidence layer. It inventories agents from several platforms, records what they
++did, and produces dated evidence for governance. It does not block or enforce anything.
++
++## Integration map
++
++Five intake adapters feed one normalizer and one store. Traces from any agent take a second path through the
++span normalizer into a hash-chained event log, where the drift detector turns out-of-manifest behaviour into
++findings. LLM calls go through one seam that is either the Domino LLM Gateway or an offline mock.
++
++```mermaid
++flowchart LR
++  subgraph intake["Intake adapters (adapters/)"]
++    aws["AWS AgentCore (replay)"]
++    goog["Google Agent Registry (replay)"]
++    ms["Microsoft Agent 365 (replay)"]
++    dbx["Databricks Unity Catalog (replay)"]
++    dom["Domino Apps and Agents (live) + local agents file"]
++  end
++  aws --> norm
++  goog --> norm
++  ms --> norm
++  dbx --> norm
++  dom --> norm
++  norm["normalize(): Agent Record, tier, ACT id"] --> store[("SQLite store: 12 tables")]
++  ext["POST /api/agents/external (agent card URL)"] --> norm
++  store --> gov["governance sync: bundle, evidence, approval mirror"]
++  gov --> dgov["Domino Governance API"]
++  store --> api["FastAPI routes"]
++  api --> console["React console: fleet, agent, timeline, evidence pack, passport"]
++
++  traces["POST /v1/traces (OTLP JSON or protobuf)"] --> ns["normalize_span(): canonical event"]
++  ns --> chain["hash chain (events.prev_hash, events.hash)"]
++  chain --> store
++  chain --> drift["drift detector: tools outside manifest, value limits"]
++  drift --> findings["findings (scope_drift, shadow_agent)"]
++  findings --> store
++
++  subgraph llm["LLM seam (backend/llm.py, agents/recon_agent/llm.py)"]
++    mock["mock provider (ACT_LLM_PROVIDER=mock): template text, mock-llm judge"]
++    gw["Domino LLM Gateway (LLM_GATEWAY_URL)"]
++  end
++  drift -. explanation .-> llm
++  recon["recon-agent"] --> llm
++  recon --> traces
++  validate["jobs/validate.py"] --> llm
++  validate --> store
++  store --> evid["evidence pack: Markdown and PDF"]
++  evid --> console
++```
++
++## Trace path
++
++```mermaid
++sequenceDiagram
++  autonumber
++  participant Ag as Agent (recon-agent)
++  participant Ex as MLflow tracing / ACT exporter
++  participant In as POST /v1/traces
++  participant Ns as normalize_span
++  participant Ch as Hash chain
++  participant Dd as Drift detector
++  participant St as Store (findings)
++  Ag->>Ex: spans (invoke_agent, execute_tool, chat)
++  Ex->>In: OTLP/HTTP JSON or protobuf, bearer token
++  In->>Ns: parsed spans (OTel GenAI, OpenInference, MLflow dialects)
++  Ns->>Ch: canonical events (run_id, agent_id, ts, kind, name, args_redacted)
++  Ch->>St: append events with prev_hash and hash
++  Ch->>Dd: run committed (hook)
++  Dd->>St: compare observed tools and values with the manifest
++  Dd->>St: scope_drift finding with violations and explanation
++  In-->>Ex: 200 {accepted, agents_matched}
++```
++
++## Data model
++
++```mermaid
++erDiagram
++  agents ||--o{ agent_versions : has
++  agents ||--o{ manifests : has
++  agents ||--o{ identities : bound_to
++  agents ||--o{ dependencies : depends_on
++  agents ||--o{ runs : executes
++  agents ||--o{ findings : raises
++  agents ||--o{ approvals : approved_by
++  agents ||--o{ validation_records : validated_by
++  agents ||--o{ evidence_packs : documented_by
++  runs ||--o{ events : records
++  runs ||--o{ findings : triggers
++  agents {
++    string id PK
++    string source_platform
++    string native_id
++    string name
++    string tier
++    string status
++    string registered_by
++    string bundle_id
++  }
++  agent_versions {
++    int id PK
++    string agent_id FK
++    string version
++  }
++  manifests {
++    int id PK
++    string agent_id FK
++    json content
++  }
++  identities {
++    int id PK
++    string agent_id FK
++    string kind
++    string principal
++  }
++  dependencies {
++    int id PK
++    string agent_id FK
++    string kind
++    string name
++  }
++  runs {
++    string id PK
++    string agent_id FK
++    string status
++    string started_at
++  }
++  events {
++    int id PK
++    string run_id
++    string agent_id
++    string kind
++    string prev_hash
++    string hash
++  }
++  findings {
++    int id PK
++    string agent_id FK
++    string run_id
++    string type
++    string status
++  }
++  approvals {
++    int id PK
++    string agent_id FK
++    string approver
++    string expires_at
++  }
++  validation_records {
++    int id PK
++    string agent_id FK
++    json detail
++  }
++  evidence_packs {
++    int id PK
++    string agent_id FK
++    string path
++  }
++  audit_events {
++    int id PK
++    string actor_user_id
++    string action
++    string target
++    string ts
++  }
++```
+diff --git a/fixtures/README.md b/fixtures/README.md
+index 347034e..7ba836f 100644
+--- a/fixtures/README.md
++++ b/fixtures/README.md
+@@ -22,7 +22,7 @@ platform's free-form slot. Exactly one agent per platform has `identity.type ==
+ 
+ treasury-sweep-agent manifest: tools get_balance, sweep_plan, get_fx_rate, transfer_funds, post_journal_entry (no list_credentials);
+ `value_limits.transfer_funds = {amount: 250000, currency: USD}`; criteria autonomous / moves_money (Tier 1).
+-`gen_ai.agent.id` in OTel runs is the AWS `agentRuntimeId`.
++In every run, `gen_ai.agent.id` is the platform-native id of the agent (see the matching rule below).
+ 
+ ## Matching rule and synthetic extensions
+ 
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index 102d3a9..bce9cc9 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -1,7 +1,7 @@
+ import React from 'react'
+ import { Link, useParams } from 'react-router-dom'
+ import { api } from '../api'
+-import { clean, fmtTs } from '../format'
++import { clean, fmtStatus, fmtTs } from '../format'
+ import Passport from '../components/Passport'
+ import Markdown from '../components/Markdown'
+ import EvidencePack from '../components/EvidencePack'
+@@ -41,7 +41,7 @@ export function Identity({ agent }) {
+   return (
+     <Panel title="Identity binding" testid="identity-panel">
+       {asserted && (
+-        <div className="alert asserted" data-testid="identity-card-asserted">Identity asserted by the agent card ({sigText})</div>
++        <div className={`alert asserted${agent.card_signature === 'signed' ? ' verified' : ''}`} data-testid="identity-card-asserted">Identity asserted by the agent card ({sigText})</div>
+       )}
+       {noDistinct && (
+         <div className="alert error" data-testid="identity-flag-no-distinct">No distinct identity: this agent acts under a shared or borrowed credential.</div>
+@@ -167,7 +167,7 @@ function Findings({ findings }) {
+             <div className="f-head">
+               <span className="chip">{f.type}</span>
+               <span className={`pill sev-${f.severity}`}>{f.severity}</span>
+-              <span className="pill">{f.status}</span>
++              <span className="pill">{fmtStatus(f.status)}</span>
+               <strong>{clean(f.tool)}</strong>
+               <span className="muted">{fmtTs(f.ts)}</span>
+             </div>
+diff --git a/frontend/src/pages/Fleet.jsx b/frontend/src/pages/Fleet.jsx
+index 55f30c3..d6cbff1 100644
+--- a/frontend/src/pages/Fleet.jsx
++++ b/frontend/src/pages/Fleet.jsx
+@@ -46,7 +46,7 @@ export default function Fleet() {
+             {list.data.map((a) => (
+               <tr key={a.id} data-testid="fleet-row" data-agent-id={a.id}>
+                 <td data-testid="fleet-source"><span className="chip">{a.source_platform}</span></td>
+-                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{clean(a.name)}</Link></td>
++                <td data-testid="fleet-name"><Link to={`/agents/${encodeURIComponent(a.id)}`}>{clean(a.name)}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
+                 <td data-testid="fleet-owner">{clean(a.owner) || '-'}</td>
+                 <td><TierBadge tier={a.tier} /></td>
+                 <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+index c9a0385..72bc73a 100644
+--- a/frontend/src/pages/Register.jsx
++++ b/frontend/src/pages/Register.jsx
+@@ -23,8 +23,8 @@ function describeError(err) {
+     502: 'The agent card could not be fetched from that address.',
+     504: 'The agent card server took too long to respond.',
+   }[err.status] || 'Registration failed.'
+-  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '')
+-  return d ? `${lead} ${d}` : lead
++  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '').replace(/\bcard_url\b/g, 'The card URL')
++  return d && err.status !== 502 ? `${lead} ${d}` : lead
+ }
+ 
+ export default function Register() {
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 63ad0d4..620ad79 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -62,4 +62,9 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
+ .wrap-id { overflow-wrap:anywhere; word-break:break-word }
+ .sig-signed { color:#1a7f37; font-weight:600 }
+ .sig-unsigned { color:var(--ink) }
+-.sig-invalid.warn { color:#9a5b00; background:#fff3cd; border:1px solid #f0c36d; border-radius:4px; padding:2px 8px; display:inline-block; font-weight:600 }
++.sig-invalid.warn { justify-self:start; width:fit-content; color:#9a5b00; background:#fff3cd; border:1px solid #f0c36d; border-radius:4px; padding:2px 8px; display:inline-block; font-weight:600 }
++
++.alert.asserted.verified { background:#e8f5e9; border:1px solid #b7dfbb; color:#1a7f37 }
++.evidence-preview h3 { font-size:16px; text-transform:none; letter-spacing:0; color:var(--ink); margin:20px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--line) }
++.evidence-preview section:first-child h3 { border-bottom:2px solid var(--ink) }
++.host { font-size:12px; color:var(--muted); margin-left:6px }
+diff --git a/jobs/seed_demo.py b/jobs/seed_demo.py
+new file mode 100644
+index 0000000..a6c06f1
+--- /dev/null
++++ b/jobs/seed_demo.py
+@@ -0,0 +1,242 @@
++"""One command from a cold start to the demo state.
++
++    python jobs/seed_demo.py [--governance]        (also runs as a Domino Job)
++
++Steps: init_db, intake (12 agents), one in-process recon-agent run with its ACT traces ingested in-process,
++the weekend-drift fixture (treasury-sweep-agent scope_drift), one validation record (5 repetitions), and with
++--governance a Domino Governance bundle for recon-agent and treasury-sweep-agent (best effort). Idempotent:
++a second run changes nothing that already exists. It never approves anything.
++
++Env: ACT_DB, ACT_LLM_PROVIDER (default mock when LLM_GATEWAY_URL is unset), ACT_DOMINO_LOCAL_AGENTS
++(default config/local_agents.json), DOMINO_STARTING_USERNAME (registering user; default "seed-user").
++"""
++import argparse
++import contextlib
++import json
++import logging
++import os
++import sys
++import time
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parent.parent
++if str(ROOT) not in sys.path:
++    sys.path.insert(0, str(ROOT))
++
++log = logging.getLogger("seed_demo")
++RECON_NATIVE_ID = "local-recon-agent"
++GOVERNANCE_AGENTS = ("recon-agent", "treasury-sweep-agent")
++SECOND_APPROVER_ID = "demo-approver-2"
++SECOND_APPROVER_NAME = "demo-approver (simulated second user)"
++
++
++@contextlib.contextmanager
++def _env(**pairs):
++    """Set env vars for the block (None leaves it alone) and restore them afterwards."""
++    old = {k: os.environ.get(k) for k in pairs}
++    try:
++        for k, v in pairs.items():
++            if v is not None:
++                os.environ[k] = v
++        yield
++    finally:
++        for k, v in old.items():
++            if v is None:
++                os.environ.pop(k, None)
++            else:
++                os.environ[k] = v
++
++
++def _agent_ids():
++    from backend import db
++    with db.engine.connect() as cx:
++        return {r.name: r.id for r in cx.execute(db.agents.select())}
++
++
++def _count(table, agent_id):
++    from backend import db
++    from sqlalchemy import func, select
++    with db.engine.connect() as cx:
++        return cx.execute(select(func.count()).select_from(table).where(table.c.agent_id == agent_id)).scalar() or 0
++
++
++def _run_recon(agent_id, summary):
++    """Run the recon agent once; its spans go to the ACT ingest in-process instead of over HTTP."""
++    if _count(__import__("backend.db", fromlist=["runs"]).runs, agent_id):
++        summary["recon_run"] = "skipped (already has runs)"
++        return
++    from agents.recon_agent import act_export
++    from backend.otlp import parse_request
++    from backend.routes.traces import ingest
++
++    def flush(self):
++        if not self.spans:
++            return False
++        ingest(parse_request(json.dumps(self.payload()).encode(), "application/json"))
++        return True
++
++    orig = act_export.ActTraceBuffer.flush
++    act_export.ActTraceBuffer.flush = flush
++    try:
++        if True:
++            from agents.recon_agent.agent import run
++            out = run("Reconcile the GL ledger against the custodian ledger and list every break with its classification.")
++    finally:
++        act_export.ActTraceBuffer.flush = orig
++    summary["recon_run"] = f"ok ({len(out.get('breaks', []))} breaks, {len(out.get('proposals', []))} proposals)"
++
++
++def _ingest_drift(summary):
++    from backend import db
++    from backend.otlp import parse_request
++    from backend.routes.traces import ingest
++    ids = _agent_ids()
++    tid = ids.get("treasury-sweep-agent")
++    if tid and _count(db.findings, tid):
++        summary["weekend_drift"] = "skipped (findings exist)"
++        return
++    p = ROOT / "fixtures" / "runs" / "weekend-drift.json"
++    ingest(parse_request(p.read_bytes(), "application/json"))
++    summary["weekend_drift"] = "ingested"
++
++
++class _NoMlflow:
++    """Stand-in for the mlflow module when no tracking server is reachable."""
++
++    class _Run:
++        class info:
++            run_id = "none"
++
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *a):
++            return False
++
++    def set_experiment(self, *a, **k): pass
++    def start_run(self, *a, **k): return self._Run()
++    def log_param(self, *a, **k): pass
++    def log_metric(self, *a, **k): pass
++
++
++def _validate(agent_id, summary):
++    from backend import db
++    if _count(db.validation_records, agent_id):
++        summary["validation"] = "skipped (record exists)"
++        return
++    from jobs import validate
++    try:
++        res = validate.run_validation(validate.load_prompts(), reps=5)
++        note = ""
++    except Exception as e:  # noqa: BLE001 - MLflow tracking unavailable: score without MLflow runs
++        log.warning("MLflow tracking unavailable (%s); validating without MLflow runs", type(e).__name__)
++        res = validate.run_validation(validate.load_prompts(), reps=5, mlflow_client=_NoMlflow())
++        note = " [no MLflow runs]"
++    validate.record_in_process(agent_id, res)
++    summary["validation"] = (f"mean {res['mean']:.3f} p5 {res['p5']:.3f} p95 {res['p95']:.3f} "
++                             f"pass_rate {res['pass_rate']:.1%} (judge {res['judge_model_id']}){note}")
++
++
++def _governance(summary):
++    """Create the bundles (POST /api/agents/{id}/governance equivalent) before any approval. Best effort."""
++    ids = _agent_ids()
++    out = {}
++    for name in GOVERNANCE_AGENTS:
++        aid = ids.get(name)
++        if not aid:
++            out[name] = "failed: agent not found"
++            continue
++        try:
++            if (os.environ.get("ACT_URL") or "").strip():
++                import requests
++                tok = requests.get(os.environ.get("ACT_TOKEN_URL") or "http://localhost:8899/access-token",
++                                   timeout=5).text.strip()
++                r = requests.post(f"{os.environ['ACT_URL'].rstrip('/')}/api/agents/{aid}/governance",
++                                  headers={"Authorization": f"Bearer {tok}"}, timeout=60)
++                r.raise_for_status()
++                out[name] = f"bundle {r.json().get('bundle_id')}"
++            else:
++                from backend import governance
++                out[name] = f"bundle {governance.ensure_bundle(aid)}"
++        except Exception as e:  # noqa: BLE001 - best effort, reported
++            log.warning("governance for %s failed: %s", name, e)
++            out[name] = f"failed: {str(e)[:150]}"
++    summary["governance"] = out
++
++
++def seed(db_path=None, governance=False) -> dict:
++    """Bring the database to the demo state. Returns a summary dict."""
++    summary = {}
++    user = os.environ.get("DOMINO_STARTING_USERNAME") or "seed-user"
++    explicit_provider = os.environ.get("ACT_LLM_PROVIDER")
++    provider = explicit_provider or ("gateway" if os.environ.get("LLM_GATEWAY_URL") else "mock")
++    with _env(ACT_DB=str(db_path) if db_path else None, DOMINO_STARTING_USERNAME=user,
++              ACT_LLM_PROVIDER=provider,
++              ACT_DOMINO_LOCAL_AGENTS=(os.environ.get("ACT_DOMINO_LOCAL_AGENTS")
++                                       or str(ROOT / "config" / "local_agents.json")),
++              ACT_INTAKE_INPROCESS="1", RECON_AGENT_ID=RECON_NATIVE_ID):
++        summary["llm_provider"] = provider
++        summary["registered_by"] = user
++        import backend.main  # noqa: F401 - registers the drift detector on trace ingest
++        from backend import db
++        db.init_db()
++        from jobs.intake import run_intake
++        intake = run_intake()
++        summary["intake"] = {k: intake[k] for k in intake if k != "errors"}
++        summary["intake_errors"] = intake["errors"]
++        ids = _agent_ids()
++        summary["agents"] = len(ids)
++        recon = ids.get("recon-agent")
++        if not recon:
++            summary["recon_run"] = summary["validation"] = "failed: recon-agent not in the fleet"
++        else:
++            _run_recon(recon, summary)
++        _ingest_drift(summary)
++        if recon:
++            _validate(recon, summary)
++        if governance:
++            _governance(summary)
++    return summary
++
++
++def approve_as_second_user(agent_id) -> str:
++    """Approve an agent as a simulated second user and return the approval expiry (ISO string).
++
++    Stand-in for a real second Domino user (see docs/INTEGRATION.md): the identity headers are supplied in-process.
++    """
++    from fastapi.testclient import TestClient
++    from backend.main import app
++    with TestClient(app) as c:
++        r = c.post(f"/api/agents/{agent_id}/approve",
++                   headers={"X-Domino-User-Id": SECOND_APPROVER_ID, "X-Domino-User": SECOND_APPROVER_NAME})
++    if r.status_code != 200:
++        raise RuntimeError(f"approval refused: HTTP {r.status_code} {r.text[:200]}")
++    return r.json()["expires_at"]
++
++
++def main(argv=None) -> int:
++    ap = argparse.ArgumentParser(description="Seed ACT to the demo state")
++    ap.add_argument("--governance", action="store_true", help="also create Domino Governance bundles")
++    ap.add_argument("--approve", metavar="AGENT_NAME",
++                    help="only approve this agent as the simulated second user (e.g. recon-agent), then exit")
++    args = ap.parse_args(argv)
++    logging.basicConfig(level=logging.WARNING)
++    if args.approve:
++        ids = _agent_ids()
++        if args.approve not in ids:
++            print(f"no agent named {args.approve!r}", file=sys.stderr)
++            return 2
++        expiry = approve_as_second_user(ids[args.approve])
++        time.sleep(2)  # let the background governance mirror finish before the process exits
++        print(f"approved {args.approve} as {SECOND_APPROVER_NAME}; expires {expiry}")
++        return 0
++    if not os.environ.get("LLM_GATEWAY_URL") and not os.environ.get("ACT_LLM_PROVIDER"):
++        print("LLM provider: mock (LLM_GATEWAY_URL is not set)")
++    s = seed(governance=args.governance)
++    print(json.dumps(s, indent=2, default=str))
++    bad = s["intake_errors"] or str(s.get("recon_run", "")).startswith("failed")
++    return 1 if bad else 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

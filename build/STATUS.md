@@ -20,7 +20,7 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
 
 ## Next
 - **T-14** (mocks and local hosting behind env switches; see plan.md "T-14"): started in parallel with T-12 (no file overlap); worktree .worktrees/T-14, branch task/T-14. Must merge before T-13.
-- **T-13** builder RUNNING (rebased onto main, seed + docs + deferred polish). Test baseline 344eeee on task/T-13 (worktree .worktrees/T-13); the builder starts after T-14 merges (rebase onto main first). Scope: docs/architecture.md (3 Mermaid diagrams), docs/DEMO.md, jobs/seed_demo.py, README.
+- **T-13** built (a39d492): seed, docs and polish; 468 backend passed, 34 e2e passed. Next: ui-tester e2e run, visual review of key screens, code review, merge. Then final full suites and qa-summary.md. Test baseline 344eeee on task/T-13 (worktree .worktrees/T-13); the builder starts after T-14 merges (rebase onto main first). Scope: docs/architecture.md (3 Mermaid diagrams), docs/DEMO.md, jobs/seed_demo.py, README.
   - Seed demo: intake, the weekend-drift run, and POST /api/agents/{id}/governance for each agent before any approval.
   - Set ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost so the fixture card server works.
   - Deferred polish to apply, from plan.md: evidence-pack heading hierarchy, ARN wrapping, the fixtures/README line 8 wording, and the app.sh build step for a published App.
@@ -36,3 +36,6 @@ Last post-merge result on main (after T-11, 7b0b627): 386 passed, 3 skipped (liv
 ## Live items pending after consent
 - Deploy recon-agent as a Domino Agent (domino-deploy) with RECON_AGENT_ID equal to its Domino app id. Env: ACT_TRACES_URL, BREAK_CLASSIFIER_ENDPOINT_URL, BREAK_CLASSIFIER_ACCESS_KEY (Project var), LLM_GATEWAY_URL.
 - Run the validation job: `python jobs/validate.py` as a Domino Job (small tier). Nick reads the five judged samples in MLflow.
+
+## Note
+- The shared dataset DB /mnt/data/ai-control-tower/act/act.db was accidentally written by a T-13 debug run. It was moved aside to act.db.stale-202611100020, so the app cold-starts clean. Delete it once you have confirmed it is not needed.
