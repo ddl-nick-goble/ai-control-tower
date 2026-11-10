@@ -94,12 +94,16 @@ def seed(db_path: str) -> dict:
         cx.execute(db.manifests.insert().values(agent_id=aid, version="1", content=manifest, created_at=ts))
         cx.execute(db.dependencies.insert().values(
             agent_id=aid, kind="model", name="break_classifier", target="5",
-            record={"name": "break_classifier", "registry_version": "5"}))
+            record={"name": "break_classifier", "registry_version": "5", "alias": "champion"}))
 
     client = TestClient(backend.main.app)
     hdr = {"X-Domino-User-Id": "seed-user", "X-Domino-User": "seed-user"}
     r = client.post(f"/api/agents/{aid}/tier", headers=hdr, json={"criteria": RECON_CRITERIA})
     assert r.status_code == 200, r.text
+    r = client.post(f"/api/agents/{aid}/validation", headers=hdr, json={
+        "mean": 0.825, "p5": 0.4, "p95": 0.95, "pass_rate": 0.8, "n_prompts": 20, "reps": 5, "threshold": 0.7,
+        "judge_alias": "mock", "judge_model_id": "mock-llm", "experiment": "validate-e2e"})
+    assert r.status_code in (200, 201), r.text
     spans_doc = json.loads((ROOT / "fixtures" / "runs" / "weekend-drift.json").read_text())
     r = client.post("/v1/traces", json=spans_doc,
                     headers={"X-Domino-User-Id": "seed-user", "X-Domino-User": "seed-user"})
