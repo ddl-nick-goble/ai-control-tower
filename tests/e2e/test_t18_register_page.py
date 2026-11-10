@@ -38,8 +38,10 @@ def _qa_dir(monkeypatch):
     monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
-# session scope (like the conftest fixture it overrides here) so the plugin can use it; never starts the 9888 app
-@pytest.fixture(scope="session")
+# Module-scoped app on its own port; never starts the 9888 app. The conftest's session-scoped base_url is shadowed
+# here, and browser_context_args is overridden at function scope (not chaining to the session one, which would
+# cache this module's URL for every later module or start the 9888 app).
+@pytest.fixture(scope="module")
 def base_url(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("t18")
     if shutil.which("fuser"):
@@ -82,6 +84,11 @@ def base_url(tmp_path_factory):
             pass
         proc.wait(timeout=20)
         logf.close()
+
+
+@pytest.fixture
+def browser_context_args(base_url):
+    return {"base_url": base_url, "viewport": {"width": 1440, "height": 900}}
 
 
 @pytest.fixture(autouse=True)
@@ -299,25 +306,28 @@ def test_r7_actions_and_disabled_until_valid(page, shot):
 
 
 def test_r7_busy_and_no_double_submit(page, shot, card_urls):
-    posts = []
+    held = []  # POSTs held open by the test until it releases them
 
-    def slow(route):
-        posts.append(1)
-        time.sleep(1.5)
-        route.continue_()
-    page.route(re.compile(r"/api/agents/external$"), slow)
+    def hold(route):
+        held.append(route)  # neither continued nor fulfilled: the request stays pending
+
+    page.route(re.compile(r"/api/agents/external$"), hold)
     _open(page)
     page.get_by_label("Agent card URL").fill(card_urls["signed"])
-    submit = page.get_by_role("button", name=re.compile("Regist", re.I)).filter(has_not_text="external")
     page.get_by_role("button", name="Register agent", exact=True).click()
     busy = page.get_by_role("button", name=re.compile("Registering", re.I))
     expect(busy).to_be_visible()
     expect(busy).to_be_disabled()
     expect(busy).to_have_attribute("aria-busy", "true")
+    expect(busy).to_have_text(re.compile("Registering…"))
     busy.click(force=True)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(500)
+    assert len(held) == 1, f"{len(held)} submissions while busy"
     shot("then")
-    page.wait_for_timeout(2500)
-    assert len(posts) == 1, f"{len(posts)} submissions"
+    held[0].continue_()  # release the held request
+    expect(page).to_have_url(re.compile(r"#/agents/"), timeout=20000)
+    assert len(held) == 1
 
 
 def test_r7_server_error_plain_language(page, shot):
