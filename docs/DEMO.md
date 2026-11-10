@@ -52,7 +52,7 @@ server with `--signed`; the passport then shows the identity banner "signed and 
    refused with a message that the user who registered the agent cannot approve it. That is the control working.
    Then, in a terminal:
    `python jobs/seed_demo.py --approve recon-agent`
-   Reload the agent page: status approved, an approval by `demo-approver-2`, and an expiry (tier 2: 180 days).
+   Reload the agent page: status approved, an approval by `demo-approver-simulated`, and an expiry (tier 2: 180 days).
    This simulated second user stands in for a real second Domino user (docs/INTEGRATION.md).
 4. **treasury-sweep-agent (1 min).** Back to Fleet, open `treasury-sweep-agent` (AWS AgentCore fixture). It is
    tier 1. Under Findings there is one open `scope_drift` finding from Saturday 2026-11-07 02:14 with a one-line

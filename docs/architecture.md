@@ -23,7 +23,7 @@ flowchart LR
   ms --> norm
   dbx --> norm
   dom --> norm
-  norm["normalize(): Agent Record, tier, ACT id"] --> store[("SQLite store: 12 tables")]
+  norm["normalize(): Agent Record, tier, ACT id"] --> store[("SQLite store: 12 core tables plus overrides")]
   ext["POST /api/agents/external (agent card URL)"] --> norm
   store --> gov["governance sync: bundle, evidence, approval mirror"]
   gov --> dgov["Domino Governance API"]
@@ -74,6 +74,8 @@ sequenceDiagram
 ```
 
 ## Data model
+
+The diagram shows the 12 core tables. An additional overrides table (recorded human overrides of findings) is not drawn.
 
 ```mermaid
 erDiagram

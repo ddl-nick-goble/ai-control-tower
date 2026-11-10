@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
 log = logging.getLogger("seed_demo")
 RECON_NATIVE_ID = "local-recon-agent"
 GOVERNANCE_AGENTS = ("recon-agent", "treasury-sweep-agent")
-SECOND_APPROVER_ID = "demo-approver-2"
+SECOND_APPROVER_ID = "demo-approver-simulated"
 SECOND_APPROVER_NAME = "demo-approver (simulated second user)"
 
 
@@ -62,7 +62,8 @@ def _count(table, agent_id):
 
 def _run_recon(agent_id, summary):
     """Run the recon agent once; its spans go to the ACT ingest in-process instead of over HTTP."""
-    if _count(__import__("backend.db", fromlist=["runs"]).runs, agent_id):
+    from backend import db
+    if _count(db.runs, agent_id):
         summary["recon_run"] = "skipped (already has runs)"
         return
     from agents.recon_agent import act_export
@@ -78,9 +79,8 @@ def _run_recon(agent_id, summary):
     orig = act_export.ActTraceBuffer.flush
     act_export.ActTraceBuffer.flush = flush
     try:
-        if True:
-            from agents.recon_agent.agent import run
-            out = run("Reconcile the GL ledger against the custodian ledger and list every break with its classification.")
+        from agents.recon_agent.agent import run
+        out = run("Reconcile the GL ledger against the custodian ledger and list every break with its classification.")
     finally:
         act_export.ActTraceBuffer.flush = orig
     summary["recon_run"] = f"ok ({len(out.get('breaks', []))} breaks, {len(out.get('proposals', []))} proposals)"
@@ -179,6 +179,11 @@ def seed(db_path=None, governance=False) -> dict:
         summary["registered_by"] = user
         import backend.main  # noqa: F401 - registers the drift detector on trace ingest
         from backend import db
+        if db_path and Path(db.DB_PATH).resolve() != Path(db_path).resolve():
+            raise RuntimeError(f"backend.db is already bound to {Path(db.DB_PATH).resolve()}, "
+                               f"but seed(db_path={Path(db_path).resolve()}) was requested; "
+                               f"set ACT_DB before importing backend or seed that path")
+        summary["db_path"] = str(Path(db.DB_PATH).resolve())
         db.init_db()
         from jobs.intake import run_intake
         intake = run_intake()
@@ -221,6 +226,8 @@ def main(argv=None) -> int:
                     help="only approve this agent as the simulated second user (e.g. recon-agent), then exit")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.WARNING)
+    from backend import db
+    print(f"ACT DB: {Path(db.DB_PATH).resolve()}")
     if args.approve:
         ids = _agent_ids()
         if args.approve not in ids:
