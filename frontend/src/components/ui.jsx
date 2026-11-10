@@ -41,9 +41,11 @@ function DemoBanner({ health: h }) {
   }
   const [note, setNote] = React.useState(false)
   React.useEffect(() => {
+    // StrictMode-safe: the flag is cleared by the timer, not by the first effect run.
     if (sessionStorage.getItem('act-demo-reset')) {
-      sessionStorage.removeItem('act-demo-reset'); setNote(true)
-      const t = setTimeout(() => setNote(false), 5000); return () => clearTimeout(t)
+      setNote(true)
+      const t = setTimeout(() => { sessionStorage.removeItem('act-demo-reset'); setNote(false) }, 5000)
+      return () => clearTimeout(t)
     }
   }, [])
   return (
@@ -51,6 +53,7 @@ function DemoBanner({ health: h }) {
       <strong>Demo mode: simulated data and stand-ins</strong>
       <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
       <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
+      {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
       {err && <span className="alert error" role="alert">{err}</span>}
       {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
     </div>

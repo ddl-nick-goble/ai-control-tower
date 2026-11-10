@@ -41,6 +41,7 @@ _ENV_DEFAULTS = {
 }
 
 _applied: list = []
+_db_new = False  # ACT_DB was filled by demo defaults, or its file did not exist at startup
 
 
 def enabled() -> bool:
@@ -65,7 +66,11 @@ def apply_defaults() -> None:
             _applied.append(k)
     for k, v in _ENV_DEFAULTS.items():
         fill(k, v)
-    fill("ACT_DB", default_db_path()) if "ACT_DB" not in os.environ else None
+    global _db_new
+    if "ACT_DB" not in os.environ:
+        fill("ACT_DB", default_db_path())
+    # Record, before anything opens the DB, whether the file is new or demo-owned by default.
+    _db_new = "ACT_DB" in _applied or not Path(os.environ["ACT_DB"]).expanduser().exists()
     demo_dir = Path(os.environ["ACT_DB"]).expanduser().resolve().parent
     if "MLFLOW_TRACKING_URI" not in os.environ:  # keep tracking local: no outbound call
         fill("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
@@ -155,22 +160,39 @@ def _check_not_shared() -> None:
         pass
 
 
+def _may_claim() -> bool:
+    return _db_new or (os.environ.get("ACT_DEMO_ALLOW_DB") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def ensure_seeded():
     """Seed an empty DB to the demo state. Idempotent: a populated demo DB is left alone.
-    Raises DemoGuardError for the shared DB or a non-demo DB that already has data."""
-    from sqlalchemy import func, select
+    Raises DemoGuardError for the shared DB, a non-demo DB that already has data, or an unmarked
+    DB that demo mode may not claim (a hand-set ACT_DB needs ACT_DEMO_ALLOW_DB=1)."""
+    from sqlalchemy import func, select, text
     from . import db
     _check_not_shared()
     db.init_db()
     with db.engine.connect() as cx:
         n = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
         marked = _marker_present(cx)
+    if n and not marked:
+        _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
+    if not marked and not _may_claim():
+        _refuse(f"refusing to claim {db.DB_PATH} as a demo database: ACT_DB was set by hand; "
+                "set ACT_DEMO_ALLOW_DB=1 to let demo mode seed and reset it")
     if n:
-        if not marked:
-            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
         return None
+    # Claim + re-check in one transaction: the marker insert takes the write lock, so of two
+    # processes only one sees rowcount 1 and seeds; a DB that filled meanwhile rolls the claim back.
+    with db.engine.begin() as cx:
+        cx.execute(text("CREATE TABLE IF NOT EXISTS act_demo_marker (id INTEGER PRIMARY KEY, note TEXT)"))
+        r = cx.execute(text("INSERT OR IGNORE INTO act_demo_marker (id, note) VALUES (1, 'created by ACT demo mode')")).rowcount
+        n2 = cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0
+        if n2 and r:
+            _refuse(f"refusing to seed {db.DB_PATH}: it already holds non-demo data (no demo marker)")
+        if n2 or (r == 0 and marked is False):
+            return None  # another process seeded / is seeding
     log.warning("demo mode: seeding an empty database (%s)", db.DB_PATH)
-    _write_marker()
     return _seed()
 
 

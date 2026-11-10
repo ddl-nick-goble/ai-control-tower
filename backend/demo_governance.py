@@ -37,13 +37,14 @@ def ensure_bundle(agent_id: str) -> str:
         a, deps = _agent(agent_id)
         if a is None:
             raise GovernanceError(f"unknown agent {agent_id}")
-        demo_bid = "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
-        replace = bool(a.bundle_id) and not str(a.bundle_id).startswith("demo-")  # never relabel a real bundle
-        bid = a.bundle_id if a.bundle_id and not replace else demo_bid
+        if a.bundle_id and not str(a.bundle_id).startswith("demo-"):
+            raise GovernanceError(f"agent {agent_id} has a non-demo bundle id {a.bundle_id}; "
+                                  "the simulated Governance store will not relabel it")
+        bid = a.bundle_id or "demo-" + hashlib.sha256(agent_id.encode()).hexdigest()[:12]
         want_model = a.source_platform == "domino" or any(d.kind == "model" for d in deps)
         names = [AGENTIC_NAME] + ([MODEL_NAME] if want_model else [])
         b = _entry(bid, f"ACT {agent_id}", names)
-        if not a.bundle_id or replace:
+        if not a.bundle_id:
             with db.engine.begin() as cx:
                 cx.execute(db.agents.update().where(db.agents.c.id == agent_id).values(
                     bundle_id=bid, governance={"policies": names, "stage": b["stage"]}))

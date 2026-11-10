@@ -22,12 +22,13 @@ DIST = ROOT / "frontend" / "dist"
 async def lifespan(_app):
     llm.warn_if_mock()
     db.init_db()
+    _app.state.demo_guard = None
     if demo.enabled():
         demo.warn_live_switches()
         try:
             await run_in_threadpool(demo.ensure_seeded)
-        except demo.DemoGuardError:
-            pass  # already logged; the app starts without seeding
+        except demo.DemoGuardError as e:
+            _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
     try:
         yield
@@ -52,7 +53,8 @@ async def write_guard(request, call_next):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
-            "llm_provider": demo.effective_llm_provider()}
+            "llm_provider": demo.effective_llm_provider(),
+            "demo_guard": getattr(app.state, "demo_guard", None)}
 
 
 for _m in pkgutil.iter_modules(routes.__path__):

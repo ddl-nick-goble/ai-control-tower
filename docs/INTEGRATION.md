@@ -22,6 +22,8 @@ labels itself honestly: template text in the console, the mock judge in the vali
 | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
 | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
 
+Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
+
 ## Running the stand-ins
 
 ```

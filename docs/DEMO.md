@@ -18,6 +18,7 @@ classifier endpoint key. Every stand-in is labelled in the UI (a banner on every
   (`POST /api/demo/run/{agent_id}`) runs one mock recon run in-process.
 - "Reset demo" in the banner (`POST /api/demo/reset`) wipes the demo database and reseeds it.
 - With `ACT_DEMO_MODE` unset none of this exists: no banner, `/api/demo/*` returns 404, and governance and the classifier behave as before.
+- Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
 
 # Ten-minute demo
 
