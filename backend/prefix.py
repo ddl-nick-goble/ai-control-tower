@@ -1,7 +1,8 @@
 """Pure-ASGI middleware: serve requests that arrive under the Domino proxy prefix.
 
 Domino forwards with the full URL prefix kept: DOMINO_RUN_HOST_PATH
-(published App) or DOMINO_RUN_HOST_PATH + "proxy/<port>/" (workspace App Preview).
+(published App) or
+/apps/<id>/ and /preview/<id>/ for Domino Apps, or DOMINO_RUN_HOST_PATH + "proxy/<port>/" (workspace App Preview).
 The prefix is stripped so the app sees the same path as an unprefixed request.
 """
 import re
@@ -12,12 +13,15 @@ class ProxyPrefixMiddleware:
     def __init__(self, app, host_path: str = ""):
         self.app = app
         base = (host_path or "").strip().rstrip("/")
-        self.pattern = re.compile(rf"^({re.escape(base)}(?:/proxy/\d+)?)(/.*)?$") if base else None
+        self.patterns = [re.compile(rf"^({re.escape(base)}(?:/proxy/\d+)?)(/.*)?$")] if base else []
+        # Domino App prefixes, accepted even when DOMINO_RUN_HOST_PATH doesn't name them:
+        # workspace App Preview (/preview/<draftAppId>) and published Apps (/apps/<app-id>).
+        self.patterns.append(re.compile(r"^(/(?:preview|apps)/[A-Za-z0-9_-]+)(/.*)?$"))
 
     async def __call__(self, scope, receive, send):
-        if self.pattern is None or scope["type"] not in ("http", "websocket"):
+        if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
-        m = self.pattern.match(scope["path"])
+        m = next((m for m in (p.match(scope["path"]) for p in self.patterns) if m), None)
         if not m:
             return await self.app(scope, receive, send)
         prefix, rest = m.group(1), m.group(2)

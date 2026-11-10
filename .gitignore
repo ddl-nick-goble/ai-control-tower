@@ -2,6 +2,7 @@
 .worktrees/
 node_modules/
 dist/
+!frontend/dist/
 act.db*
 test-results/
 __pycache__/
