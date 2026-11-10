@@ -26,6 +26,8 @@ def preview_tier(body=Body(...), user: User = Depends(require_user)):
         res = score_tier(dict(crit))
     except HTTPException:
         raise
-    except (TieringInputRejected, ValueError, TypeError, OverflowError) as e:
+    except OverflowError:
+        raise HTTPException(422, "Criteria must be whole numbers from 1 to 5")
+    except (TieringInputRejected, ValueError, TypeError) as e:
         raise HTTPException(422, str(e))
     return {"tier": res.tier, "score": res.score, "reasoning": res.reasoning}

@@ -2,6 +2,7 @@ import React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { clean, cleanText, fmtMessages, fmtTs } from '../format'
+import { Breadcrumb } from '../components/form'
 import { ErrorBox, Loading, useAsync } from '../components/ui'
 
 // Never show provider/model ids from trace data.
@@ -36,6 +37,10 @@ export default function Run() {
   const tl = useAsync(() => api.timeline(runId), [runId])
   const agentId = tl.data?.agent_id
   const fnd = useAsync(() => (agentId ? api.findings(agentId).then((items) => ({ agentId, items })) : Promise.resolve({ agentId: null, items: [] })), [agentId])
+  const agentInfo = useAsync(() => (agentId ? api.agent(agentId).catch(() => null) : Promise.resolve(null)), [agentId])
+  const crumbs = [{ label: 'Fleet', to: '/' },
+    ...(agentId ? [{ label: clean(agentInfo.data?.name) || 'Agent', to: `/agents/${encodeURIComponent(agentId)}` }] : []),
+    { label: `Run ${String(runId).slice(0, 8)}` }]
   const findingsPending = tl.loading || !tl.data || (!fnd.error && (fnd.loading || fnd.data?.agentId !== (agentId ?? null)))
   const findingsFailed = !!fnd.error
 
@@ -55,6 +60,7 @@ export default function Run() {
 
   return (
     <div data-testid="timeline-page" data-event-count={events.length}>
+      <Breadcrumb items={crumbs} />
       <div className="page-head">
         <h1>Run timeline</h1>
         {agentId && <Link to={`/agents/${encodeURIComponent(agentId)}`}>Back to agent</Link>}

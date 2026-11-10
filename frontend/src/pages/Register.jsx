@@ -58,6 +58,14 @@ export default function Register() {
   const [preview, setPreview] = React.useState(null)
   const [previewState, setPreviewState] = React.useState('loading') // loading | ready | error
   const inflight = React.useRef(false)
+  const alertRef = React.useRef(null)
+  const urlRef = React.useRef(null)
+  const [failTick, setFailTick] = React.useState(0)
+  React.useEffect(() => {
+    if (!failTick) return
+    const el = urlRef.current && urlRef.current.getAttribute('aria-invalid') === 'true' ? urlRef.current : alertRef.current
+    el?.focus()
+  }, [failTick])
 
   const parsed = parseUrl(url)
   const host = parsed ? parsed.host : ''
@@ -91,7 +99,7 @@ export default function Register() {
       const info = describeErrorInfo(err)
       setError(info.message)
       if (info.urlField) setServerUrlError(info.message)
-      setBusy(false); inflight.current = false
+      setBusy(false); inflight.current = false; setFailTick((t) => t + 1)
     }
   }
 
@@ -104,13 +112,13 @@ export default function Register() {
         descriptionTestId="register-description" />
       <div className="ds-layout">
         <form className="ds-form" aria-label="Register external agent" onSubmit={submit} noValidate>
-          {error && <Alert title="Registration failed" data-testid="register-error">{error}</Alert>}
+          {error && <Alert title="Registration failed" data-testid="register-error" tabIndex={-1} ref={alertRef}>{serverUrlError ? 'Fix the highlighted field and try again.' : error}</Alert>}
 
           <Section number={1} title="Agent card" helper="Where the agent publishes its A2A agent card. We read it once to build the record.">
             <Field label="Agent card URL" help="Use the full address of the card, usually ending in /.well-known/agent-card.json."
                    helpTestId="card-url-help" error={urlError || serverUrlError} errorTestId="card-url-error">
               {(p) => (
-                <input {...p} type="url" className="ds-input" data-testid="card-url" value={url} inputMode="url"
+                <input {...p} ref={urlRef} type="url" className="ds-input" data-testid="card-url" value={url} inputMode="url"
                        spellCheck={false} autoComplete="off"
                        placeholder="https://agent.example.com/.well-known/agent-card.json"
                        onChange={(e) => { setUrl(e.target.value); setServerUrlError(''); if (urlError && parseUrl(e.target.value)) setUrlError('') }}
@@ -146,7 +154,7 @@ export default function Register() {
           <Summary title="Summary" testid="register-summary">
             <div className={`ds-summary-tier${previewState === 'stale' ? ' ds-dim' : ''}`} aria-busy={previewState === 'stale' ? 'true' : undefined}>
               {preview ? <TierBadge tier={preview.tier} /> : <span className="ds-skeleton" aria-hidden="true" />}
-              <span className="ds-summary-tier-text">
+              <span className="ds-summary-tier-text" role={previewState === 'error' ? 'status' : undefined}>
                 {preview ? TIER_MEANING[preview.tier] : previewState === 'error' ? 'Preview unavailable' : 'Calculating…'}
               </span>
             </div>

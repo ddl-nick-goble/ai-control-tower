@@ -3,8 +3,6 @@
 body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif }
 a { color:var(--brand); text-decoration:none } a:hover { text-decoration:underline }
 h1 { font-size:22px; margin:0 } h2 { font-size:15px; margin:0 } h3 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:12px 0 4px }
-.topbar { display:flex; gap:16px; align-items:center; padding:10px 24px; background:#fff; border-bottom:1px solid var(--line) }
-.brand { font-weight:700; color:var(--ink) }
 .content { max-width:1280px; margin:0 auto; padding:20px 24px 48px }
 .page-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px }
 .muted { color:var(--muted) }
@@ -71,7 +69,7 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
 
 .f-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:4px }
 
-.demo-banner { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:8px 24px; background:#fff7e6; border-bottom:1px solid #f0c36d; color:#6b4a00; font-size:13px }
+.demo-chip { background:#fff; border:1px solid #f0c36d; border-radius:10px; padding:1px 8px }
 .demo-banner ul { display:flex; flex-wrap:wrap; gap:4px 8px; list-style:none; margin:0; padding:0; flex:1 }
 .demo-banner li { background:#fff; border:1px solid #f0c36d; border-radius:10px; padding:1px 8px }
 

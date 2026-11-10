@@ -1,5 +1,5 @@
 import React from 'react'
-import { Link } from 'react-router-dom'
+import { Link, NavLink } from 'react-router-dom'
 import { clean, fmtStatus } from '../format'
 import { demoApi, health } from '../api'
 
@@ -50,13 +50,24 @@ function DemoBanner({ health: h }) {
   }, [])
   return (
     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
-      <strong>Demo mode: simulated data and stand-ins</strong>
-      <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
-      <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
-      {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
-      {err && <span className="alert error" role="alert">{err}</span>}
-      {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
+      <div className="ds-shell-inner demo-inner">
+        <strong>Demo mode: simulated data and stand-ins</strong>
+        {h.stand_ins.map((s) => <span className="demo-chip" key={s.name} data-stand-in={s.name}>{s.label}</span>)}
+        <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
+        {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
+        {err && <span className="alert error" role="alert">{err}</span>}
+        {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
+      </div>
     </div>
+  )
+}
+
+function LogoMark() {
+  return (
+    <svg className="ds-logo" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+      <rect width="24" height="24" rx="6" fill="currentColor" />
+      <path d="M12 5v14M7 8.5h10M9 19h6" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+    </svg>
   )
 }
 
@@ -65,10 +76,16 @@ export function Shell({ children }) {
   return (
     <div className="app">
       {h && h.demo_mode && <DemoBanner health={h} />}
-      <nav className="topbar">
-        <Link to="/" className="brand">Agent Control Tower</Link>
-        <span className="muted">Agent system of record</span>
-      </nav>
+      <header className="ds-topbar" data-testid="app-topbar">
+        <div className="ds-shell-inner ds-topbar-row">
+          <Link to="/" className="ds-brand"><LogoMark />Agent Control Tower</Link>
+          <span className="ds-subtitle" data-testid="app-subtitle">Agent system of record</span>
+          <nav aria-label="Primary" className="ds-nav">
+            <NavLink to="/" end>Fleet</NavLink>
+            <NavLink to="/register">Register external agent</NavLink>
+          </nav>
+        </div>
+      </header>
       <main className="content">{children}</main>
     </div>
   )
