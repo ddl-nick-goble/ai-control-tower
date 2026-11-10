@@ -115,6 +115,21 @@ def _open_recon(page):
     expect(page.get_by_role("heading", name=re.compile("recon-agent"))).to_be_visible()
 
 
+def _assert_fresh_fleet(page):
+    recon = page.get_by_test_id("fleet-row").filter(has_text="recon-agent")
+    expect(recon).to_have_count(1, timeout=30000)
+    row = page.get_by_test_id("fleet-row").filter(has_text="treasury-sweep-agent")
+    expect(row).to_have_count(1)
+    expect(row.get_by_test_id("tier-badge")).to_have_text(re.compile(r"Tier 1"))
+    expect(row.get_by_test_id("open-findings")).to_have_text("1")
+    row.get_by_role("link", name="treasury-sweep-agent").click()
+    expect(page.get_by_role("heading", name=re.compile("treasury-sweep-agent"))).to_be_visible()
+    item = page.get_by_test_id("finding-item")
+    expect(item).to_have_count(1)
+    expect(item).to_have_attribute("data-finding-type", "scope_drift")
+    expect(item).to_have_attribute("data-status", "open")
+
+
 def test_d9_banner_every_page(page, shot, base_url):
     health = page.request.get("api/health").json()
     stand_ins = health["stand_ins"]
@@ -139,9 +154,8 @@ def test_d8_reset(page, shot, base_url):
     expect(page.get_by_test_id("run-item")).to_have_count(2, timeout=30000)
     page.goto("./#/")
     page.get_by_role("button", name="Reset demo").click()
-    row = page.get_by_test_id("fleet-row").filter(has_text="recon-agent")
-    expect(row).to_have_count(1, timeout=30000)
-    expect(row.get_by_test_id("open-findings")).to_have_text("1")
+    _assert_fresh_fleet(page)
+    page.goto("./#/")
     _open_recon(page)
     expect(page.get_by_test_id("run-item")).to_have_count(1)
     assert page.request.post("api/demo/reset").status == 200
@@ -195,15 +209,7 @@ def test_d7_run_recon_agent(page, shot, base_url):
 
 def test_d2_fresh_fleet(page, shot, base_url):
     page.goto("./#/")
-    row = page.get_by_test_id("fleet-row").filter(has_text="recon-agent")
-    expect(row).to_have_count(1)
-    expect(row.get_by_test_id("tier-badge")).to_have_text(re.compile(r"Tier 1"))
-    expect(row.get_by_test_id("open-findings")).to_have_text("1")
-    _open_recon(page)
-    item = page.get_by_test_id("finding-item")
-    expect(item).to_have_count(1)
-    expect(item).to_have_attribute("data-finding-type", "scope_drift")
-    expect(item).to_have_attribute("data-status", "open")
+    _assert_fresh_fleet(page)
     shot("then")
 
 
