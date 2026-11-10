@@ -1,6 +1,6 @@
 """T-15 e2e: one-switch demo mode (D-2..D-10).
 
-One app on port 9888 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
+One app on port 9889 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
 data-testid contract (suggested; role/text locators are primary):
   demo-banner  persistent banner with "Demo mode: simulated data and stand-ins" and the stand-in labels
 Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agent".
@@ -18,7 +18,7 @@ import pytest
 from playwright.sync_api import expect
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-PORT = "9888"
+PORT = "9889"  # separate from the shared suite app on 9888 so this module never kills it
 SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-15"
 
 
@@ -80,8 +80,14 @@ def _stop(proc, logf):
 _APP = {}
 
 
-@pytest.fixture(scope="session")
-def base_url(tmp_path_factory):
+@pytest.fixture
+def browser_context_args(browser_context_args, demo_url):
+    """Point this module's pages at the demo app (the plugin's session-scoped base_url stays untouched for other modules)."""
+    return {**browser_context_args, "base_url": demo_url}
+
+
+@pytest.fixture(scope="module")
+def demo_url(tmp_path_factory):
     """One demo-mode app for the session; the off-by-default test swaps it for a non-demo app."""
     proc, logf, url = _start(tmp_path_factory.mktemp("t15-demo"), True)
     _APP.update(proc=proc, logf=logf, url=url)
@@ -92,12 +98,12 @@ def base_url(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_demo_state(request, base_url):
+def _fresh_demo_state(request, demo_url):
     """Give each demo test the fresh D-2 state (reset is a no-op failure while the feature is missing)."""
     if "off_by_default" in request.node.name:
         return
     try:
-        urllib.request.urlopen(urllib.request.Request(base_url + "api/demo/reset", method="POST"), timeout=60)
+        urllib.request.urlopen(urllib.request.Request(demo_url + "api/demo/reset", method="POST"), timeout=60)
     except Exception:
         pass
 
@@ -130,7 +136,7 @@ def _assert_fresh_fleet(page):
     expect(item).to_have_attribute("data-status", "open")
 
 
-def test_d9_banner_every_page(page, shot, base_url):
+def test_d9_banner_every_page(page, shot, demo_url):
     health = page.request.get("api/health").json()
     stand_ins = health["stand_ins"]
     assert health["demo_mode"] is True and len(stand_ins) >= 5
@@ -148,7 +154,7 @@ def test_d9_banner_every_page(page, shot, base_url):
     shot("then")
 
 
-def test_d8_reset(page, shot, base_url):
+def test_d8_reset(page, shot, demo_url):
     _open_recon(page)
     page.get_by_role("button", name="Run recon agent").click()
     expect(page.get_by_test_id("run-item")).to_have_count(2, timeout=30000)
@@ -162,13 +168,13 @@ def test_d8_reset(page, shot, base_url):
     shot("then")
 
 
-def test_d3_governance_label(page, shot, base_url):
+def test_d3_governance_label(page, shot, demo_url):
     _open_recon(page)
     expect(page.get_by_text("simulated Governance (demo)").first).to_be_visible()
     shot("then")
 
 
-def test_d4_classifier_label(page, shot, base_url):
+def test_d4_classifier_label(page, shot, demo_url):
     _open_recon(page)
     expect(page.get_by_text("demo classifier (not the endpoint)").first).to_be_visible()
     dep = page.get_by_test_id("dependency-model").filter(has_text="break_classifier")
@@ -177,7 +183,7 @@ def test_d4_classifier_label(page, shot, base_url):
     shot("then")
 
 
-def test_d5_service_account(page, shot, base_url):
+def test_d5_service_account(page, shot, demo_url):
     _open_recon(page)
     expect(page.get_by_text("svc-act-recon-demo").first).to_be_visible()
     expect(page.get_by_text("simulated service account (demo)").first).to_be_visible()
@@ -185,7 +191,7 @@ def test_d5_service_account(page, shot, base_url):
     shot("then")
 
 
-def test_d6_demo_approver(page, shot, base_url):
+def test_d6_demo_approver(page, shot, demo_url):
     _open_recon(page)
     page.get_by_role("button", name="Approve as demo approver").click()
     expect(page.get_by_test_id("approve-success")).to_be_visible(timeout=15000)
@@ -195,7 +201,7 @@ def test_d6_demo_approver(page, shot, base_url):
     shot("then")
 
 
-def test_d7_run_recon_agent(page, shot, base_url):
+def test_d7_run_recon_agent(page, shot, demo_url):
     _open_recon(page)
     runs = page.get_by_test_id("run-item")
     expect(runs).to_have_count(1)
@@ -207,13 +213,13 @@ def test_d7_run_recon_agent(page, shot, base_url):
     shot("then")
 
 
-def test_d2_fresh_fleet(page, shot, base_url):
+def test_d2_fresh_fleet(page, shot, demo_url):
     page.goto("./#/")
     _assert_fresh_fleet(page)
     shot("then")
 
 
-def test_d10_off_by_default(page, shot, base_url, tmp_path_factory):
+def test_d10_off_by_default(page, shot, demo_url, tmp_path_factory):
     _stop(_APP["proc"], _APP["logf"])
     proc, logf, _url = _start(tmp_path_factory.mktemp("t15-off"), False)
     _APP.update(proc=proc, logf=logf)
@@ -226,3 +232,4 @@ def test_d10_off_by_default(page, shot, base_url, tmp_path_factory):
         expect(page.get_by_role("button", name=name)).to_have_count(0)
     assert page.request.post("api/demo/reset").status == 404
     shot("then")
+    _stop(_APP["proc"], _APP["logf"])  # leave port 9888 free for later modules
