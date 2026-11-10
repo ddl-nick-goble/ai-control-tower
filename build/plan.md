@@ -106,3 +106,6 @@ Goal: the app runs the full demo with none of the "Waiting on Nick" steps, using
 
 ## T-16 (added 2026-11-10): workspace App Preview returns {"detail":"Not Found"}
 The workspace preview proxy forwards the full DOMINO_RUN_HOST_PATH + /proxy/<port>/ prefix; the app serves only / and /api. Fix: strip the prefix in backend/main.py. Branch task/T-16, baseline ea25118, builder domino-debug (sonnet), QA test-author + code-reviewer. Tests: tests/test_t16_proxy_prefix.py (P-1..P-4). Status: building.
+
+## T-17 (added 2026-11-10): App Preview shows {"detail":"Not Found"}
+Cause: Domino App Preview runs app.sh from the latest commit in a fresh private App runtime on port 8888. frontend/dist is gitignored and the compute environment has no Node (it was installed by hand in this workspace), so the runtime serves the API only and "/" returns {"detail":"Not Found"}. Fix: commit a prebuilt frontend/dist (un-ignore it), keep it in sync with sources, accept /preview/<id>/ and /apps/<id>/ prefixes, and serve a readable HTML page at "/" when dist is missing. Branch task/T-17, builder domino-deploy (sonnet), QA test-author + code-reviewer. Status: tests being written.
