@@ -204,3 +204,4 @@ Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could
 - 2026-11-11: T-39 code re-review r3: approve with follow-ups + 1 blocker (demo reset() can drop the real DB if the switch flips mid-reset). Round 3 (final) waits for backend tests + UI run 3 + design review r3.
 - 2026-11-11: T-19b UI run 2 @44d499b: t19b 40/40, full e2e 152/153 (only test_d9 banner D-9 string, the known regression). Capture tests pushed -> T-19b test baseline now 317aa3d. Design review r2 running. T-39 UI run 3 running.
 - 2026-11-11: T-19b design review r2: changes needed (dangling View finding link still there; Started timestamp truncated in Runs; minors). Builder round 2 (of 3) started: code-r2 banner blocker + visual-r2.
+- 2026-11-11: T-39 backend tests @694b69e: 30/30 settings (6 new: link fallback, ACT_ env names vs ambient SDK vars, 401/403 explanations, no stray DB), full backend pass with 3 skips. Pushed 9cbce45.
