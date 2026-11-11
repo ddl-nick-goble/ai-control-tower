@@ -5,7 +5,7 @@ SQLite path for the deployed app: `/mnt/data/ai-control-tower/act/act.db` (git-b
 Budget: $1,900. If spend passes $1,100 before T-9 is green, defer T-11 and T-12 and finish T-13.
 
 ## Environment facts (2026-11-09)
-- Playwright and Chromium are installed in the running workspace with sudo (`PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`). This is not in the compute environment, so reinstall after a workspace restart. `packaging` is pinned back to 23.2 for dominodatalab and mlflow.
+- Playwright, Chromium and Node 22 are in the project default environment ai-control-tower-dse-pw (since 2026-11-11). PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright, packaging pinned to 23.2.
 - Node 22 + npm 10 installed in the workspace with sudo from NodeSource (not in the compute environment, so reinstall after a restart). A deployed App needs node in its environment, or a committed frontend/dist.
 - MLflow 3.3.2 (< 3.11): T-7 posts spans to ACT `/v1/traces` directly from the agent's tracing hook (handoff fallback).
 - LLM Gateway: the "LLM Gateway" App at apps.se-demo.domino.tech/apps/llmgateway is Running (probably Gateway 2.0); there is no legacy AI Gateway. BLOCKED on consent: every route redirects to /app-consent until Nick opens the URL once and accepts, and LLM_GATEWAY_URL needs to be set as a Project env var. Aliases are unconfirmed.
@@ -145,5 +145,5 @@ Builder: builder. QA: ui-tester, visual-reviewer, code-reviewer, test-author (ba
   - Tests that pinned the bare "Preview unavailable" text (test_r5_preview_unavailable) are updated by ui-tester to P-2.
 - 2026-11-11: preflight FAIL: Playwright/Chromium and Node missing after workspace restart. domino-setup (sonnet) installs them in the running workspace and adds them to the compute environment so they survive restarts.
 - T-19a worktree had uncommitted builder work at session start (12 files); the builder resumes from it.
-- 2026-11-11: P-1 tests tests/test_t19a_anon_preview.py + test_t18_tier_preview.py (anon 401 -> 200), pushed cbe9ef5 (8 fail as expected, 49 pass). P-2 e2e tests/e2e/test_t19a_preview_p2.py + updated test_r5, pushed 39d7bb8 (4 fail as expected). T-19a test baseline is now 39d7bb8. Playwright 1.65 + Chromium and Node 22 installed in the running workspace; NOT yet in the compute environment (the project uses the Global DSE; Nick to create a derived environment, steps in STATUS.md).
+- 2026-11-11: P-1 tests tests/test_t19a_anon_preview.py + test_t18_tier_preview.py (anon 401 -> 200), pushed cbe9ef5 (8 fail as expected, 49 pass). P-2 e2e tests/e2e/test_t19a_preview_p2.py + updated test_r5, pushed 39d7bb8 (4 fail as expected). T-19a test baseline is now 39d7bb8. Playwright 1.65 + Chromium and Node 22 installed in the running workspace; now also in the new private environment ai-control-tower-dse-pw (6af49572b890612a93368ff1, rev 1 built, base = DSE rev 37 image, workspace tools copied), set as the project default 2026-11-11. Not yet verified inside a fresh workspace.
 - 2026-11-11: Proposed follow-on plan from Superblocks principles: build/superblocks-plan.md (T-20..T-33), waiting for Nick's go-ahead.
