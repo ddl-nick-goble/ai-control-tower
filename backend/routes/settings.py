@@ -9,13 +9,15 @@ router = APIRouter()
 
 def require_admin(user: User = Depends(require_user)) -> User:
     if not settings.is_admin(user):
-        raise HTTPException(403, "Settings are limited to the project owner and listed admins")
+        raise HTTPException(403, "Settings are limited to the project owner and listed admins"
+                            if settings.admins_configured() else
+                            "Nobody can open Settings yet: no project owner or admins are configured")
     return user
 
 
 @router.get("/api/settings/access")
 def access(user: User = Depends(require_user)):
-    return {"admin": settings.is_admin(user)}
+    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured()}
 
 
 @router.get("/api/settings")

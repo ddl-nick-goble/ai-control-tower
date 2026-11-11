@@ -47,6 +47,14 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 @app.middleware("http")
+async def demo_switch_gate(request, call_next):
+    """Hold requests while the runtime demo switch seeds/flips the database, so none sees a half-seeded DB."""
+    if demo.switching():
+        await run_in_threadpool(demo.wait_switch)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def write_guard(request, call_next):
     """Reject unauthenticated writes on every path (incl. /v1/*) before routing."""
     if request.method == "POST" and request.url.path == "/api/tiering/preview":

@@ -48,7 +48,8 @@ _db_new = False  # ACT_DB was filled by demo defaults, or its file did not exist
 
 _runtime = False  # the in-app Settings switch (no restart); ACT_DEMO_MODE in the environment always wins
 _applied_rt: list = []
-_rt_lock = threading.RLock()
+_rt_lock = threading.RLock()  # held for the whole of a switch; _runtime and db.engine change under it
+_switching = False
 
 
 def env_enabled() -> bool:
@@ -126,10 +127,22 @@ def applied_env() -> set:
     return set(_applied) | set(_applied_rt)
 
 
+def switching() -> bool:
+    """True while a runtime switch is in progress; the app holds ordinary requests until it ends (see main.py)."""
+    return _switching
+
+
+def wait_switch() -> None:
+    with _rt_lock:  # returns once the switch (which holds the lock) is done
+        pass
+
+
 def switch_on() -> None:
-    """Runtime demo switch: activate the demo DB (seeding it if empty) and the demo stand-ins.
-    Raises DemoGuardError (and leaves demo off) when the demo DB may not be used."""
-    global _runtime, _db_new
+    """Runtime demo switch: seed the demo DB (if empty), then flip to it.
+    The active engine and the demo flag change together under one lock, and ordinary requests wait while
+    seeding runs (they never see a half-seeded demo DB). A failure restores the previous state exactly and raises
+    DemoGuardError when the demo DB may not be used. Single process only: app.sh runs one uvicorn worker."""
+    global _runtime, _db_new, _switching
     from . import db
     with _rt_lock:
         if enabled():
@@ -137,34 +150,46 @@ def switch_on() -> None:
         path = default_db_path()
         if Path(path).expanduser().resolve() == Path(db.REAL_DB_PATH).expanduser().resolve():
             _refuse("refusing: the demo database path is the real database")
+        _switching = True
+        prev_new, applied_before = _db_new, len(_applied_rt)
         _db_new = not Path(path).expanduser().exists()
+        # Seeding needs db.engine and the demo stand-ins (simulated Governance, demo owner), so both flip now;
+        # the gate in main.py holds every other request until this block ends, success or failure.
+        prev = db.swap(db.engine_for(path), path)
         _runtime = True
-        for k, v in _ENV_DEFAULTS.items():
-            _fill_runtime(k, v)
-        demo_dir = Path(path).expanduser().resolve().parent
-        _fill_runtime("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
-        _fill_runtime("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
-        db.use_path(path)
         try:
+            for k, v in _ENV_DEFAULTS.items():
+                _fill_runtime(k, v)
+            demo_dir = Path(path).expanduser().resolve().parent
+            _fill_runtime("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
+            _fill_runtime("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
             ensure_seeded()
         except BaseException:
-            switch_off()
+            _runtime = False
+            db.swap(*prev)
+            _db_new = prev_new
+            while len(_applied_rt) > applied_before:
+                os.environ.pop(_applied_rt.pop(), None)
             raise
+        finally:
+            _switching = False
 
 
 def switch_off() -> None:
-    global _runtime
+    """Back to the real DB. The demo engine is kept (not disposed) because in-flight requests may still hold it."""
+    global _runtime, _switching
     from . import db
     with _rt_lock:
         if not _runtime:
             return
-        _runtime = False
-        old = db.engine
-        db.use_real()
-        if old is not db.real_engine:
-            old.dispose()
-        while _applied_rt:
-            os.environ.pop(_applied_rt.pop(), None)
+        _switching = True
+        try:
+            db.use_real()
+            _runtime = False
+            while _applied_rt:
+                os.environ.pop(_applied_rt.pop(), None)
+        finally:
+            _switching = False
 
 
 def restore_defaults() -> None:

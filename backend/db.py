@@ -54,16 +54,32 @@ real_engine = engine
 REAL_DB_PATH = DB_PATH
 
 
-def use_path(path: str) -> None:
-    """Make `path` the active DB (runtime demo switch). The real DB stays reachable as real_engine."""
+_engines: dict = {}  # demo engines by resolved path: kept for reuse, never disposed while requests may hold them
+
+
+def engine_for(path: str):
+    """The (cached) engine for `path`; one engine per path for the life of the process."""
+    key = str(Path(path).expanduser().resolve())
+    if key not in _engines:
+        Path(key).parent.mkdir(parents=True, exist_ok=True)
+        _engines[key] = _make_engine(key)
+    return _engines[key]
+
+
+def swap(new_engine, new_path: str):
+    """Make `new_engine` the active DB. Returns the previous (engine, path) so a failed switch can restore it."""
     global engine, DB_PATH
-    Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-    engine, DB_PATH = _make_engine(path), path
+    prev = (engine, DB_PATH)
+    engine, DB_PATH = new_engine, new_path
+    return prev
+
+
+def use_path(path: str) -> None:
+    swap(engine_for(path), path)
 
 
 def use_real() -> None:
-    global engine, DB_PATH
-    engine, DB_PATH = real_engine, REAL_DB_PATH
+    swap(real_engine, REAL_DB_PATH)
 
 
 metadata = MetaData()

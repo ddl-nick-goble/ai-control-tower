@@ -22,6 +22,14 @@ labels itself honestly: template text in the console, the mock judge in the vali
 | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
 | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
 
+## Settings page (T-39)
+
+An admin (the project owner plus the users in the `Admins` field) opens **Settings** in the app to set the demo switch, the integrations above and the platform credentials, with no restart. A Domino Project or User variable with the same name always wins and the field shows "Set by project variable". Secrets are encrypted in the ACT database (key from `ACT_SECRET_KEY`, 32 or more characters; in demo mode it is optional and a generated key file beside the database is used) and are never returned by the API. Changing `ACT_SECRET_KEY` makes stored secrets unreadable: the page marks them "Re-enter this secret". Every change writes an audit event with the setting name and actor, never the value. The app runs as a single process (one uvicorn worker); the demo switch is per process.
+
+The recon agent runs as its own process and reads the LLM provider, LLM Gateway URL and break-classifier URL and access key through the same accessor (`agents/recon_agent/config.py`, which calls `backend.settings.get_setting`) against the same ACT database, so a saved change reaches it within about 5 seconds.
+
+The platform credential settings (AWS AgentCore, Google Agent Platform, Microsoft Agent 365, Databricks) are stored and editable now but are consumed by the import wizard (T-40 onward); nothing reads them yet. Their variable names, which win over the saved value, are: `ACT_AWS_ROLE_ARN`, `ACT_AWS_EXTERNAL_ID`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ACT_GOOGLE_SERVICE_ACCOUNT_JSON`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`.
+
 Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
 
 ## Running the stand-ins

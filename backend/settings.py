@@ -4,6 +4,10 @@ get_setting(name): the environment variable if set (a Domino Project or User var
 saved from the Settings page (secrets are Fernet-encrypted in the ACT DB), else the default. Nothing is cached for
 more than a couple of seconds, so a saved change is live without a restart. Secret values are never logged,
 audited or returned by any API.
+
+ACT_SECRET_KEY is read straight from os.environ on purpose: it is the key that protects the stored secrets, so it
+cannot itself be an in-app setting. The recon agent (its own process) reads the same settings through get_setting
+against the same ACT DB (see agents/recon_agent/config.py); the demo switch is per process (app.sh runs one worker).
 """
 import base64
 import hashlib
@@ -17,6 +21,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet, InvalidToken
+from sqlalchemy.exc import OperationalError
 
 from . import db, demo
 
@@ -41,17 +46,17 @@ _DEFS = [
     ("service_accounts", "integrations", False, "ACT_SERVICE_ACCOUNTS", "text"),
     ("policy_agentic_id", "integrations", False, "ACT_POLICY_AGENTIC_ID", "text"),
     ("policy_model_id", "integrations", False, "ACT_POLICY_MODEL_ID", "text"),
-    ("aws_role_arn", "credentials", False, None, "text"),
-    ("aws_external_id", "credentials", False, None, "text"),
-    ("aws_access_key_id", "credentials", True, None, "text"),
-    ("aws_secret_access_key", "credentials", True, None, "text"),
-    ("google_service_account_json", "credentials", True, None, "json"),
-    ("microsoft_tenant_id", "credentials", False, None, "text"),
-    ("microsoft_client_id", "credentials", False, None, "text"),
-    ("microsoft_client_secret", "credentials", True, None, "text"),
-    ("databricks_host", "credentials", False, None, "text"),
-    ("databricks_client_id", "credentials", False, None, "text"),
-    ("databricks_client_secret", "credentials", True, None, "text"),
+    ("aws_role_arn", "credentials", False, "ACT_AWS_ROLE_ARN", "text"),
+    ("aws_external_id", "credentials", False, "ACT_AWS_EXTERNAL_ID", "text"),
+    ("aws_access_key_id", "credentials", True, "AWS_ACCESS_KEY_ID", "text"),
+    ("aws_secret_access_key", "credentials", True, "AWS_SECRET_ACCESS_KEY", "text"),
+    ("google_service_account_json", "credentials", True, "ACT_GOOGLE_SERVICE_ACCOUNT_JSON", "json"),
+    ("microsoft_tenant_id", "credentials", False, "AZURE_TENANT_ID", "text"),
+    ("microsoft_client_id", "credentials", False, "AZURE_CLIENT_ID", "text"),
+    ("microsoft_client_secret", "credentials", True, "AZURE_CLIENT_SECRET", "text"),
+    ("databricks_host", "credentials", False, "DATABRICKS_HOST", "text"),
+    ("databricks_client_id", "credentials", False, "DATABRICKS_CLIENT_ID", "text"),
+    ("databricks_client_secret", "credentials", True, "DATABRICKS_CLIENT_SECRET", "text"),
     ("admins", "access", False, "ACT_ADMINS", "text"),
 ]
 DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind}
@@ -74,21 +79,43 @@ def _key_file() -> Path:
 
 
 def _file_key() -> bytes:
+    """The generated key. Written to a private temp file and hard-linked into place, so a reader never sees a
+    half-written key and of two racing processes exactly one key wins."""
     path = _key_file()
-    try:
-        return path.read_bytes().strip()
-    except FileNotFoundError:
-        pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    key = Fernet.generate_key()
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:  # another process won the race
-        return path.read_bytes().strip()
-    with os.fdopen(fd, "wb") as f:
-        f.write(key)
-    os.chmod(path, 0o600)
-    return key
+    for _ in range(50):
+        try:
+            key = path.read_bytes().strip()
+            if key:
+                return key
+        except FileNotFoundError:
+            pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(Fernet.generate_key())
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+        time.sleep(0.02)
+    raise RuntimeError("could not read or create the secret key file")
+
+
+_fernets: dict = {}
+
+
+def _fernet(material: bytes, source: str) -> Fernet:
+    k = (source, material)
+    if k not in _fernets:
+        _fernets[k] = Fernet(material)
+    return _fernets[k]
 
 
 def key_state():
@@ -96,14 +123,15 @@ def key_state():
     env_key = os.environ.get("ACT_SECRET_KEY") or ""
     warnings = []
     if len(env_key) >= 32:
-        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(env_key.encode()).digest())), "env", warnings
+        return _fernet(base64.urlsafe_b64encode(hashlib.sha256(env_key.encode()).digest()), "env"), "env", warnings
     if env_key:
         warnings.append("ACT_SECRET_KEY is too short (it needs 32 or more characters), so it is ignored and a "
                         "generated key file is used instead. Set a longer Project secret variable ACT_SECRET_KEY.")
     elif not demo.enabled():
         warnings.append("Secrets are encrypted with a key file generated beside the database. Set the Project "
-                        "secret variable ACT_SECRET_KEY (32 or more characters) so the key is kept apart from the data.")
-    return Fernet(_file_key()), "file", warnings
+                        "secret variable ACT_SECRET_KEY (32 or more characters) so the key is kept apart from the data. "
+                        "Changing the key later makes stored secrets unreadable, and they must be entered again.")
+    return _fernet(_file_key(), "file"), "file", warnings
 
 
 # ---- storage ----
@@ -111,11 +139,19 @@ def _rows() -> dict:
     with _lock:
         if time.monotonic() - _cache["at"] < _TTL:
             return _cache["rows"]
+        previous = _cache["rows"]
     try:
         with db.real_engine.connect() as cx:
             rows = {r.name: r for r in cx.execute(db.app_settings.select()).all()}
-    except Exception:  # noqa: BLE001  table not created yet
-        rows = {}
+    except OperationalError as e:
+        if "no such table" in str(e).lower():  # not created yet: nothing is saved
+            rows = {}
+        else:  # a transient lock or I/O error: keep what we knew instead of reporting every secret as unset
+            log.warning("settings could not be read (%s); using the last known values", type(e).__name__)
+            rows = previous
+    except Exception:  # noqa: BLE001
+        log.warning("settings could not be read; using the last known values", exc_info=True)
+        rows = previous
     with _lock:
         _cache.update(at=time.monotonic(), rows=rows)
     return rows
@@ -154,12 +190,28 @@ def get_setting(name: str, default=None):
 
 
 # ---- admins ----
+_warned_no_admin = False
+
+
+def _admin_names() -> set:
+    raw = (get_setting("admins") or "").replace(";", ",").replace("\n", ",")
+    return {a.strip() for a in raw.split(",")} - {""}
+
+
+def admins_configured() -> bool:
+    return bool((os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()) or bool(_admin_names())
+
+
 def is_admin(user) -> bool:
+    global _warned_no_admin
     owner = (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()
     if owner and user.username == owner:
         return True
-    admins = {a.strip() for a in (get_setting("admins") or "").replace(";", ",").replace("\n", ",").split(",")}
-    return user.username in admins - {""}
+    if not admins_configured() and not _warned_no_admin:
+        _warned_no_admin = True
+        log.warning("Settings: DOMINO_PROJECT_OWNER is not set and no admins are listed, so nobody can open Settings. "
+                    "Set ACT_ADMINS (a project variable) to a comma-separated list of usernames.")
+    return user.username in _admin_names()
 
 
 # ---- API model ----
@@ -169,10 +221,17 @@ def entry(name: str) -> dict:
     row = _rows().get(name)
     app_set = row is not None and row.value is not None
     source = "env" if env_v is not None else "app" if app_set else "default"
-    out = {"name": name, "section": d["section"], "secret": d["secret"], "is_set": source != "default",
+    out = {"name": name, "section": d["section"], "secret": d["secret"], "env": d["env"], "is_set": source != "default",
            "source": source, "locked": source == "env",
            "changed_by": row.changed_by if source == "app" else None,
            "changed_at": row.changed_at if source == "app" else None}
+    if d["secret"]:
+        out["decryptable"] = True
+        if source == "app":
+            try:
+                key_state()[0].decrypt(row.value.encode())
+            except (InvalidToken, ValueError):  # ACT_SECRET_KEY changed after this was saved: enter it again
+                out["decryptable"] = False
     if not d["secret"]:
         if d["kind"] == "bool":
             raw = env_v if env_v is not None else (row.value if app_set else "")
@@ -220,11 +279,8 @@ def _validate(name: str, value):
     return value
 
 
-def _audit(user, action, name) -> None:
-    with db.real_engine.begin() as cx:
-        cx.execute(db.audit_events.insert().values(
-            actor_user_id=user.user_id, actor_username=user.username, action=action, target=name, ts=now(),
-            detail={"name": name, "secret": DEFS[name]["secret"]}))
+def _source(name, row) -> str:
+    return "app" if row is not None and row.value is not None else "none"
 
 
 def _check_writable(name):
@@ -235,12 +291,17 @@ def _check_writable(name):
 
 
 def _store(user, name, stored, action):
+    """Write the value and its audit event in one transaction (the audit never carries the value)."""
     with db.real_engine.begin() as cx:
+        before = cx.execute(db.app_settings.select().where(db.app_settings.c.name == name)).first()
         cx.execute(db.app_settings.delete().where(db.app_settings.c.name == name))
         if stored is not None:
             cx.execute(db.app_settings.insert().values(name=name, value=stored, is_secret=DEFS[name]["secret"],
                                                        changed_by=user.username, changed_at=now()))
-    _audit(user, action, name)
+        cx.execute(db.audit_events.insert().values(
+            actor_user_id=user.user_id, actor_username=user.username, action=action, target=name, ts=now(),
+            detail={"name": name, "secret": DEFS[name]["secret"],
+                    "previous_source": _source(name, before), "new_source": "app" if stored is not None else "cleared"}))
     _invalidate()
 
 
@@ -248,12 +309,18 @@ def put_setting(user, name, value) -> dict:
     _check_writable(name)
     v = _validate(name, value)
     if name == "demo_mode":
+        was_on = demo.enabled()
         if v == "true":
             try:
-                demo.switch_on()
+                demo.switch_on()  # atomic: on failure nothing has changed
             except demo.DemoGuardError as e:
                 raise SettingError(409, str(e))
-        _store(user, name, v, "settings.update")
+        try:
+            _store(user, name, v, "settings.update")
+        except Exception:
+            if v == "true" and not was_on:
+                demo.switch_off()  # the value was not saved, so the app must not stay in demo mode
+            raise
         if v == "false":
             demo.switch_off()
         return entry(name)
