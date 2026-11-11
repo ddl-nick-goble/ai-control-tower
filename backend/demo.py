@@ -50,6 +50,7 @@ _runtime = False  # the in-app Settings switch (no restart); ACT_DEMO_MODE in th
 _applied_rt: list = []
 _rt_lock = threading.RLock()  # held for the whole of a switch; _runtime and db.engine change under it
 _switching = False
+_state_lock = threading.Lock()  # guards _switching, which the request gate reads from other threads
 
 
 def env_enabled() -> bool:
@@ -129,12 +130,14 @@ def applied_env() -> set:
 
 def switching() -> bool:
     """True while a runtime switch is in progress; the app holds ordinary requests until it ends (see main.py)."""
-    return _switching
+    with _state_lock:
+        return _switching
 
 
-def wait_switch() -> None:
-    with _rt_lock:  # returns once the switch (which holds the lock) is done
-        pass
+def _set_switching(v: bool) -> None:
+    global _switching
+    with _state_lock:
+        _switching = v
 
 
 def switch_on() -> None:
@@ -142,7 +145,7 @@ def switch_on() -> None:
     The active engine and the demo flag change together under one lock, and ordinary requests wait while
     seeding runs (they never see a half-seeded demo DB). A failure restores the previous state exactly and raises
     DemoGuardError when the demo DB may not be used. Single process only: app.sh runs one uvicorn worker."""
-    global _runtime, _db_new, _switching
+    global _runtime, _db_new
     from . import db
     with _rt_lock:
         if enabled():
@@ -150,7 +153,7 @@ def switch_on() -> None:
         path = default_db_path()
         if Path(path).expanduser().resolve() == Path(db.REAL_DB_PATH).expanduser().resolve():
             _refuse("refusing: the demo database path is the real database")
-        _switching = True
+        _set_switching(True)
         prev_new, applied_before = _db_new, len(_applied_rt)
         _db_new = not Path(path).expanduser().exists()
         # Seeding needs db.engine and the demo stand-ins (simulated Governance, demo owner), so both flip now;
@@ -172,24 +175,24 @@ def switch_on() -> None:
                 os.environ.pop(_applied_rt.pop(), None)
             raise
         finally:
-            _switching = False
+            _set_switching(False)
 
 
 def switch_off() -> None:
     """Back to the real DB. The demo engine is kept (not disposed) because in-flight requests may still hold it."""
-    global _runtime, _switching
+    global _runtime
     from . import db
     with _rt_lock:
         if not _runtime:
             return
-        _switching = True
+        _set_switching(True)
         try:
             db.use_real()
             _runtime = False
             while _applied_rt:
                 os.environ.pop(_applied_rt.pop(), None)
         finally:
-            _switching = False
+            _set_switching(False)
 
 
 def restore_defaults() -> None:

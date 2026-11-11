@@ -6,31 +6,31 @@ import '../settings.css'
 
 // label, one-line hint, placeholder (a format example only, never a plausible value)
 const COPY = {
-  llm_provider: ['LLM provider', 'Default: gateway. Use mock for the offline stand-in.'],
+  llm_provider: ['LLM provider', 'Default: gateway. mock is the offline stand-in.'],
   llm_gateway_url: ['LLM Gateway URL', 'The LLM Gateway app that answers model calls.', 'https://'],
-  break_classifier_endpoint_url: ['Break-classifier endpoint URL', 'The model endpoint that classifies reconciliation breaks.', 'https://'],
+  break_classifier_endpoint_url: ['Break-classifier endpoint URL', 'Model endpoint that classifies recon breaks.', 'https://'],
   break_classifier_access_key: ['Break-classifier access key', 'Used to call the break-classifier endpoint.'],
-  external_allow_hosts: ['External card allowed hosts', 'Comma-separated hosts external agent cards may be fetched from.'],
-  trusted_jwks_path: ['Trusted JWKS', 'File path of the key set that signed external cards must verify against.'],
-  service_accounts: ['Service accounts', 'Comma-separated Domino service accounts that count as a distinct agent identity.'],
-  policy_agentic_id: ['Governance policy id (agentic bundle)', 'The Governance policy used for agentic system bundles.'],
-  policy_model_id: ['Governance policy id (model bundle)', 'The Governance policy used for model bundles.'],
-  admins: ['Admins', 'Comma-separated Domino usernames. The project owner always has access.'],
+  external_allow_hosts: ['External card allowed hosts', 'Comma-separated hosts for external agent cards.'],
+  trusted_jwks_path: ['Trusted JWKS', 'File path of the key set signed cards must match.'],
+  service_accounts: ['Service accounts', 'Comma-separated distinct-agent accounts.'],
+  policy_agentic_id: ['Governance policy id (agentic bundle)', 'Policy used for agentic system bundles.'],
+  policy_model_id: ['Governance policy id (model bundle)', 'Policy used for model bundles.'],
+  admins: ['Admins', 'Comma-separated usernames. The owner is always an admin.'],
 }
 const PLATFORMS = [
-  { id: 'aws', title: 'AWS AgentCore', blurb: 'An IAM role that ACT assumes (with an external ID), or an access key as a fallback.',
+  { id: 'aws', title: 'AWS AgentCore', blurb: 'An IAM role ACT assumes, or an access key as a fallback.',
     fields: [['aws_role_arn', 'AWS role ARN'], ['aws_external_id', 'AWS external ID'],
       ['aws_access_key_id', 'AWS access key ID'], ['aws_secret_access_key', 'AWS secret access key']],
     ready: (v) => v.aws_role_arn || (v.aws_access_key_id && v.aws_secret_access_key) },
   { id: 'google', title: 'Google Agent Platform', blurb: 'A service-account key as JSON.',
-    fields: [['google_service_account_json', 'Google service-account JSON']],
+    fields: [['google_service_account_json', 'Google service-account JSON', true, 'Paste the full service-account key file. It is encrypted and never shown again.']],
     ready: (v) => v.google_service_account_json },
   { id: 'microsoft', title: 'Microsoft Agent 365', blurb: 'An Entra app registration, client-credentials flow.',
-    fields: [['microsoft_tenant_id', 'Microsoft tenant ID'], ['microsoft_client_id', 'Microsoft client ID'],
+    fields: [['microsoft_tenant_id', 'Microsoft tenant ID', true], ['microsoft_client_id', 'Microsoft client ID'],
       ['microsoft_client_secret', 'Microsoft client secret']],
     ready: (v) => v.microsoft_tenant_id && v.microsoft_client_id && v.microsoft_client_secret },
   { id: 'databricks', title: 'Databricks', blurb: 'A workspace URL and a service principal (OAuth M2M).',
-    fields: [['databricks_host', 'Databricks host'], ['databricks_client_id', 'Databricks client ID'],
+    fields: [['databricks_host', 'Databricks host', true], ['databricks_client_id', 'Databricks client ID'],
       ['databricks_client_secret', 'Databricks client secret']],
     ready: (v) => v.databricks_host && v.databricks_client_id && v.databricks_client_secret },
 ]
@@ -70,7 +70,7 @@ function Badge({ tone = 'none', children }) {
 }
 
 /** One setting. layout "row": settings-table row (label+hint | control | status); "stack": compact, for platform cards. */
-function SettingField({ entry, label, hint, placeholder, layout = 'row', onChange }) {
+function SettingField({ entry, label, hint, placeholder, layout = 'row', span, onChange }) {
   const id = React.useId()
   const secret = entry.secret
   const saved = entry.value || ''
@@ -109,26 +109,26 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', onChang
   const clear = () => { setAsk(false); run(() => settingsApi.del(entry.name), 'cleared') }
   const edit = (v) => { setDraft(v); if (st.kind === 'error') setSt({ kind: 'idle', msg: '' }) }
 
-  let badge
+  const setLine = !entry.locked && !unreadable && entry.is_set
+    ? `Set · changed by ${entry.changed_by} on ${when(entry.changed_at)}` : ''
+  let badge = null
   if (entry.locked) badge = <Badge tone="lock">Set by project variable</Badge>
   else if (unreadable) badge = <Badge tone="warn">Re-enter</Badge>
-  else if (secret && entry.is_set) badge = <><Badge tone="ok">Set</Badge><span className="st-by"> · changed by {entry.changed_by} on {when(entry.changed_at)}</span></>
-  else if (secret) badge = <Badge>Not set</Badge>
-  else if (entry.source === 'app') badge = <><Badge tone="ok">Set</Badge><span className="st-by"> · changed by {entry.changed_by} on {when(entry.changed_at)}</span></>
-  else badge = <Badge>Not set</Badge>
+  else if (!entry.is_set && layout === 'row') badge = <Badge>Not set</Badge>
 
   let hintText = hint
   if (entry.locked) hintText = <>Set by the project variable <code>{entry.env}</code>. Change it there.</>
   else if (unreadable) hintText = 'The secret key changed, so this value can no longer be read. Enter it again.'
+  else if (layout === 'stack' && setLine) hintText = <span className="st-setline" title={setLine}>{setLine}</span>
 
   const labelId = `${id}-l`, hintId = `${id}-h`
   const plainLocked = entry.locked
   return (
-    <div role="group" aria-labelledby={labelId} className={cx('st-f', `st-f-${layout}`, invalid && 'st-f-invalid')} data-testid={`setting-${entry.name}`}>
+    <div role="group" aria-labelledby={labelId} className={cx('st-f', `st-f-${layout}`, span && 'st-span', invalid && 'st-f-invalid')} data-testid={`setting-${entry.name}`}>
       {showInput || plainLocked && !secret
         ? <label id={labelId} htmlFor={`${id}-i`} className="st-label">{label}</label>
         : <span id={labelId} className="st-label">{label}</span>}
-      <div className="st-state">{badge}</div>
+      <div className="st-state">{badge}{layout === 'row' && setLine && <span className="st-setline" title={setLine}>{setLine}</span>}</div>
       <div className="st-ctl">
         {plainLocked && !secret && <input id={`${id}-i`} className="ds-input" type="text" readOnly value={entry.value || ''} aria-describedby={hintId} />}
         {plainLocked && secret && <div className="st-masked st-masked-lock" aria-hidden="true">••••••••</div>}
@@ -202,13 +202,12 @@ function DemoRow({ entry, onChange }) {
     } catch (e) { setErr(problem(e)) } finally { setBusy(false) }
   }
   return (
-    <div className="st-f st-f-row st-demo" data-testid="setting-demo_mode">
-      <span id="st-demo-label" className="st-label">Demo mode</span>
-      <div className="st-state">{entry.locked ? <Badge tone="lock">Set by project variable</Badge> : <Badge tone={on ? 'ok' : 'none'}>{on ? 'On' : 'Off'}</Badge>}</div>
+    <div className="st-demo" data-testid="setting-demo_mode">
       <div className="st-ctl">
-        <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-label" aria-describedby="st-demo-help"
+        <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-h" aria-describedby="st-demo-help"
                 className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
         <span className="st-switch-text" aria-hidden="true">{busy ? (on ? 'Switching to your real data…' : 'Switching to demo data…') : on ? 'On' : 'Off'}</span>
+        {entry.locked && <Badge tone="lock">Set by project variable</Badge>}
         <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
       </div>
       {err
@@ -227,7 +226,7 @@ function DemoRow({ entry, onChange }) {
   )
 }
 
-function Card({ id, title, subtitle, children }) {
+function Card({ id, title, subtitle, children, plain }) {
   const hid = `${id}-h`
   return (
     <section id={id} className="ds-card st-card" aria-labelledby={hid}>
@@ -235,7 +234,7 @@ function Card({ id, title, subtitle, children }) {
         <h2 id={hid} className="ds-section-title">{title}</h2>
         {subtitle && <p className="st-sub">{subtitle}</p>}
       </header>
-      <div className="st-rows">{children}</div>
+      <div className={plain ? 'st-plat-wrap' : 'st-rows'}>{children}</div>
     </section>
   )
 }
@@ -254,7 +253,7 @@ function PlatformCard({ p, by, update }) {
       </header>
       <p className="st-sub st-plat-blurb">{p.blurb}</p>
       <div className="st-plat-fields">
-        {p.fields.map(([n, label]) => <SettingField key={n} layout="stack" entry={by[n]} label={label} onChange={update} />)}
+        {p.fields.map(([n, label, span, hint]) => <SettingField key={n} layout="stack" span={span} entry={by[n]} label={label} hint={hint} onChange={update} />)}
       </div>
     </section>
   )
@@ -303,29 +302,44 @@ function Skeleton() {
       <span className="ds-skel st-sk-input" />
     </div>
   )
-  const card = (k, n) => (
-    <div className="ds-card st-card" key={k}>
-      <div className="st-card-head"><span className="ds-skel" style={{ width: 180, height: 18 }} /></div>
-      <div className="st-rows">{Array.from({ length: n }, (_, i) => row(i))}</div>
+  const head = (w) => <div className="st-card-head"><span className="ds-skel" style={{ width: w, height: 18 }} /><span className="ds-skel ds-skel-s" style={{ width: '55%' }} /></div>
+  const plat = (k) => (
+    <div className="ds-card st-plat st-sk-plat" key={k}>
+      <span className="ds-skel" style={{ width: 150, height: 16, marginBottom: 14 }} />
+      <div className="st-sk-pair"><span className="ds-skel st-sk-input" /><span className="ds-skel st-sk-input" /></div>
+      <div className="st-sk-pair"><span className="ds-skel st-sk-input" /><span className="ds-skel st-sk-input" /></div>
     </div>
   )
   return (
     <div role="status" data-testid="settings-loading" className="st-layout st-loading" aria-busy="true">
       <span className="ds-sr">Loading settings</span>
-      <div className="st-nav st-nav-sk" aria-hidden="true">{[0, 1, 2, 3].map((i) => <span key={i} className="ds-skel" style={{ width: '70%' }} />)}</div>
-      <div className="st-main" aria-hidden="true">{card('a', 1)}{card('b', 3)}{card('c', 3)}</div>
+      <div className="st-nav st-nav-sk" aria-hidden="true">{[0, 1, 2, 3, 4].map((i) => <span key={i} className="ds-skel" style={{ width: '70%' }} />)}</div>
+      <div className="st-main" aria-hidden="true">
+        <div className="ds-card st-card">{head(120)}<div className="st-sk-row"><span className="ds-skel" style={{ width: 44, height: 24, borderRadius: 12 }} /></div></div>
+        <div className="ds-card st-card">{head(190)}<div className="st-plat-wrap"><div className="st-plat-grid">{[0, 1, 2, 3].map(plat)}</div></div></div>
+        <div className="ds-card st-card">{head(140)}<div className="st-rows">{[0, 1, 2, 3, 4, 5, 6, 7, 8].map(row)}</div></div>
+        <div className="ds-card st-card">{head(80)}<div className="st-rows">{row(0)}</div></div>
+      </div>
     </div>
   )
+}
+
+const Glyph = {
+  lock: <svg width="28" height="28" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" /><path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>,
+  user: <svg width="28" height="28" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M3 17c.8-3.3 3.6-5 7-5s6.2 1.7 7 5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>,
+  err: <svg width="28" height="28" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10 5.5v5.5M10 13.5v1.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>,
 }
 
 export default function Settings() {
   const [state, setState] = React.useState({ phase: 'loading' })
   const load = React.useCallback(() => {
     setState({ phase: 'loading' })
+    const minShow = new Promise((r) => setTimeout(r, 250))  // the skeleton never just flashes
     settingsApi.list().then(
-      (data) => setState({ phase: 'ready', data }),
+      (data) => minShow.then(() => setState({ phase: 'ready', data })),
       (e) => {
-        if (e.status === 401 || e.status === 403) {
+        if (e.status === 401) setState({ phase: 'signin' })
+        else if (e.status === 403) {
           settingsApi.access().then((a) => setState({ phase: 'denied', unconfigured: a && a.admins_configured === false }),
             () => setState({ phase: 'denied' }))
         } else setState({ phase: 'error' })
@@ -340,9 +354,18 @@ export default function Settings() {
   let body
   if (state.phase === 'loading') {
     body = <Skeleton />
+  } else if (state.phase === 'signin') {
+    body = (
+      <div className="ds-card ds-empty" data-testid="settings-signin">
+        <span className="st-empty-icon" aria-hidden="true">{Glyph.user}</span>
+        <h2 className="ds-empty-title">Sign in to Domino to manage Settings</h2>
+        <p className="ds-helper">Settings are limited to the project owner and the admins they list. Sign in to Domino, then open this page again.</p>
+      </div>
+    )
   } else if (state.phase === 'denied') {
     body = (
       <div className="ds-card ds-empty" data-testid="settings-no-access">
+        <span className="st-empty-icon" aria-hidden="true">{Glyph.lock}</span>
         <h2 className="ds-empty-title">You have no access to Settings</h2>
         <p className="ds-helper">
           {state.unconfigured
@@ -354,6 +377,7 @@ export default function Settings() {
   } else if (state.phase === 'error') {
     body = (
       <div className="ds-card ds-empty ds-empty-error" data-testid="settings-error" role="alert">
+        <span className="st-empty-icon st-empty-danger" aria-hidden="true">{Glyph.err}</span>
         <h2 className="ds-empty-title">We could not load Settings</h2>
         <p className="ds-helper">Something went wrong on our side. Your settings are unchanged.</p>
         <Button variant="primary" onClick={load}>Try again</Button>
@@ -374,15 +398,12 @@ export default function Settings() {
           <SectionNav ready />
           <div className="st-main">
             <Card id="st-demo" title="Demo mode"><DemoRow entry={by.demo_mode} onChange={update} /></Card>
-            <section id="st-platforms" className="st-platforms" aria-labelledby="st-platforms-h">
-              <header className="st-plat-section-head">
-                <h2 id="st-platforms-h" className="ds-section-title">Platform credentials</h2>
-                <p className="st-sub">Used by the import wizard to read agents from each platform. Secrets are encrypted, write-only and never shown again.</p>
-              </header>
+            <Card id="st-platforms" plain title="Platform credentials"
+                  subtitle="Used by the import wizard to read agents from each platform. Secrets are encrypted, write-only and never shown again.">
               <div className="st-plat-grid">
                 {PLATFORMS.map((p) => <PlatformCard key={p.id} p={p} by={by} update={update} />)}
               </div>
-            </section>
+            </Card>
             <Card id="st-integrations" title="Integrations" subtitle="A project variable with the same name wins and is read-only here. Secrets are encrypted and write-only.">
               {['llm_provider', 'llm_gateway_url', 'break_classifier_endpoint_url', 'break_classifier_access_key', 'external_allow_hosts',
                 'trusted_jwks_path', 'service_accounts', 'policy_agentic_id', 'policy_model_id'].map(row)}

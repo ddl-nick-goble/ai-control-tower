@@ -1,6 +1,7 @@
 """SQLite storage for ACT (single DB, WAL, pooled connections)."""
 import logging
 import os
+import threading
 from pathlib import Path
 
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
@@ -54,16 +55,18 @@ real_engine = engine
 REAL_DB_PATH = DB_PATH
 
 
+_engines_lock = threading.Lock()
 _engines: dict = {}  # demo engines by resolved path: kept for reuse, never disposed while requests may hold them
 
 
 def engine_for(path: str):
     """The (cached) engine for `path`; one engine per path for the life of the process."""
     key = str(Path(path).expanduser().resolve())
-    if key not in _engines:
-        Path(key).parent.mkdir(parents=True, exist_ok=True)
-        _engines[key] = _make_engine(key)
-    return _engines[key]
+    with _engines_lock:
+        if key not in _engines:
+            Path(key).parent.mkdir(parents=True, exist_ok=True)
+            _engines[key] = _make_engine(key)
+        return _engines[key]
 
 
 def swap(new_engine, new_path: str):

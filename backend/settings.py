@@ -48,15 +48,15 @@ _DEFS = [
     ("policy_model_id", "integrations", False, "ACT_POLICY_MODEL_ID", "text"),
     ("aws_role_arn", "credentials", False, "ACT_AWS_ROLE_ARN", "text"),
     ("aws_external_id", "credentials", False, "ACT_AWS_EXTERNAL_ID", "text"),
-    ("aws_access_key_id", "credentials", True, "AWS_ACCESS_KEY_ID", "text"),
-    ("aws_secret_access_key", "credentials", True, "AWS_SECRET_ACCESS_KEY", "text"),
+    ("aws_access_key_id", "credentials", True, "ACT_AWS_ACCESS_KEY_ID", "text"),
+    ("aws_secret_access_key", "credentials", True, "ACT_AWS_SECRET_ACCESS_KEY", "text"),
     ("google_service_account_json", "credentials", True, "ACT_GOOGLE_SERVICE_ACCOUNT_JSON", "json"),
-    ("microsoft_tenant_id", "credentials", False, "AZURE_TENANT_ID", "text"),
-    ("microsoft_client_id", "credentials", False, "AZURE_CLIENT_ID", "text"),
-    ("microsoft_client_secret", "credentials", True, "AZURE_CLIENT_SECRET", "text"),
-    ("databricks_host", "credentials", False, "DATABRICKS_HOST", "text"),
-    ("databricks_client_id", "credentials", False, "DATABRICKS_CLIENT_ID", "text"),
-    ("databricks_client_secret", "credentials", True, "DATABRICKS_CLIENT_SECRET", "text"),
+    ("microsoft_tenant_id", "credentials", False, "ACT_MICROSOFT_TENANT_ID", "text"),
+    ("microsoft_client_id", "credentials", False, "ACT_MICROSOFT_CLIENT_ID", "text"),
+    ("microsoft_client_secret", "credentials", True, "ACT_MICROSOFT_CLIENT_SECRET", "text"),
+    ("databricks_host", "credentials", False, "ACT_DATABRICKS_HOST", "text"),
+    ("databricks_client_id", "credentials", False, "ACT_DATABRICKS_CLIENT_ID", "text"),
+    ("databricks_client_secret", "credentials", True, "ACT_DATABRICKS_CLIENT_SECRET", "text"),
     ("admins", "access", False, "ACT_ADMINS", "text"),
 ]
 DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind}
@@ -78,32 +78,61 @@ def _key_file() -> Path:
     return Path(db.REAL_DB_PATH).expanduser().resolve().parent / "act-secret.key"
 
 
+_file_cache = {"mtime": None, "path": None, "key": None}
+
+
+def _write_new_key(path: Path) -> None:
+    """Create the key file with mode 0600. Prefer a private temp file hard-linked into place (a reader never sees a
+    half-written key and of two racing processes exactly one key wins). Where hard links are not supported
+    (EPERM, ENOTSUP, EXDEV, as on some dataset mounts) create the file directly with O_EXCL; the empty-file retry
+    in _file_key covers a reader that sees it before the key is written."""
+    for stale in path.parent.glob(f".{path.name}.*.tmp"):  # left by a crashed process
+        try:
+            if time.time() - stale.stat().st_mtime > 60:
+                stale.unlink()
+        except OSError:
+            pass
+    key = Fernet.generate_key()
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+        try:
+            os.link(tmp, path)
+            return
+        except FileExistsError:
+            return
+        except OSError:
+            pass  # no hard links here: fall through to the direct create
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
+
+
 def _file_key() -> bytes:
-    """The generated key. Written to a private temp file and hard-linked into place, so a reader never sees a
-    half-written key and of two racing processes exactly one key wins."""
     path = _key_file()
     for _ in range(50):
         try:
+            mtime = path.stat().st_mtime_ns
+            if _file_cache["path"] == str(path) and _file_cache["mtime"] == mtime and _file_cache["key"]:
+                return _file_cache["key"]
             key = path.read_bytes().strip()
             if key:
+                _file_cache.update(path=str(path), mtime=mtime, key=key)
                 return key
         except FileNotFoundError:
             pass
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(Fernet.generate_key())
-            try:
-                os.link(tmp, path)
-            except FileExistsError:
-                pass
-        finally:
-            try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
+        _write_new_key(path)
         time.sleep(0.02)
     raise RuntimeError("could not read or create the secret key file")
 
@@ -140,6 +169,11 @@ def _rows() -> dict:
         if time.monotonic() - _cache["at"] < _TTL:
             return _cache["rows"]
         previous = _cache["rows"]
+    if not Path(db.REAL_DB_PATH).expanduser().exists():
+        rows = {}  # nothing saved yet; connecting would make SQLite create an empty database file (a stray act.db)
+        with _lock:
+            _cache.update(at=time.monotonic(), rows=rows)
+        return rows
     try:
         with db.real_engine.connect() as cx:
             rows = {r.name: r for r in cx.execute(db.app_settings.select()).all()}
@@ -343,4 +377,10 @@ def apply_demo_setting() -> None:
         return
     row = _rows().get("demo_mode")
     if row is not None and row.value == "true":
-        demo.switch_on()
+        try:
+            demo.switch_on()
+        except demo.DemoGuardError:
+            raise
+        except Exception:  # noqa: BLE001 - a failed seed must not stop the app from starting on the real data
+            log.exception("could not restore the saved demo mode; starting on the real database")
+            raise demo.DemoGuardError("demo mode could not be restored: see the server log")

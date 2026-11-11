@@ -1,7 +1,9 @@
 """ACT FastAPI app: API + built frontend."""
+import asyncio
 import importlib
 import os
 import pkgutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -49,8 +51,14 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 @app.middleware("http")
 async def demo_switch_gate(request, call_next):
     """Hold requests while the runtime demo switch seeds/flips the database, so none sees a half-seeded DB."""
-    if demo.switching():
-        await run_in_threadpool(demo.wait_switch)
+    if request.url.path != "/api/health" and demo.switching():
+        # Wait without holding a worker thread; give up after 30 s instead of queueing forever.
+        deadline = time.monotonic() + 30
+        while demo.switching():
+            if time.monotonic() > deadline:
+                return JSONResponse({"detail": "The demo switch is still running. Try again in a moment."},
+                                    status_code=503, headers={"Retry-After": "5"})
+            await asyncio.sleep(0.05)
     return await call_next(request)
 
 
