@@ -250,3 +250,4 @@ File rule for W3: T-19f owns design.css. T-20 puts any new nav styles in the she
 - SF-5 The settings.py comment near the env-strip mentions the banner.
 Touches: backend/settings.py, backend/routes/settings.py, backend/demo.py (lock scope), frontend/src/pages/Settings.jsx, tests/test_t39_settings.py, tests/e2e/test_t39_settings.py, frontend/dist. Depends on: T-39 (merged). Builder: builder. QA: test-author, ui-tester, code-reviewer. Branch task/T-39f.
 - 2026-11-11: Cleanup (Nick approved): deleted 23 merged remote task branches (all but T-19b and T-47). T-19f and T-39f added to W3.
+- 2026-11-11: pytest-xdist was only in ~/.local (manual user install, lost on workspace stop). preflight.sh now checks it (WARN when only in ~/.local, FAIL when missing). ENV-1: domino-setup adding pytest-xdist to the ai-control-tower-dse-pw image (new revision, applies at next workspace start).

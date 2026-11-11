@@ -69,6 +69,16 @@ else
   fail=1
 fi
 
+# 2b. Test plugins must come from the environment image, not a per-session ~/.local install
+loc=$(python3 -c 'import xdist,os;print(os.path.dirname(xdist.__file__))' 2>/dev/null)
+if [ -z "$loc" ]; then
+  echo "FAIL pytest-xdist missing (parallel e2e). Add to the environment Dockerfile: RUN pip install --no-cache-dir pytest-xdist"; fail=1
+elif [ "${loc#$HOME}" != "$loc" ]; then
+  echo "WARN pytest-xdist only in $loc (lost on workspace stop); bake it into the environment image"
+else
+  echo "PASS pytest-xdist (in image)"
+fi
+
 # 3. QA dataset folder is writable
 if [ -n "$QA_ROOT" ] && mkdir -p "$QA_ROOT" 2>/dev/null && touch "$QA_ROOT/.write-test" 2>/dev/null; then
   rm -f "$QA_ROOT/.write-test"; echo "PASS QA folder $QA_ROOT"
