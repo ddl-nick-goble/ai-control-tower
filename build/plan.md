@@ -139,3 +139,9 @@ Builder: builder. QA: ui-tester, visual-reviewer, code-reviewer, test-author (ba
 - T-19 split: T-19a = S-1 app shell + S-2 Fleet + S-5/S-6 for those + the T-18 carry-overs (branch task/T-19a); T-19b = S-3 Agent + S-4 Run + S-5/S-6 (after T-19a merges).
 - End-of-wave (T-15..T-18) on main: first full e2e run had 7 demo-mode failures while a backend suite ran concurrently; reruns: t15 file alone 9/9, full e2e 70/70. Treat as interference between concurrent suites; don't run backend and e2e suites at the same time in the same checkout.
 - T-19a tests: tests/e2e/test_t19a_shell_fleet.py, baseline 97a8a37 (28 fail / 6 regression guards pass). Status: building.
+- 2026-11-11: Nick: Register page summary shows "Preview unavailable". Cause: POST /api/tiering/preview requires a signed-in user (401 without Domino identity headers, e.g. in App Preview or on port 9888). Folded into T-19a (same files) as:
+  - P-1 (code): POST /api/tiering/preview returns 200 {tier, score, reasoning} with no identity headers and no bearer. Input validation (422) unchanged. POST /api/agents/register-external (registration) still returns 401 without identity.
+  - P-2 (UI): with all seven criteria at their default of 3 and no sign-in, the Register summary shows a tier badge, the tier meaning and "3.00 / 5", never "Preview unavailable". When the preview call fails, the summary says why in plain language (401: "Sign in to Domino to see the tier preview"; other errors: "Preview unavailable. Try again in a moment.") with role=status.
+  - Tests that pinned the bare "Preview unavailable" text (test_r5_preview_unavailable) are updated by ui-tester to P-2.
+- 2026-11-11: preflight FAIL: Playwright/Chromium and Node missing after workspace restart. domino-setup (sonnet) installs them in the running workspace and adds them to the compute environment so they survive restarts.
+- T-19a worktree had uncommitted builder work at session start (12 files); the builder resumes from it.
