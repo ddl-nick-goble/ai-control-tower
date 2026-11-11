@@ -56,14 +56,12 @@ function DemoBanner({ health: h }) {
         <strong>Demo mode:</strong>
         <span>simulated data</span>
         <span className="demo-sep" aria-hidden="true">·</span>
-        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={open ? ["demo-stand-ins", ...h.stand_ins.map((s) => `demo-chip-${s.name}`)].join(" ") : undefined} onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
+        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={["demo-stand-ins", ...h.stand_ins.map((s) => `demo-chip-${s.name}`)].join(" ")} onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
         <span className="demo-sep" aria-hidden="true">·</span>
         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
-        {open && <>
-          <span className="demo-break" />
-          <span id="demo-stand-ins" className="demo-panel-title">Demo mode: simulated data and stand-ins</span>
-          {h.stand_ins.map((s) => <span className="demo-chip" id={`demo-chip-${s.name}`} key={s.name} data-stand-in={s.name}>{s.label}</span>)}
-        </>}
+        <span className="demo-break" hidden={!open} />
+        <span id="demo-stand-ins" className="demo-panel-title" hidden={!open}>Demo mode: simulated data and stand-ins</span>
+        {h.stand_ins.map((s) => <span className="demo-chip" id={`demo-chip-${s.name}`} key={s.name} data-stand-in={s.name} hidden={!open}>{s.label}</span>)}
         {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
         {err && <span className="alert error" role="alert">{err}</span>}
         {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
@@ -86,7 +84,6 @@ export function Shell({ children }) {
   return (
     <div className="app">
       <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
-      {h && h.demo_mode && <DemoBanner health={h} />}
       <header className="ds-topbar" data-testid="app-topbar">
         <div className="ds-shell-inner ds-topbar-row">
           <Link to="/" className="ds-brand"><LogoMark />Agent Control Tower</Link>
@@ -98,6 +95,8 @@ export function Shell({ children }) {
         </div>
       </header>
       <main className="content" id="main" tabIndex={-1}>{children}</main>
+      {/* After <main> in the DOM so on-page stand-in labels precede the banner's collapsed chips; CSS order puts it on top. */}
+      {h && h.demo_mode && <DemoBanner health={h} />}
     </div>
   )
 }
