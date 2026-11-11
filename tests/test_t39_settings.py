@@ -322,3 +322,80 @@ def test_st5_env_demo_mode_locks_switch(env):
         assert c.put("/api/settings/demo_mode", json={"value": False}, headers=ADMIN).status_code == 423
         assert c.get("/api/health").json()["demo_mode"] is True
     _purge()
+
+
+# ---- ST-2a optional key in demo mode / any 32+ char key ----
+def _db_file():
+    from backend import db
+    return db.engine.url.database
+
+
+def test_st2a_demo_mode_no_key_no_warning_secrets_work(env):
+    env.setenv("ACT_DEMO_MODE", "1")
+    main = _start(env, key=False)
+    with TestClient(main.app) as c:
+        body = c.get("/api/settings", headers=ADMIN).json()
+        assert body["key_source"] == "file"
+        assert not any("ACT_SECRET_KEY" in w for w in body["warnings"]), body["warnings"]
+        r = c.put("/api/settings/aws_secret_access_key", json={"value": SECRET}, headers=ADMIN)
+        assert r.status_code == 200, r.text
+        assert _entry(c, "aws_secret_access_key")["is_set"] is True
+        from backend.settings import get_setting
+        assert get_setting("aws_secret_access_key") == SECRET
+        path = _db_file()
+        assert SECRET not in _dump(path)
+        assert SECRET.encode() not in open(path, "rb").read()
+    _purge()
+
+
+def test_st2a_non_demo_no_key_warning_stays(env):
+    main = _start(env, key=False)
+    with TestClient(main.app) as c:
+        body = c.get("/api/settings", headers=ADMIN).json()
+        assert body["key_source"] == "file"
+        assert any("ACT_SECRET_KEY" in w for w in body["warnings"])
+    _purge()
+
+
+@pytest.mark.parametrize("key", ["x" * 40, "plain-not-fernet-token_" + "Ab3" * 10])
+def test_st2a_plain_string_key_derives_fernet(env, key):
+    import base64
+    import hashlib
+    from cryptography.fernet import Fernet
+    assert len(key) >= 32
+    env.setenv("ACT_SECRET_KEY", key)
+    main = _start(env, key=False)
+    with TestClient(main.app) as c:
+        body = c.get("/api/settings", headers=ADMIN).json()
+        assert body["key_source"] == "env"
+        assert not any("too short" in w.lower() for w in body["warnings"])
+        r = c.put("/api/settings/aws_secret_access_key", json={"value": SECRET}, headers=ADMIN)
+        assert r.status_code == 200, r.text
+        from backend.settings import get_setting
+        assert get_setting("aws_secret_access_key") == SECRET
+        from backend import db
+        f = Fernet(base64.urlsafe_b64encode(hashlib.sha256(key.encode()).digest()))
+        found = False
+        with db.engine.connect() as cx:
+            for t in db.metadata.sorted_tables:
+                for row in cx.execute(t.select()).all():
+                    for v in row:
+                        if isinstance(v, bytes):
+                            v = v.decode("latin-1")
+                        if isinstance(v, str) and v.startswith("gAAAA"):
+                            try:
+                                found |= f.decrypt(v.encode()).decode() == SECRET
+                            except Exception:
+                                pass
+        assert found, "no stored ciphertext decrypts with the SHA-256-derived key"
+    _purge()
+
+
+def test_st2a_short_key_warns_no_crash(env):
+    env.setenv("ACT_SECRET_KEY", "short-key-123")
+    main = _start(env, key=False)
+    with TestClient(main.app) as c:
+        r = c.get("/api/settings", headers=ADMIN)
+        assert r.status_code == 200, r.text
+        assert any("short" in w.lower() or "32" in w for w in r.json()["warnings"]), r.json()["warnings"]
+    _purge()
