@@ -1,0 +1,539 @@
+diff --git a/backend/db.py b/backend/db.py
+index c24be4f..a01abd7 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -261,7 +261,7 @@ app_settings = Table(
+ )
+ 
+ 
+-def _migrate() -> None:
++def _migrate(engine) -> None:
+     """Idempotent additive migration: add any declared column missing from an existing table."""
+     insp = inspect(engine)
+     with engine.begin() as conn:
+@@ -285,7 +285,7 @@ def _migrate() -> None:
+                               "ON events (run_id, agent_id)"))
+ 
+ 
+-def _ensure_findings_index() -> None:
++def _ensure_findings_index(engine) -> None:
+     """Unique partial index for one scope_drift finding per run; never crash on legacy duplicates."""
+     try:
+         with engine.begin() as conn:
+@@ -296,15 +296,16 @@ def _ensure_findings_index() -> None:
+                     exc_info=True)
+ 
+ 
+-def init_db() -> None:
++def init_db(eng=None) -> None:
++    eng = eng or engine
+     try:
+-        metadata.create_all(engine)
++        metadata.create_all(eng)
+     except Exception as e:
+         if "index" not in str(e).lower():
+             raise
+         log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
+-    _migrate()
+-    _ensure_findings_index()
++    _migrate(eng)
++    _ensure_findings_index(eng)
+ 
+ 
+ def prewarm(n: int) -> None:
+diff --git a/backend/demo.py b/backend/demo.py
+index 9ef88c1..4b52a40 100644
+--- a/backend/demo.py
++++ b/backend/demo.py
+@@ -50,7 +50,11 @@ _runtime = False  # the in-app Settings switch (no restart); ACT_DEMO_MODE in th
+ _applied_rt: list = []
+ _rt_lock = threading.RLock()  # held for the whole of a switch; _runtime and db.engine change under it
+ _switching = False
+-_state_lock = threading.Lock()  # guards _switching, which the request gate reads from other threads
++_state_lock = threading.Lock()  # guards _switching and _inflight, which the request gate reads from other threads
++_cond = threading.Condition(_state_lock)
++_inflight = 0  # requests currently inside the app (counted by the ASGI gate in main.py)
++_switch_mutex = threading.Lock()  # one switch at a time; taken before draining, never while a request waits on _rt_lock
++DRAIN_TIMEOUT = 15.0
+ 
+ 
+ def env_enabled() -> bool:
+@@ -136,24 +140,91 @@ def switching() -> bool:
+ 
+ def _set_switching(v: bool) -> None:
+     global _switching
+-    with _state_lock:
++    with _cond:
+         _switching = v
++        _cond.notify_all()
++
++
++def enter() -> bool:
++    """Gate entry: atomically refuse while a switch runs, else count the request as in flight."""
++    global _inflight
++    with _cond:
++        if _switching:
++            return False
++        _inflight += 1
++        return True
++
++
++def leave() -> None:
++    global _inflight
++    with _cond:
++        _inflight -= 1
++        _cond.notify_all()
++
++
++def _begin_switch(own: int) -> None:
++    """Stop new requests and wait until only `own` (the settings request that triggers the switch) remain.
++    Called with _switch_mutex held and _rt_lock NOT held, so a request waiting on _rt_lock cannot deadlock the drain."""
++    global _switching
++    with _cond:
++        _switching = True
++        if not _cond.wait_for(lambda: _inflight <= own, timeout=DRAIN_TIMEOUT):
++            _switching = False
++            _cond.notify_all()
++            raise DemoGuardError("requests still running; try again")
++
++
++class _Switch:
++    def __init__(self, own):
++        self.own = own
++
++    def __enter__(self):
++        _switch_mutex.acquire()
++        try:
++            _begin_switch(self.own)
++        except BaseException:
++            _switch_mutex.release()
++            raise
++        return self
++
++    def __exit__(self, *a):
++        _set_switching(False)
++        _switch_mutex.release()
++        return False
++
++
++from contextlib import contextmanager
+ 
+ 
+-def switch_on() -> None:
++@contextmanager
++def active_demo_engine():
++    """For demo routes and jobs: hold the switch lock, require demo mode, yield the one engine to use throughout.
++    A switch-off cannot run meanwhile, so the real DB is never touched by a demo action."""
++    from . import db
++    with _rt_lock:
++        if not enabled():
++            raise DemoGuardError("demo mode is off")
++        eng = db.engine
++        if eng is db.real_engine and not env_enabled():
++            _refuse("refusing: the active database is the real database")
++        yield eng
++
++
++def switch_on(own: int = 0) -> None:
+     """Runtime demo switch: seed the demo DB (if empty), then flip to it.
+     The active engine and the demo flag change together under one lock, and ordinary requests wait while
+     seeding runs (they never see a half-seeded demo DB). A failure restores the previous state exactly and raises
+     DemoGuardError when the demo DB may not be used. Single process only: app.sh runs one uvicorn worker."""
+     global _runtime, _db_new
+     from . import db
+-    with _rt_lock:
++    if enabled():
++        return
++    with _Switch(own), _rt_lock:
+         if enabled():
+             return
+         path = default_db_path()
+         if Path(path).expanduser().resolve() == Path(db.REAL_DB_PATH).expanduser().resolve():
+             _refuse("refusing: the demo database path is the real database")
+-        _set_switching(True)
+         prev_new, applied_before = _db_new, len(_applied_rt)
+         _db_new = not Path(path).expanduser().exists()
+         # Seeding needs db.engine and the demo stand-ins (simulated Governance, demo owner), so both flip now;
+@@ -174,25 +245,21 @@ def switch_on() -> None:
+             while len(_applied_rt) > applied_before:
+                 os.environ.pop(_applied_rt.pop(), None)
+             raise
+-        finally:
+-            _set_switching(False)
+ 
+ 
+-def switch_off() -> None:
++def switch_off(own: int = 0) -> None:
+     """Back to the real DB. The demo engine is kept (not disposed) because in-flight requests may still hold it."""
+     global _runtime
+     from . import db
+-    with _rt_lock:
++    if not _runtime:
++        return
++    with _Switch(own), _rt_lock:
+         if not _runtime:
+             return
+-        _set_switching(True)
+-        try:
+-            db.use_real()
+-            _runtime = False
+-            while _applied_rt:
+-                os.environ.pop(_applied_rt.pop(), None)
+-        finally:
+-            _set_switching(False)
++        db.use_real()
++        _runtime = False
++        while _applied_rt:
++            os.environ.pop(_applied_rt.pop(), None)
+ 
+ 
+ def restore_defaults() -> None:
+@@ -234,10 +301,10 @@ def _marker_present(cx) -> bool:
+         and cx.execute(text("SELECT 1 FROM act_demo_marker")).first() is not None
+ 
+ 
+-def _write_marker() -> None:
++def _write_marker(eng=None) -> None:
+     from sqlalchemy import text
+     from . import db
+-    with db.engine.begin() as cx:
++    with (eng or db.engine).begin() as cx:
+         cx.execute(text("CREATE TABLE IF NOT EXISTS act_demo_marker (id INTEGER PRIMARY KEY, note TEXT)"))
+         cx.execute(text("INSERT OR REPLACE INTO act_demo_marker (id, note) VALUES (1, 'created by ACT demo mode')"))
+ 
+@@ -293,15 +360,24 @@ def ensure_seeded():
+ 
+ 
+ def reset():
+-    """Wipe the demo DB and reseed it. Only a demo-owned DB (marker present) is ever wiped."""
++    """Wipe the demo DB and reseed it. Only a demo-owned DB (marker present) is ever wiped.
++    Runs under _rt_lock, so a switch-off cannot swap the engine mid-way; the engine is captured once."""
+     from . import db, demo_governance
+-    _check_not_shared()
+-    with db.engine.connect() as cx:
+-        if not _marker_present(cx):
+-            _refuse(f"refusing to reset {db.DB_PATH}: it is not a demo-owned database (no demo marker)")
+-    with demo_governance.lock:  # app_settings is kept: when ACT_DEMO_MODE is in the environment it shares this DB
+-        db.metadata.drop_all(db.engine, tables=[t for t in db.metadata.sorted_tables if t.name != "app_settings"])
+-        demo_governance.clear()
+-    db.init_db()
+-    _write_marker()
+-    return _seed()
++    with _rt_lock:
++        if not enabled():
++            _refuse("refusing to reset: demo mode is off")
++        eng = db.engine
++        if eng is db.real_engine and not env_enabled():
++            _refuse("refusing to reset: the active database is the real database")
++        _check_not_shared()
++        with eng.connect() as cx:
++            if not _marker_present(cx):
++                _refuse(f"refusing to reset {db.DB_PATH}: it is not a demo-owned database (no demo marker)")
++        with demo_governance.lock:  # app_settings is kept: when ACT_DEMO_MODE is in the environment it shares this DB
++            db.metadata.drop_all(eng, tables=[t for t in db.metadata.sorted_tables if t.name != "app_settings"])
++            demo_governance.clear()
++        db.init_db(eng)
++        _write_marker(eng)
++        if db.engine is not eng:  # cannot happen under _rt_lock; never seed another DB if it does
++            _refuse("refusing to seed: the active database changed during the reset")
++        return _seed()
+diff --git a/backend/main.py b/backend/main.py
+index fae3fb7..ff9939f 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -1,6 +1,7 @@
+ """ACT FastAPI app: API + built frontend."""
+ import asyncio
+ import importlib
++import logging
+ import os
+ import pkgutil
+ import time
+@@ -16,6 +17,7 @@ from . import db, demo, llm, routes, settings
+ from .prefix import ProxyPrefixMiddleware
+ from .domino_identity import get_user
+ 
++log = logging.getLogger(__name__)
+ ROOT = Path(__file__).resolve().parent.parent
+ DIST = ROOT / "frontend" / "dist"
+ 
+@@ -37,29 +39,44 @@ async def lifespan(_app):
+     try:
+         yield
+     finally:
+-        demo.switch_off()
++        try:
++            demo.switch_off()
++        except demo.DemoGuardError:
++            log.warning("demo switch-off at shutdown skipped: requests still running")
+         demo.restore_defaults()
+ 
+ 
+ app = FastAPI(title="Agent Control Tower", lifespan=lifespan)
+ 
+ 
+-MAX_PREVIEW_BYTES = 8 * 1024
+-WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
++class DemoSwitchGate:
++    """Pure ASGI gate: counts requests in flight and holds new ones while the runtime demo switch runs, so the
++    switch can wait for in-flight requests to drain and none sees a half-seeded DB. /api/health is exempt."""
+ 
++    def __init__(self, app):
++        self.app = app
+ 
+-@app.middleware("http")
+-async def demo_switch_gate(request, call_next):
+-    """Hold requests while the runtime demo switch seeds/flips the database, so none sees a half-seeded DB."""
+-    if request.url.path != "/api/health" and demo.switching():
+-        # Wait without holding a worker thread; give up after 30 s instead of queueing forever.
++    async def __call__(self, scope, receive, send):
++        if scope["type"] != "http" or scope["path"].endswith("/api/health"):
++            return await self.app(scope, receive, send)
+         deadline = time.monotonic() + 30
+-        while demo.switching():
++        while not demo.enter():  # atomic: refuses while a switch runs, else counts this request
+             if time.monotonic() > deadline:
+-                return JSONResponse({"detail": "The demo switch is still running. Try again in a moment."},
++                resp = JSONResponse({"detail": "The demo switch is still running. Try again in a moment."},
+                                     status_code=503, headers={"Retry-After": "5"})
++                return await resp(scope, receive, send)
+             await asyncio.sleep(0.05)
+-    return await call_next(request)
++        try:
++            await self.app(scope, receive, send)
++        finally:
++            demo.leave()
++
++
++app.add_middleware(DemoSwitchGate)
++
++
++MAX_PREVIEW_BYTES = 8 * 1024
++WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+ 
+ 
+ @app.middleware("http")
+diff --git a/backend/routes/demo.py b/backend/routes/demo.py
+index 1012ce4..60a7711 100644
+--- a/backend/routes/demo.py
++++ b/backend/routes/demo.py
+@@ -24,8 +24,8 @@ router = APIRouter(dependencies=[Depends(_demo_only)])
+ log = logging.getLogger(__name__)
+ 
+ 
+-def _agent(agent_id):
+-    with db.engine.connect() as cx:
++def _agent(agent_id, eng=None):
++    with (eng or db.engine).connect() as cx:
+         a = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
+     if a is None:
+         raise HTTPException(404, "agent not found")
+@@ -39,7 +39,16 @@ def state():
+ 
+ @router.post("/api/demo/approve/{agent_id}")
+ def demo_approve(agent_id: str, user: User = Depends(require_user)):
+-    _agent(agent_id)
++    try:
++        with demo.active_demo_engine() as eng:  # held so a switch-off cannot land between the check and the write
++            _agent(agent_id, eng)
++            r = _approve(agent_id, user)
++    except demo.DemoGuardError as e:
++        raise HTTPException(409, str(e))
++    return r
++
++
++def _approve(agent_id, user):
+     r = approve_as(agent_id, User(user_id=demo.APPROVER_ID, username=demo.APPROVER_NAME),
+                    audit_extra={"simulated": True, "requested_by": user.user_id, "requested_by_username": user.username})
+     return {**r, "simulated": True, "note": "approved by the simulated demo approver, not a second Domino user"}
+@@ -47,12 +56,17 @@ def demo_approve(agent_id: str, user: User = Depends(require_user)):
+ 
+ @router.post("/api/demo/run/{agent_id}")
+ def demo_run(agent_id: str, _user: User = Depends(require_user)):
+-    a = _agent(agent_id)
+-    if a.name != "recon-agent":
+-        raise HTTPException(409, "only recon-agent can be run in demo mode")
+     from jobs import seed_demo
+     try:
+-        run_id = seed_demo.run_recon_once(agent_id)
++        with demo.active_demo_engine() as eng:  # held for the whole run: the engine cannot change under it
++            a = _agent(agent_id, eng)
++            if a.name != "recon-agent":
++                raise HTTPException(409, "only recon-agent can be run in demo mode")
++            run_id = seed_demo.run_recon_once(agent_id, eng)
++    except demo.DemoGuardError as e:
++        raise HTTPException(409, str(e))
++    except HTTPException:
++        raise
+     except Exception as e:  # noqa: BLE001
+         log.exception("demo run failed")
+         raise HTTPException(500, f"demo run failed: {type(e).__name__}")
+diff --git a/backend/settings.py b/backend/settings.py
+index acd1750..b7ff27c 100644
+--- a/backend/settings.py
++++ b/backend/settings.py
+@@ -346,17 +346,17 @@ def put_setting(user, name, value) -> dict:
+         was_on = demo.enabled()
+         if v == "true":
+             try:
+-                demo.switch_on()  # atomic: on failure nothing has changed
++                demo.switch_on(own=1)  # atomic: on failure nothing has changed
+             except demo.DemoGuardError as e:
+                 raise SettingError(409, str(e))
+         try:
+             _store(user, name, v, "settings.update")
+         except Exception:
+             if v == "true" and not was_on:
+-                demo.switch_off()  # the value was not saved, so the app must not stay in demo mode
++                demo.switch_off(own=1)  # the value was not saved, so the app must not stay in demo mode
+             raise
+         if v == "false":
+-            demo.switch_off()
++            demo.switch_off(own=1)
+         return entry(name)
+     stored = key_state()[0].encrypt(v.encode()).decode() if DEFS[name]["secret"] else v
+     _store(user, name, stored, "settings.update")
+@@ -367,7 +367,7 @@ def delete_setting(user, name) -> dict:
+     _check_writable(name)
+     _store(user, name, None, "settings.clear")
+     if name == "demo_mode":
+-        demo.switch_off()
++        demo.switch_off(own=1)
+     return entry(name)
+ 
+ 
+diff --git a/frontend/src/pages/Settings.jsx b/frontend/src/pages/Settings.jsx
+index 062bc79..51250bb 100644
+--- a/frontend/src/pages/Settings.jsx
++++ b/frontend/src/pages/Settings.jsx
+@@ -15,7 +15,7 @@ const COPY = {
+   service_accounts: ['Service accounts', 'Comma-separated distinct-agent accounts.'],
+   policy_agentic_id: ['Governance policy id (agentic bundle)', 'Policy used for agentic system bundles.'],
+   policy_model_id: ['Governance policy id (model bundle)', 'Policy used for model bundles.'],
+-  admins: ['Admins', 'Comma-separated usernames. The owner is always an admin.'],
++  admins: ['Admins', 'Comma-separated usernames. The owner is always included.'],
+ }
+ const PLATFORMS = [
+   { id: 'aws', title: 'AWS AgentCore', blurb: 'An IAM role ACT assumes, or an access key as a fallback.',
+@@ -117,9 +117,9 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
+   else if (!entry.is_set && layout === 'row') badge = <Badge>Not set</Badge>
+ 
+   let hintText = hint
+-  if (entry.locked) hintText = <>Set by the project variable <code>{entry.env}</code>. Change it there.</>
++  if (entry.locked) hintText = <>Set by <code>{entry.env}</code>. Change it there.</>
+   else if (unreadable) hintText = 'The secret key changed, so this value can no longer be read. Enter it again.'
+-  else if (layout === 'stack' && setLine) hintText = <span className="st-setline" title={setLine}>{setLine}</span>
++  else if (setLine) hintText = <span className="st-setline">{setLine}</span>  // full text, wraps rather than truncates
+ 
+   const labelId = `${id}-l`, hintId = `${id}-h`
+   const plainLocked = entry.locked
+@@ -128,7 +128,7 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
+       {showInput || plainLocked && !secret
+         ? <label id={labelId} htmlFor={`${id}-i`} className="st-label">{label}</label>
+         : <span id={labelId} className="st-label">{label}</span>}
+-      <div className="st-state">{badge}{layout === 'row' && setLine && <span className="st-setline" title={setLine}>{setLine}</span>}</div>
++      <div className="st-state">{badge}</div>
+       <div className="st-ctl">
+         {plainLocked && !secret && <input id={`${id}-i`} className="ds-input" type="text" readOnly value={entry.value || ''} aria-describedby={hintId} />}
+         {plainLocked && secret && <div className="st-masked st-masked-lock" aria-hidden="true">••••••••</div>}
+@@ -151,7 +151,7 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
+         ? <p id={hintId} className="st-hint st-hint-error" role="alert">{Icon.err}<span>{st.msg}</span></p>
+         : <p id={hintId} className="st-hint">{hintText}</p>}
+       {ask && (
+-        <ConfirmDialog title={`Clear ${label}?`} danger onConfirm={clear} onCancel={() => setAsk(false)}
++        <ConfirmDialog title={`Clear ${label}?`} danger confirmLabel="Clear key" onConfirm={clear} onCancel={() => setAsk(false)}
+                        body={secret ? 'The stored secret is deleted and cannot be recovered. You can enter a new one later.'
+                          : 'The saved value is removed and the default applies.'} />
+       )}
+@@ -159,7 +159,7 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
+   )
+ }
+ 
+-function ConfirmDialog({ title, body, danger, onConfirm, onCancel }) {
++function ConfirmDialog({ title, body, danger, confirmLabel, onConfirm, onCancel }) {
+   const ref = React.useRef(null)
+   const tid = React.useId(), bid = React.useId()
+   React.useEffect(() => {
+@@ -183,7 +183,8 @@ function ConfirmDialog({ title, body, danger, onConfirm, onCancel }) {
+         <p id={bid} className="st-dlg-body">{body}</p>
+         <div className="st-dlg-actions">
+           <Button onClick={onCancel}>Cancel</Button>
+-          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>Confirm</Button>
++          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>
++            {confirmLabel ? <>{confirmLabel}<span className="ds-sr"> (confirm)</span></> : 'Confirm'}</Button>
+         </div>
+       </div>
+     </div>, document.body)
+@@ -360,6 +361,7 @@ export default function Settings() {
+         <span className="st-empty-icon" aria-hidden="true">{Glyph.user}</span>
+         <h2 className="ds-empty-title">Sign in to Domino to manage Settings</h2>
+         <p className="ds-helper">Settings are limited to the project owner and the admins they list. Sign in to Domino, then open this page again.</p>
++        <Button variant="primary" onClick={() => window.location.reload()}>Reload after signing in</Button>
+       </div>
+     )
+   } else if (state.phase === 'denied') {
+diff --git a/frontend/src/settings.css b/frontend/src/settings.css
+index 20cf5e0..7a2a1ef 100644
+--- a/frontend/src/settings.css
++++ b/frontend/src/settings.css
+@@ -21,8 +21,8 @@
+ /* a setting: label, status, control, hint (one grid, two layouts) */
+ .st-f { display: grid; column-gap: var(--ds-s2); row-gap: 2px; min-width: 0 }
+ .st-label { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
+-.st-state { display: flex; align-items: center; justify-content: flex-end; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
+-.st-setline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
++.st-state { display: flex; align-items: center; justify-content: flex-start; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
++.st-setline { min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+ .st-hint .st-setline { display: block }
+ .st-ctl { display: flex; align-items: center; gap: var(--ds-s1); min-width: 0 }
+ .st-ctl .ds-input { flex: 1 1 0; min-width: 0; height: 36px; font-size: 14px }
+@@ -43,7 +43,7 @@
+ .ds-input[readonly] { background: #f5f6f8; color: var(--ds-text) }
+ 
+ /* table row */
+-.st-f-row { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(0, 260px); grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
++.st-f-row { grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) 196px; grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
+ .st-f-row .st-label { grid-area: label; align-self: end }
+ .st-f-row .st-hint { grid-area: hint; align-self: start }
+ .st-f-row .st-ctl { grid-area: ctl }
+@@ -58,7 +58,7 @@
+ 
+ /* platform cards: two-column grid inside the section card, fields paired two per row */
+ .st-plat-wrap { padding: var(--ds-s2) var(--ds-s3) var(--ds-s3) }
+-.st-plat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ds-s2); align-items: stretch }
++.st-plat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ds-s2); align-items: start }
+ .st-plat { padding: 14px var(--ds-s2) var(--ds-s2); display: flex; flex-direction: column; box-shadow: none; background: #fbfcfd }
+ .st-plat-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ds-s1) }
+ .st-plat-title { margin: 0; text-transform: none; letter-spacing: normal; font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ds-ink) }
+@@ -122,3 +122,5 @@
+   .st-demo { grid-template-columns: minmax(0, 1fr); row-gap: 8px }
+ }
+ @media (prefers-reduced-motion: reduce) { .st-switch, .st-knob { transition: none } }
++
++.ds-empty .ds-helper { font-size: 13px; line-height: 20px }
+diff --git a/jobs/seed_demo.py b/jobs/seed_demo.py
+index ab1984a..c28038e 100644
+--- a/jobs/seed_demo.py
++++ b/jobs/seed_demo.py
+@@ -64,15 +64,19 @@ def _count(table, agent_id):
+ _recon_lock = threading.Lock()
+ 
+ 
+-def run_recon_once(agent_id) -> str:
++def run_recon_once(agent_id, eng=None) -> str:
+     """Run the recon agent once in-process (always) and return the id of the new run."""
+     from backend import db
+     from sqlalchemy import select
+ 
++    eng = eng or db.engine  # captured once: the id snapshots and the run itself see the same DB
++
+     def run_ids():
+-        with db.engine.connect() as cx:
++        with eng.connect() as cx:
+             return {r[0] for r in cx.execute(select(db.runs.c.id).where(db.runs.c.agent_id == agent_id))}
+     with _recon_lock:
++        if db.engine is not eng:
++            raise RuntimeError("the active database changed; not running the recon agent")
+         before = run_ids()
+         _run_recon(agent_id, {}, force=True)
+         new = run_ids() - before
