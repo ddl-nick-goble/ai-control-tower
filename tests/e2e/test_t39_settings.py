@@ -45,13 +45,18 @@ def _qa_dir(monkeypatch):
 
 
 # Every env var that names a setting the page manages: stripped so results do not depend on the workspace.
-_MANAGED_ENV = {
-    "ACT_DEMO_MODE", "ACT_LLM_PROVIDER", "LLM_GATEWAY_URL", "BREAK_CLASSIFIER_ENDPOINT_URL", "BREAK_CLASSIFIER_ACCESS_KEY",
-    "ACT_EXTERNAL_ALLOW_HOSTS", "ACT_TRUSTED_JWKS_PATH", "ACT_SERVICE_ACCOUNTS", "ACT_POLICY_AGENTIC_ID",
-    "ACT_POLICY_MODEL_ID", "ACT_AWS_ROLE_ARN", "ACT_AWS_EXTERNAL_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    "ACT_GOOGLE_SERVICE_ACCOUNT_JSON", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "DATABRICKS_HOST",
-    "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET", "ACT_ADMINS", "ACT_SECRET_KEY",
-}
+def _managed_env():
+    """Every env name declared by backend/settings.py (derived so it cannot drift), plus legacy unprefixed names."""
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from backend import settings as _s
+    names = {d["env"] for d in _s.DEFS.values()}
+    return names | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AZURE_TENANT_ID",
+                    "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "DATABRICKS_HOST", "DATABRICKS_CLIENT_ID",
+                    "DATABRICKS_CLIENT_SECRET"}
+
+
+_MANAGED_ENV = _managed_env()
 
 
 def _start(tmp, port, extra):
