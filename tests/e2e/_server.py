@@ -68,11 +68,13 @@ class App:
         self.logf.close()
 
 
-def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_env=None, timeout=300):
+def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_env=None, strip_env=(), timeout=300):
     """Start app.sh on a free port (or `port`, e.g. to restart on the same URL) and wait until it is healthy."""
     tmp = pathlib.Path(tmp)
     tmp.mkdir(parents=True, exist_ok=True)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
+    # Inherited ACT_* / BREAK_CLASSIFIER_* (and any names in strip_env) never leak in; tests set them via extra_env.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("ACT_", "BREAK_CLASSIFIER_")) and k not in set(strip_env)}
     db_path = tmp / "act.db"
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "HOST": "0.0.0.0", "ACT_DB": str(db_path),
                 "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev")})
