@@ -45,18 +45,18 @@ export function CopyButton({ value, label, className = '' }) {
           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10.5 3.5v-.2A1.3 1.3 0 0 0 9.2 2H3.8A1.3 1.3 0 0 0 2.5 3.3v5.4A1.3 1.3 0 0 0 3.8 10h.2" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
         )}
       </button>
-      <span className={copied === 'fail' ? 'ag-copy-fail' : 'ds-sr'} role="status">{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Copy failed' : ''}</span>
+      <span className={copied === 'fail' ? 'ag-copy-fail' : 'ds-sr'} role="status" aria-live="polite" aria-atomic="true">{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Copy failed' : ''}</span>
     </>
   )
 }
 
 // Long id / ARN: one line, ellipsis, full value in the title and a copy button.
-export function IdValue({ value, label = 'value', testid = 'id-value' }) {
+export function IdValue({ value, label = 'value', testid = 'id-value', plain = false }) {
   const v = value == null || value === '' ? null : String(value)
   if (!v) return <span className="ag-none">—</span>
   return (
     <span className="ag-idv">
-      <span className="ds-trunc ag-idv-text" data-testid={testid} title={v}>{v}</span>
+      <span className={`ds-trunc ag-idv-text${plain ? ' ag-idv-plain' : ''}`} data-testid={testid} title={v}>{v}</span>
       <CopyButton value={v} label={label} />
     </span>
   )
@@ -74,10 +74,10 @@ export function Card({ title, testid, id, className = '', actions, cardRef, chil
   )
 }
 
-export function Skel({ what, lines = 3 }) {
+export function Skel({ what, lines = 3, className = '' }) {
   const w = ['92%', '78%', '64%', '84%']
   return (
-    <div className="ag-skel" role="status" aria-busy="true">
+    <div className={`ag-skel ${className}`} role="status" aria-busy="true">
       <span className="ds-sr">Loading {what} ...</span>
       {Array.from({ length: lines }, (_, i) => <span key={i} className="ds-skel" style={{ width: w[i % w.length] }} />)}
     </div>

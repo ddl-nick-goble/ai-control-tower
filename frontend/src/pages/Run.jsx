@@ -112,14 +112,31 @@ function Payload({ full, testid, what }) {
 }
 
 function Loading() {
+  const w = [58, 74, 46, 82, 64, 70, 52, 78]
   return (
     <div className="ds-page ds-container" role="status" aria-busy="true" data-testid="timeline-loading">
-      <span className="ds-sr">Loading timeline ...</span>
-      <span className="ds-skel" style={{ width: 240, height: 14, marginBottom: 16 }} />
-      <span className="ds-skel" style={{ width: 280, height: 36, marginBottom: 16 }} />
-      <span className="ds-skel" style={{ width: '100%', maxWidth: 640, height: 40, marginBottom: 24 }} />
-      <span className="ds-skel" style={{ width: 360, height: 32, marginBottom: 16 }} />
-      {Array.from({ length: 8 }, (_, i) => <span key={i} className="ds-skel" style={{ height: 28, marginBottom: 12, width: `${96 - (i % 3) * 8}%` }} />)}
+      <span className="ds-sr">Loading run ...</span>
+      <span className="ds-skel" style={{ width: 220, height: 14, marginBottom: 16 }} />
+      <span className="ds-skel" style={{ width: 200, height: 32 }} />
+      <div className="rt-skel-meta">
+        {[70, 56, 84, 62].map((x, i) => (
+          <div key={i}><span className="ds-skel" style={{ width: 56, height: 10, marginBottom: 8 }} /><span className="ds-skel" style={{ width: `${x}%`, height: 16 }} /></div>
+        ))}
+      </div>
+      <div className="rt-toolbar" style={{ position: 'static' }}>
+        <div className="rt-seg" aria-hidden="true">
+          {[64, 72, 92, 88, 84].map((x, i) => <span key={i} className="ds-skel" style={{ width: x, height: 24, margin: 2 }} />)}
+        </div>
+      </div>
+      <div className="ds-card rt-list" aria-hidden="true">
+        {w.map((x, i) => (
+          <div key={i} className="rt-skel-row">
+            <span className="ds-skel" style={{ width: 52, height: 12, justifySelf: 'end' }} />
+            <span className="ds-skel rt-skel-node" />
+            <span className="ds-skel" style={{ width: `${x}%`, height: 14 }} />
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -138,6 +155,7 @@ function RunView({ runId }) {
   const agentInfo = useAsync(() => (agentId ? api.agent(agentId).catch(() => null) : Promise.resolve(null)), [agentId])
   const [filter, setFilter] = React.useState('all')
   const [flash, setFlash] = React.useState(null)
+  const [landed, setLanded] = React.useState(null)
   const spanParam = params.get('span')
   const [missingSpan, setMissingSpan] = React.useState(false)
   const agentName = clean(agentInfo.data?.name) || 'Agent'
@@ -150,9 +168,10 @@ function RunView({ runId }) {
   const violations = React.useMemo(() => {
     const m = new Map()
     for (const f of fnd.data?.items || []) {
-      if (f.run_id !== runId || f.status !== 'open') continue
-      for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest', findingId: f.id })
-      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit, observed_value: f.observed_value, findingId: f.id })
+      if (f.run_id !== runId) continue
+      // One finding per run carries every violation in detail.violations; its own span_id is the first one.
+      for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest', findingId: f.id, primary: v.span_id === f.span_id })
+      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit, observed_value: f.observed_value, findingId: f.id, primary: true })
     }
     return m
   }, [fnd.data, runId])
@@ -162,7 +181,9 @@ function RunView({ runId }) {
   const events = ready ? tl.data.events : []
   const rows = React.useMemo(() => events.map((ev, i) => {
     const v = violations.get(ev.span_id)
-    return { ev, i, v: v && ev.kind === 'tool_call' ? v : null }
+    const body = ev.kind === 'tool_call' ? payloadText(ev.args_redacted)
+      : (ev.kind === 'input' || ev.kind === 'output') ? clean(fmtJson(content(ev))) : ''
+    return { ev, i, body, v: v && ev.kind === 'tool_call' ? v : null }
   }), [events, violations])
   const counts = React.useMemo(() => ({
     all: rows.length,
@@ -176,6 +197,7 @@ function RunView({ runId }) {
   // Arriving with ?span= (from a finding): scroll to the event, focus it, flash it, then drop the parameter.
   React.useEffect(() => {
     if (!ready || !spanParam) return
+    setMissingSpan(false)
     setFilter('all')
     const id = requestAnimationFrame(() => {
       const el = Array.from(document.querySelectorAll('[data-testid="timeline-event"]')).find((e) => e.getAttribute('data-span-id') === spanParam)
@@ -183,6 +205,7 @@ function RunView({ runId }) {
         el.scrollIntoView({ block: 'center' })
         el.focus({ preventScroll: true })
         setFlash(spanParam)
+        setLanded(spanParam)
       } else setMissingSpan(true)
       setParams((cur) => { const n = new URLSearchParams(cur); n.delete('span'); return n }, { replace: true })
     })
@@ -254,12 +277,11 @@ function RunView({ runId }) {
       )}
       {shown.length > 0 && (
         <ol className="rt-list ds-card">
-          {shown.map(({ ev, i, v }) => {
-            const body = ev.kind === 'tool_call' ? payloadText(ev.args_redacted)
-              : (ev.kind === 'input' || ev.kind === 'output') ? clean(fmtJson(content(ev))) : ''
+          {shown.map(({ ev, i, v, body }) => {
             return (
               <li key={`${ev.span_id || ev.kind}-${i}`} tabIndex={-1}
-                  className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}`}
+                  className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}${landed && landed === ev.span_id ? ' rt-landed' : ''}`}
+                  onBlur={landed && landed === ev.span_id ? () => setLanded(null) : undefined}
                   data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
                   data-violation={v ? 'true' : 'false'}
                   data-violation-reason={v ? clean(v.reason || 'tool_not_in_manifest') : undefined}>
@@ -278,8 +300,9 @@ function RunView({ runId }) {
                   )}
                   {v && v.note && <div className="rt-note">{clean(v.note)}</div>}
                   {v && agentId && v.findingId != null && findingIds.has(v.findingId) && (
-                    <Link className="rt-finding-link" to={`${agentPath(agentId)}#finding-${v.findingId}`}>View finding<Arrow /></Link>
+                    <Link className="rt-finding-link" to={`${agentPath(agentId)}#finding-${v.findingId}`}>{v.primary ? 'View finding' : 'Included in finding'}<Arrow /></Link>
                   )}
+                  {v && !(agentId && v.findingId != null && findingIds.has(v.findingId)) && <span className="rt-nofinding" data-testid="no-finding">No finding raised</span>}
                   {body && <Payload full={body} testid={ev.kind === 'tool_call' ? 'timeline-event-args' : 'timeline-event-content'} what={ev.kind === 'tool_call' ? 'arguments' : 'content'} />}
                   {(ev.kind === 'approval' || ev.kind === 'override') && (
                     <div className="rt-note rt-note-plain">{clean(ev.actor)}{ev.decision ? ` · ${clean(ev.decision)}` : ''}{ev.reason ? ` · ${clean(ev.reason)}` : ''}</div>

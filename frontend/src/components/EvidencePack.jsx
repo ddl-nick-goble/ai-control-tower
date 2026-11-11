@@ -64,8 +64,15 @@ export default function EvidencePack({ pack }) {
   // The header button and this card can be far apart: bring the finished pack into view and move focus to it.
   React.useEffect(() => {
     if (!doneAt || !ref.current) return
-    ref.current.scrollIntoView({ block: 'start', behavior: 'smooth' })
-    ref.current.focus({ preventScroll: true })
+    const el = ref.current
+    const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ block: 'start', behavior: calm ? 'auto' : 'smooth' })
+    el.focus({ preventScroll: true })
+    // programmatic focus: keep a visible ring until the card loses focus
+    el.setAttribute('data-landed', '')
+    const clear = () => el.removeAttribute('data-landed')
+    el.addEventListener('blur', clear, { once: true })
+    return () => el.removeEventListener('blur', clear)
   }, [doneAt])
   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
   return (

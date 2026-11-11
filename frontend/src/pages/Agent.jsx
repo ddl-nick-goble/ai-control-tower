@@ -97,7 +97,7 @@ function Dependencies({ id }) {
   return (
     <Card title="Dependencies" className="ag-ord-5">
       {error && <InlineError error={error} what="dependencies" onRetry={() => setRev((r) => r + 1)} />}
-      {loading && !data && !error && <Skel what="dependencies" />}
+      {loading && !data && !error && <Skel what="dependencies" lines={3} className="ag-skel-dependencies" />}
       {data && !data.models.length && !data.mcp_servers.length && !data.tools.length && <p className="ag-note"><None>None declared</None></p>}
       {data && (data.models.length > 0 || data.mcp_servers.length > 0 || data.tools.length > 0) && (
         <Dl rows={[
@@ -127,7 +127,7 @@ function Validation({ id }) {
   return (
     <Card title="Validation" testid="validation-card" className="ag-ord-5">
       {error && <InlineError error={error} what="validation" onRetry={() => setRev((r) => r + 1)} />}
-      {loading && !data && !error && <Skel what="validation" />}
+      {loading && !data && !error && <Skel what="validation" lines={6} className="ag-skel-validation" />}
       {!loading && !error && !data && <Empty title="No validation record" hint="Validation scores appear here once the agent has been evaluated." />}
       {data && (
         <>
@@ -198,7 +198,7 @@ function Findings({ fnd, hl, onRetry }) {
   const { data, error, loading } = fnd
   const findings = data || []
   return (
-    <Card title="Findings" className="ag-ord-2" actions={data ? <span className="ag-count">{nf(findings.length)}</span> : null}>
+    <Card title="Findings" className="ag-ord-2" actions={data ? <span className="ag-count">{nf(findings.length)}</span> : error ? <span className="ag-count" title="Count unavailable">–</span> : null}>
       {error && !data && <InlineError error={error} what="findings" onRetry={onRetry} />}
       {loading && !data && !error && <Skel what="findings" />}
       {data && !findings.length && <Empty title="No findings." hint="Scope drift and policy findings for this agent appear here." />}
@@ -206,6 +206,8 @@ function Findings({ fnd, hl, onRetry }) {
         <ul className="ag-findings">
           {findings.map((f) => {
             const spanId = f.span_id || (f.detail && f.detail.violations && f.detail.violations[0] && f.detail.violations[0].span_id) || ''
+            const viol = (f.detail && f.detail.violations) || []
+            const nViol = viol.length
             const sev = SEV.includes(f.severity) ? f.severity : 'low'
             const src = f.explanation && (!(f.detail && f.detail.explanation_model) || f.detail.explanation_model === 'mock-llm')
             return (
@@ -217,6 +219,7 @@ function Findings({ fnd, hl, onRetry }) {
                     <strong className="ag-wrap">{clean(f.tool)}</strong>
                     <span className="pill ag-status">{fmtStatus(f.status)}</span>
                   </div>
+                  {nViol > 1 && <div className="ag-finding-viol" data-testid="finding-violations">{nViol} violations in this run: {viol.map((v) => clean(v.tool)).filter(Boolean).join(', ')}</div>}
                   <div className="ag-reason" data-testid="finding-reason"><Markdown text={clean(f.explanation) || 'No explanation recorded.'} /></div>
                   {src && (
                     <span className="ag-tag" data-testid="finding-explanation-source">
@@ -253,7 +256,7 @@ function Runs({ runs, onRetry }) {
       {runs.data && !list.length && <Empty title="No runs recorded." hint="Runs appear here once the agent's traces have been ingested." />}
       {list.length > 0 && (
         <table className="ds-table ag-table ag-runs">
-          <colgroup><col /><col className="c-rstart" /><col className="c-rspans" /><col className="c-rgo" /></colgroup>
+          <colgroup><col className="c-rrun" /><col className="c-rstart" /><col className="c-rspans" /><col className="c-rgo" /></colgroup>
           <thead><tr><th scope="col">Run</th><th scope="col">Started</th><th scope="col" className="num">Spans</th><th scope="col"><span className="ds-sr">Open</span></th></tr></thead>
           <tbody>
             {list.map((r) => (
@@ -277,10 +280,10 @@ function Runs({ runs, onRetry }) {
 function Overview({ a }) {
   return (
     <Card title="Overview" className="ag-ord-1">
-      <Dl testid="agent-details" rows={[
+      <Dl testid="agent-details" className="ag-dl-tight" rows={[
         ['Agent ID', <IdValue key="i" value={a.id} label="agent ID" />],
         ['Source', sourceLabel(a.source_platform)],
-        ['Owner', a.owner ? <span className="ds-trunc" title={clean(a.owner)}>{clean(a.owner)}</span> : <None>—</None>],
+        ['Owner', a.owner ? <IdValue key="o" value={clean(a.owner)} label="owner" testid="agent-owner" plain /> : <None>—</None>],
         ['Origin', clean(a.origin) || <None>—</None>],
         ['Last seen', <span className="ds-nowrap ag-ink">{fmtTs(a.last_seen)}</span>],
       ]} />
