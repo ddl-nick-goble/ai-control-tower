@@ -1,6 +1,6 @@
 # Plan: Superblocks first principles in Agent Control Tower (ACT)
 
-Status: PROPOSED, waiting for Nick's go-ahead. Written 2026-11-11.
+Status: APPROVED 2026-11-11 (Nick: "go ahead with the superblocks plan too"). T-27 and T-31 are replaced by build/import-wizard-plan.md (T-44, T-43). Written 2026-11-11.
 Source: docs.superblocks.com (what-is-superblocks, building-with-clark, admin/org-administration, enterprise/deployment-overview, integrations/overview, admin/code-security). Pages on audit, versioning and environment promotion were not read; items that rely on them are marked (inferred).
 
 ## 1. The idea in one line
@@ -90,3 +90,9 @@ The Should and Could ACs get written in the same style when those tasks are sche
 4. **Policy edits in a regulated demo.** Should "Apply" also attach the policy change to the Governance bundle? Proposed: yes, as evidence on each affected agent's bundle.
 5. **LLM "Explain this finding"** stays out unless the LLM Gateway consent is accepted.
 6. Superblocks pages on audit, versioning and environment promotion weren't read; P7 and P8 follow the stated principle, not a documented screen.
+
+## 7. Decisions taken (2026-11-11, defaults until Nick says otherwise)
+- Roles (T-26) are managed by admins on the in-app Settings page (T-39), which already holds the Admins list; Domino groups later.
+- Applying a policy change attaches it as evidence to each affected agent's Governance bundle.
+- "Explain this finding" (LLM) stays out until the LLM Gateway consent is accepted.
+- Spend at approval: about $110 of $1,900.

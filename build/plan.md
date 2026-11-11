@@ -162,3 +162,18 @@ Go-ahead for T-39 and the import wizard plan (build/import-wizard-plan.md). Defa
 - ST-6 Access: only admins may view or change Settings: the project owner (DOMINO_PROJECT_OWNER) plus users listed in the "Admins" field on the page. Other signed-in users get 403 and see no Settings link; anonymous users get 401.
 - ST-7 Same design system and S-5 quality bar; designed loading, empty, error and saved states; nothing in the UI mentions Claude.
 Touches: new backend/settings.py, backend/routes/settings.py, backend/db.py (settings table), backend/demo.py + backend/main.py (runtime demo switch, DB selection), backend/llm.py, backend/external.py and other env readers (switch to the accessor), new frontend/src/pages/Settings.jsx, nav entry in the shell component, frontend/dist. T-19b must not edit the shell or the backend files above. Builder: builder. QA: test-author, ui-tester, visual-reviewer, code-reviewer. Branch task/T-39, starts from main after T-19a merges.
+
+## Combined schedule (2026-11-11): T-19, T-39, Superblocks plan (T-20..T-33), import wizard (T-40..T-46)
+Superblocks plan approved by Nick. At most three tasks run at once; tasks in a wave don't share files.
+| Wave | Tasks |
+|------|-------|
+| W1 | T-19a (in progress) |
+| W2 | T-19b, T-39 |
+| W3 | T-20 (navigation + routes for Home, Findings, Policies, Audit, Connections, Import) |
+| W4 | T-21 Audit, T-22 Approval gate, T-42 Suggested scores |
+| W5 | T-40 Connections backend, T-23 Findings center, T-25 Policies |
+| W6 | T-41 Discovery, T-45 Live adapters, T-30 Identity lens |
+| W7 | T-43 Import wizard, T-24 Home, T-26 Roles |
+| W8 | T-44 Connections page + sync, T-28 Change history, T-29 Standards |
+| W9 | T-32 Data residency, then T-33 + T-46 combined: demo seed for every screen, republish the App, demo walk |
+Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could ACs are written when the task is scheduled), T-40..T-46 in build/import-wizard-plan.md section 5, T-39 above. Spend at approval: about $110 of $1,900.
