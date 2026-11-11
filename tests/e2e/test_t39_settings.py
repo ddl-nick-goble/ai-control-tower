@@ -31,7 +31,7 @@ import pytest
 from playwright.sync_api import expect
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-PORT_A, PORT_B = "9893", "9894"
+PORT_A, PORT_B, PORT_C = "9893", "9894", "9895"
 SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-39"
 OWNER = {"X-Domino-User-Id": "owner-1", "X-Domino-User": "owner.user"}
 PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
@@ -44,11 +44,22 @@ def _qa_dir(monkeypatch):
     monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
+# Every env var that names a setting the page manages: stripped so results do not depend on the workspace.
+_MANAGED_ENV = {
+    "ACT_DEMO_MODE", "ACT_LLM_PROVIDER", "LLM_GATEWAY_URL", "BREAK_CLASSIFIER_ENDPOINT_URL", "BREAK_CLASSIFIER_ACCESS_KEY",
+    "ACT_EXTERNAL_ALLOW_HOSTS", "ACT_TRUSTED_JWKS_PATH", "ACT_SERVICE_ACCOUNTS", "ACT_POLICY_AGENTIC_ID",
+    "ACT_POLICY_MODEL_ID", "ACT_AWS_ROLE_ARN", "ACT_AWS_EXTERNAL_ID", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    "ACT_GOOGLE_SERVICE_ACCOUNT_JSON", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "DATABRICKS_HOST",
+    "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET", "ACT_ADMINS", "ACT_SECRET_KEY",
+}
+
+
 def _start(tmp, port, extra):
     if shutil.which("fuser"):
         subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
     time.sleep(1)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("ACT_DEMO", "ACT_SECRET", "LLM_GATEWAY"))}
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("ACT_DEMO", "ACT_SECRET", "LLM_GATEWAY")) and k not in _MANAGED_ENV}
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0", "ACT_DB": str(tmp / "act.db"),
                 "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": "owner.user"})
     env.update(extra)
@@ -100,6 +111,13 @@ def app_a(tmp_path_factory):
 @pytest.fixture(scope="module")
 def app_b(tmp_path_factory):
     p = _start(tmp_path_factory.mktemp("t39b"), PORT_B, {"ACT_SECRET_KEY": "e2e-test-secret-key-0123456789abcdef"})
+    yield p[2]
+    _stop(p[0], p[1])
+
+
+@pytest.fixture(scope="module")
+def app_c(tmp_path_factory):
+    p = _start(tmp_path_factory.mktemp("t39c"), PORT_C, {"ACT_DEMO_MODE": "1"})
     yield p[2]
     _stop(p[0], p[1])
 
@@ -246,7 +264,30 @@ def test_st5_demo_switch_confirm_and_live_banner(page, shot, owner):
     shot("then")
 
 
+def test_st5_demo_mode_variable_locks_switch(page, context, shot, app_c):
+    context.set_extra_http_headers(OWNER)
+    page.goto(app_c + "#/settings")
+    expect(page.get_by_role("heading", level=1, name="Settings")).to_be_visible()
+    sw = page.get_by_role("switch", name="Demo mode")
+    expect(sw).to_have_attribute("aria-checked", "true")
+    expect(sw).to_be_disabled()
+    expect(page.get_by_test_id("settings-page")).to_contain_text("Set by project variable")
+    sw.click(force=True)
+    expect(page.get_by_role("dialog").or_(page.get_by_role("alertdialog"))).to_have_count(0)
+    shot("then")
+
+
 # ---------------------------------------------------------------- ST-6
+def test_st6_anonymous_gets_401_and_sign_in_message(page, context, shot, base_url):
+    context.set_extra_http_headers({})
+    assert page.request.get("./api/settings").status == 401
+    page.goto("./#/settings")
+    expect(page.get_by_text(re.compile(r"sign in|sign-in|log in", re.I)).first).to_be_visible()
+    expect(page.get_by_role("heading", name="Platform credentials")).to_have_count(0)
+    expect(page.get_by_role("button", name="Save")).to_have_count(0)
+    shot("then")
+
+
 def test_st6_non_admin_no_link_no_access(page, context, shot, base_url):
     context.set_extra_http_headers(PLAIN)
     page.goto("./#/")
@@ -283,8 +324,11 @@ def test_st7_plain_field_saved_confirmation_and_persists(page, shot, owner):
 
 def test_st7_loading_state(page, shot, owner):
     def slow(route):
-        page.wait_for_timeout(1500)
-        route.continue_()
+        time.sleep(1.5)
+        try:
+            route.continue_()
+        except Exception:
+            pass  # target closed
     page.route(re.compile(r"/api/settings$"), slow)
     page.goto("./#/settings")
     expect(page.get_by_role("status").filter(has_text=re.compile("loading", re.I)).first).to_be_visible()
