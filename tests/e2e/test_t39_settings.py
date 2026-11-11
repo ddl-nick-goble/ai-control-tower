@@ -1,7 +1,7 @@
 """T-39 e2e: Settings page (ST-1..ST-7).
 
 Own apps: A on 9893 (owner = DOMINO_PROJECT_OWNER "owner.user", generated secret key file, LLM_GATEWAY_URL set as a project
-variable, demo off) and B on 9894 (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39/.
+variable, demo off) and B on 9894 (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39-run3/.
 Identity: owner signs in with X-Domino-User "owner.user"; a non-admin with "plain.user".
 data-testid / role contract (role/label/text locators are primary):
   settings-page        page root at #/settings; h1 "Settings"; primary nav link "Settings" (owners/admins only)
@@ -32,7 +32,7 @@ from playwright.sync_api import expect
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
 PORT_A, PORT_B, PORT_C = "9893", "9894", "9895"
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-39"
+SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-39-run3"
 OWNER = {"X-Domino-User-Id": "owner-1", "X-Domino-User": "owner.user"}
 PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
 SECRET = "s3cr3t-VALUE-9f8e7d6c"
