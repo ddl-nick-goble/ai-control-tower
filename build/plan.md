@@ -170,7 +170,7 @@ Superblocks plan approved by Nick. At most three tasks run at once; tasks in a w
 |------|-------|
 | W1 | T-19a (in progress) |
 | W2 | T-19b (task/T-19b, worktree created from 3dd366e), T-39 (task/T-39, worktree created from 3dd366e) |
-| W3 | T-20 (navigation + routes for Home, Findings, Policies, Audit, Connections, Import) |
+| W3 | T-20 (navigation + routes for Home, Findings, Policies, Audit, Connections, Import), T-19f (Fleet table CSS cleanup), T-39f (Settings follow-ups) |
 | W4 | T-21 Audit, T-22 Approval gate, T-42 Suggested scores |
 | W5 | T-40 Connections backend, T-23 Findings center, T-25 Policies |
 | W6 | T-41 Discovery, T-45 Live adapters, T-30 Identity lens |
@@ -234,3 +234,19 @@ Touches: tests/e2e/ only, plus requirements-dev or the README test section. Owne
 - 2026-11-11: T-39 post-merge code tests on main 311c986: 634 passed, 3 skipped (same 3 skips as before). T-39 DONE; worktree removed.
 - 2026-11-11: T-19b rebased onto main 311c986 -> 64dfc8d (only dist conflicted; rebuilt). tests/ identical to baseline 9c1fbb8 apart from T-39's files now on main; test baseline now 64dfc8d. UI run 4 (task files + full pre-merge suite, captures to qa/T-19b-run4) running, then design review r4.
 - 2026-11-11 (session resume 3): T-19b UI run 4 had been interrupted (uncommitted tests/e2e/test_t19b_run4_captures.py, partial screens in qa/T-19b-run4); ui-tester restarted it. T-47 H-3/H-4 runs started in parallel (free ports).
+
+## T-19f (added 2026-11-11, Nick approved): Fleet table CSS cleanup (from build/review/T-19b-code-final.md)
+- F-1 Drop `.ds-table-wrap { min-height: 100vh }` (design.css). Short Fleet tables have no blank viewport of space under them.
+- F-2 test_s2_table_sticky_header_hover_and_cells still proves the thead stays pinned, by seeding enough agents to scroll (or a smaller viewport), with and without the demo banner. No weaker assertion.
+- F-3 Scope `.ds-table th:nth-child(2) { min-width }` to col.c-name, and the th box-shadow to `.ds-table-card > .ds-table th`, so they don't hit the Agent Runs/Approvals tables. Remove the dead `.c-name-h`.
+Touches: frontend/src/design.css (table rules only), the S-2 e2e test, frontend/dist. Depends on: T-19b merged. Builder: builder. QA: ui-tester (test change first), visual-reviewer, code-reviewer. Branch task/T-19f.
+File rule for W3: T-19f owns design.css. T-20 puts any new nav styles in the shell component's own stylesheet or waits for T-19f to merge.
+
+## T-39f (added 2026-11-11, Nick approved): Settings follow-ups (build/review/T-39-followups.md)
+- SF-1 A DemoGuardError from switch_off on the delete_setting path, the put_setting(false) path, or the _store-failure rollback returns 409/503 "try again", and the stored setting and live demo mode stay consistent (no 500, no disagreement until restart).
+- SF-2 Two simultaneous demo toggles don't stall each other for 15s: requests waiting on _switch_mutex aren't counted as in-flight, or the second one retries.
+- SF-3 /api/demo/run doesn't hold _rt_lock for the whole recon run.
+- SF-4 The Clear dialog's accessible name is "Clear key" with no sr-only "(confirm)". test_t39_settings.py is updated to match, and non-secret fields say "Clear value".
+- SF-5 The settings.py comment near the env-strip mentions the banner.
+Touches: backend/settings.py, backend/routes/settings.py, backend/demo.py (lock scope), frontend/src/pages/Settings.jsx, tests/test_t39_settings.py, tests/e2e/test_t39_settings.py, frontend/dist. Depends on: T-39 (merged). Builder: builder. QA: test-author, ui-tester, code-reviewer. Branch task/T-39f.
+- 2026-11-11: Cleanup (Nick approved): deleted 23 merged remote task branches (all but T-19b and T-47). T-19f and T-39f added to W3.
