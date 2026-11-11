@@ -39,6 +39,16 @@ export const registerExternal = (body) => request('agents/external', {
 // Demo mode (served only when ACT_DEMO_MODE=1 on the server).
 let healthPromise = null
 export const health = () => (healthPromise ||= request('health').catch(() => ({ demo_mode: false, stand_ins: [] })))
+// Re-read /api/health after the demo switch changed (the shell listens and re-renders the banner).
+export const refreshHealth = () => { healthPromise = null; window.dispatchEvent(new Event('act:health')) }
+
+const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+export const settingsApi = {
+  access: () => request('settings/access'),
+  list: () => request('settings'),
+  put: (name, value) => request(`settings/${encodeURIComponent(name)}`, json('PUT', { value })),
+  del: (name) => request(`settings/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+}
 export const standIn = (h, name) => ((h && h.stand_ins) || []).find((s) => s.name === name)
 const post = (path) => request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
 export const demoApi = {

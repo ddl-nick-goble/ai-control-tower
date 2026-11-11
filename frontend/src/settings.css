@@ -1,0 +1,39 @@
+/* Settings page. Uses the shared tokens from design.css. */
+.st-stack { display: flex; flex-direction: column; gap: var(--ds-s3); max-width: 760px }
+.st-section-head { padding: var(--ds-s3) var(--ds-s3) 0 }
+.st-section-head .ds-helper { margin-top: 2px }
+.st-section-body { padding: var(--ds-s3); display: flex; flex-direction: column; gap: var(--ds-s3) }
+.st-field, .st-block { border: 0; margin: 0; padding: 0; min-width: 0 }
+.st-block { border: 1px solid var(--ds-line); border-radius: var(--ds-radius); padding: var(--ds-s2); display: flex; flex-direction: column; gap: var(--ds-s2) }
+.st-block-title { font-size: 15px; font-weight: 650; color: var(--ds-ink); padding: 0 var(--ds-s1); margin-left: calc(var(--ds-s1) * -1) }
+.st-legend { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink); padding: 0; margin-bottom: var(--ds-s1) }
+.st-row { display: flex; gap: var(--ds-s1); align-items: center; flex-wrap: wrap }
+.st-row .ds-input { flex: 1 1 220px; min-width: 0 }
+.st-row .ds-input[readonly] { background: #f0f2f5; color: var(--ds-text) }
+.st-row .ds-btn { height: 44px }
+.st-secret-line { flex: 1 1 220px; min-height: 44px; display: flex; align-items: center }
+.st-state { font-size: 14px; color: var(--ds-text) }
+.st-state-set::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #067647; margin-right: 8px }
+.st-state-lock { font-weight: 600; color: var(--ds-ink) }
+.st-meta { margin-top: 6px }
+.st-help { margin-top: 6px }
+.st-help:empty { display: none }
+.st-status { margin: 6px 0 0; font-size: 13px; line-height: 20px; font-weight: 600; color: #067647; min-height: 0 }
+.st-status:empty { display: none }
+.st-error { margin: 6px 0 0; font-size: 13px; line-height: 20px; font-weight: 500; color: var(--ds-danger); overflow-wrap: anywhere }
+.st-loading { display: flex; flex-direction: column; gap: var(--ds-s2); max-width: 560px; padding: var(--ds-s2) 0 }
+.st-warning { display: flex; gap: 12px; align-items: flex-start; padding: var(--ds-s2); border: 1px solid #f0c36d; background: #fff7e6; color: #6b4a00; border-radius: var(--ds-radius); font-size: 14px; line-height: 22px }
+.st-warning svg { flex: none; margin-top: 1px }
+.st-warning p { margin: 0 } .st-warning p + p { margin-top: 4px }
+.st-demo-row { display: flex; gap: var(--ds-s2); align-items: flex-start }
+.st-switch { flex: none; position: relative; width: 48px; height: 28px; border-radius: 14px; border: 1px solid #6b7280; background: #6b7280; cursor: pointer; padding: 0; transition: background .12s }
+.st-switch[aria-checked="true"] { background: var(--ds-accent); border-color: var(--ds-accent) }
+.st-switch:disabled { opacity: .6; cursor: not-allowed }
+.st-knob { position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .12s }
+.st-switch[aria-checked="true"] .st-knob { transform: translateX(20px) }
+.st-switch:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 3px }
+.st-scrim { position: fixed; inset: 0; background: rgba(16, 24, 40, .5); display: grid; place-items: center; z-index: 50; padding: var(--ds-s2) }
+.st-dialog { width: 100%; max-width: 460px; padding: var(--ds-s3); box-shadow: 0 12px 32px rgba(16, 24, 40, .24) }
+.st-dlg-body { font-size: 14px; margin: var(--ds-s1) 0 var(--ds-s3) }
+.st-dlg-actions { display: flex; justify-content: flex-end; gap: var(--ds-s1) }
+@media (prefers-reduced-motion: reduce) { .st-switch, .st-knob { transition: none } }

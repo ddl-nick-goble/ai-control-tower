@@ -30,6 +30,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
+from .settings import get_setting
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
@@ -60,7 +62,7 @@ def check_url(url) -> str:
 
 
 def _allow_hosts() -> set:
-    return {h.strip().lower().strip("[]") for h in os.environ.get("ACT_EXTERNAL_ALLOW_HOSTS", "").split(",") if h.strip()}
+    return {h.strip().lower().strip("[]") for h in (get_setting("external_allow_hosts") or "").split(",") if h.strip()}
 
 
 def _always_blocked(ip) -> bool:
@@ -245,7 +247,7 @@ def _b64u(b: bytes) -> str:
 
 
 def trusted_keys() -> list:
-    path = os.environ.get("ACT_TRUSTED_JWKS_PATH")
+    path = get_setting("trusted_jwks_path")
     if not path:
         return []
     try:

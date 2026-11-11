@@ -13,7 +13,14 @@ from .. import db, demo
 from ..domino_identity import User, require_user
 from .approvals import approve_as
 
-router = APIRouter()
+
+
+def _demo_only():
+    if not demo.enabled():  # /api/demo/* exists only while demo mode is on (env or the Settings switch)
+        raise HTTPException(404, "Not found")
+
+
+router = APIRouter(dependencies=[Depends(_demo_only)])
 log = logging.getLogger(__name__)
 
 

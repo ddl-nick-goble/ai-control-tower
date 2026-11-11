@@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, demo, llm, routes
+from . import db, demo, llm, routes, settings
 from .prefix import ProxyPrefixMiddleware
 from .domino_identity import get_user
 
@@ -23,16 +23,19 @@ async def lifespan(_app):
     llm.warn_if_mock()
     db.init_db()
     _app.state.demo_guard = None
-    if demo.enabled():
-        demo.warn_live_switches()
-        try:
+    try:
+        if demo.env_enabled():
+            demo.warn_live_switches()
             await run_in_threadpool(demo.ensure_seeded)
-        except demo.DemoGuardError as e:
-            _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
+        else:
+            await run_in_threadpool(settings.apply_demo_setting)  # the switch saved from the Settings page
+    except demo.DemoGuardError as e:
+        _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
     db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
     try:
         yield
     finally:
+        demo.switch_off()
         demo.restore_defaults()
 
 
@@ -63,13 +66,11 @@ async def write_guard(request, call_next):
 def health():
     return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
             "llm_provider": demo.effective_llm_provider(),
-            "demo_guard": getattr(app.state, "demo_guard", None)}
+            "demo_guard": getattr(app.state, "demo_guard", None) if demo.enabled() else None}
 
 
 for _m in pkgutil.iter_modules(routes.__path__):
     _mod = importlib.import_module(f"{routes.__name__}.{_m.name}")
-    if _m.name == "demo" and not demo.enabled():
-        continue  # /api/demo/* is mounted only in demo mode; otherwise it falls through to the 404 catch-all
     if hasattr(_mod, "router"):
         app.include_router(_mod.router)
 

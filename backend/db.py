@@ -26,23 +26,44 @@ try:
 except OSError:
     log.exception("could not create DB directory for %s", DB_PATH)
 
-engine = create_engine(
-    f"sqlite:///{DB_PATH}",
-    poolclass=QueuePool,
-    pool_size=20,
-    max_overflow=5,
-    pool_pre_ping=False,
-    connect_args={"check_same_thread": False, "timeout": 30},
-)
+def _make_engine(path: str):
+    eng = create_engine(
+        f"sqlite:///{path}",
+        poolclass=QueuePool,
+        pool_size=20,
+        max_overflow=5,
+        pool_pre_ping=False,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    event.listen(eng, "connect", _on_connect)
+    return eng
 
 
-@event.listens_for(engine, "connect")
 def _on_connect(dbapi_conn, _record):
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute("PRAGMA busy_timeout=30000")
     cur.close()
+
+
+engine = _make_engine(DB_PATH)
+# The "real" DB (settings, audit of settings changes, key file) never changes; `engine` is the active DB
+# and is swapped to a demo DB by the runtime demo switch (use_path / use_real).
+real_engine = engine
+REAL_DB_PATH = DB_PATH
+
+
+def use_path(path: str) -> None:
+    """Make `path` the active DB (runtime demo switch). The real DB stays reachable as real_engine."""
+    global engine, DB_PATH
+    Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    engine, DB_PATH = _make_engine(path), path
+
+
+def use_real() -> None:
+    global engine, DB_PATH
+    engine, DB_PATH = real_engine, REAL_DB_PATH
 
 
 metadata = MetaData()
@@ -208,6 +229,16 @@ audit_events = Table(
     Column("target", String),
     Column("ts", String),
     Column("detail", JSON),
+)
+
+# In-app Settings (T-39). Secret values are Fernet ciphertext; plain values are text. Always in the real DB.
+app_settings = Table(
+    "app_settings", metadata,
+    Column("name", String, primary_key=True),
+    Column("value", Text),
+    Column("is_secret", Boolean, default=False),
+    Column("changed_by", String),
+    Column("changed_at", String),
 )
 
 

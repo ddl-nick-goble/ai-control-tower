@@ -10,6 +10,7 @@ Off by default: with ACT_DEMO_MODE unset nothing here changes any behaviour.
 """
 import logging
 import os
+import threading
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -45,8 +46,17 @@ _applied: list = []
 _db_new = False  # ACT_DB was filled by demo defaults, or its file did not exist at startup
 
 
-def enabled() -> bool:
+_runtime = False  # the in-app Settings switch (no restart); ACT_DEMO_MODE in the environment always wins
+_applied_rt: list = []
+_rt_lock = threading.RLock()
+
+
+def env_enabled() -> bool:
     return (os.environ.get("ACT_DEMO_MODE") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def enabled() -> bool:
+    return env_enabled() or _runtime
 
 
 def default_db_path() -> str:
@@ -79,14 +89,19 @@ def apply_defaults() -> None:
         fill("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
 
 
+def _setting(name):
+    from .settings import get_setting
+    return get_setting(name)
+
+
 def effective_llm_provider() -> str:
-    return "mock" if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock" else "gateway"
+    return "mock" if (_setting("llm_provider") or "gateway").strip().lower() == "mock" else "gateway"
 
 
 def live_switches() -> list:
     out = []
     if effective_llm_provider() != "mock":
-        out.append("ACT_LLM_PROVIDER=" + (os.environ.get("ACT_LLM_PROVIDER") or "gateway"))
+        out.append("ACT_LLM_PROVIDER=" + (_setting("llm_provider") or "gateway"))
     uri = os.environ.get("MLFLOW_TRACKING_URI") or ""
     if uri and not uri.startswith(("file:", "/")):
         out.append("MLFLOW_TRACKING_URI (non-file)")
@@ -98,6 +113,58 @@ def warn_live_switches() -> None:
     sw = live_switches()
     if enabled() and sw:
         log.warning("demo mode is on but live switches are set (%s); those parts are NOT simulated", ", ".join(sw))
+
+
+def _fill_runtime(k, v) -> None:
+    if k not in os.environ:
+        os.environ[k] = v
+        _applied_rt.append(k)
+
+
+def applied_env() -> set:
+    """Variables demo mode filled in itself; Settings treats them as defaults, not as project variables."""
+    return set(_applied) | set(_applied_rt)
+
+
+def switch_on() -> None:
+    """Runtime demo switch: activate the demo DB (seeding it if empty) and the demo stand-ins.
+    Raises DemoGuardError (and leaves demo off) when the demo DB may not be used."""
+    global _runtime, _db_new
+    from . import db
+    with _rt_lock:
+        if enabled():
+            return
+        path = default_db_path()
+        if Path(path).expanduser().resolve() == Path(db.REAL_DB_PATH).expanduser().resolve():
+            _refuse("refusing: the demo database path is the real database")
+        _db_new = not Path(path).expanduser().exists()
+        _runtime = True
+        for k, v in _ENV_DEFAULTS.items():
+            _fill_runtime(k, v)
+        demo_dir = Path(path).expanduser().resolve().parent
+        _fill_runtime("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
+        _fill_runtime("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
+        db.use_path(path)
+        try:
+            ensure_seeded()
+        except BaseException:
+            switch_off()
+            raise
+
+
+def switch_off() -> None:
+    global _runtime
+    from . import db
+    with _rt_lock:
+        if not _runtime:
+            return
+        _runtime = False
+        old = db.engine
+        db.use_real()
+        if old is not db.real_engine:
+            old.dispose()
+        while _applied_rt:
+            os.environ.pop(_applied_rt.pop(), None)
 
 
 def restore_defaults() -> None:
@@ -204,8 +271,8 @@ def reset():
     with db.engine.connect() as cx:
         if not _marker_present(cx):
             _refuse(f"refusing to reset {db.DB_PATH}: it is not a demo-owned database (no demo marker)")
-    with demo_governance.lock:
-        db.metadata.drop_all(db.engine)
+    with demo_governance.lock:  # app_settings is kept: when ACT_DEMO_MODE is in the environment it shares this DB
+        db.metadata.drop_all(db.engine, tables=[t for t in db.metadata.sorted_tables if t.name != "app_settings"])
         demo_governance.clear()
     db.init_db()
     _write_marker()
