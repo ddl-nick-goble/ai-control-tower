@@ -186,4 +186,4 @@ Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could
 - 2026-11-11: T-39 code tests tests/test_t39_settings.py (19, all fail as expected), pushed a10f4a9. Note for builder: ST-5 fixture redirects backend.demo.DATASET_DIR; key file = one file with 'key' in its name beside the DB, 0600, reused after restart.
 - 2026-11-11: End-of-wave W1 e2e on main 3dd366e: 113/113. UI tests for T-19b and T-39 being written (one ui-tester, sequential).
 - 2026-11-11: ST-2a added (no key warning in demo mode; key derived from any 32+ char string). test-author to add tests after the UI tests land.
-- 2026-11-11: T-19b UI tests tests/e2e/test_t19b_agent_run_pages.py (40: 27 fail, 13 guards pass), baseline b98ed39. T-39 UI tests tests/e2e/test_t39_settings.py (15 fail), a7d0094; ST-2a code test pending, then T-39 baseline.
+- 2026-11-11: T-19b UI tests tests/e2e/test_t19b_agent_run_pages.py (40: 27 fail, 13 guards pass), baseline b98ed39. T-39 UI tests tests/e2e/test_t39_settings.py (15 fail), a7d0094; ST-2a code tests added; T-39 baseline 97e320a.
