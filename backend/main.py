@@ -45,6 +45,8 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 @app.middleware("http")
 async def write_guard(request, call_next):
     """Reject unauthenticated writes on every path (incl. /v1/*) before routing."""
+    if request.method == "POST" and request.url.path == "/api/tiering/preview":
+        return await call_next(request)  # read-only scoring; the only anonymous POST
     if request.method in WRITE_METHODS and await run_in_threadpool(get_user, request) is None:
         return JSONResponse({"detail": "Authentication required"}, status_code=401)
     return await call_next(request)

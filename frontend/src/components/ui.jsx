@@ -48,12 +48,20 @@ function DemoBanner({ health: h }) {
       return () => clearTimeout(t)
     }
   }, [])
+  const [open, setOpen] = React.useState(false)
+  const n = h.stand_ins.length
   return (
     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
       <div className="ds-shell-inner demo-inner">
-        <strong>Demo mode: simulated data and stand-ins</strong>
-        {h.stand_ins.map((s) => <span className="demo-chip" key={s.name} data-stand-in={s.name}>{s.label}</span>)}
-        <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
+        <strong>Demo mode:</strong>
+        <span>simulated data</span>
+        <span className="demo-sep" aria-hidden="true">·</span>
+        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls="demo-stand-ins" onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
+        <span className="demo-sep" aria-hidden="true">·</span>
+        <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
+        <span className="demo-break" hidden={!open} />
+        <span id="demo-stand-ins" className="demo-panel-title" hidden={!open}>Demo mode: simulated data and stand-ins</span>
+        {h.stand_ins.map((s) => <span className="demo-chip" key={s.name} data-stand-in={s.name} hidden={!open}>{s.label}</span>)}
         {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
         {err && <span className="alert error" role="alert">{err}</span>}
         {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
@@ -75,6 +83,7 @@ export function Shell({ children }) {
   const h = useHealth()
   return (
     <div className="app">
+      <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
       {h && h.demo_mode && <DemoBanner health={h} />}
       <header className="ds-topbar" data-testid="app-topbar">
         <div className="ds-shell-inner ds-topbar-row">
@@ -86,7 +95,7 @@ export function Shell({ children }) {
           </nav>
         </div>
       </header>
-      <main className="content">{children}</main>
+      <main className="content" id="main" tabIndex={-1}>{children}</main>
     </div>
   )
 }

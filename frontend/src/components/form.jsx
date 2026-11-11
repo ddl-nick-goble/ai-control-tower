@@ -40,14 +40,14 @@ export function Button({ variant = 'secondary', busy, children, className, ...re
   )
 }
 
-export const Alert = React.forwardRef(function Alert({ tone = 'error', title, children, ...rest }, ref) {
+export const Alert = React.forwardRef(function Alert({ tone = 'error', title, children, actions, ...rest }, ref) {
   return (
     <div ref={ref} className={cx('ds-alert', `ds-alert-${tone}`)} role={tone === 'error' ? 'alert' : 'status'} {...rest}>
       <svg className="ds-alert-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
         <circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" strokeWidth="1.6" />
         <path d="M10 5.5v5.5M10 13.5v1.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       </svg>
-      <div>{title && <strong>{title}</strong>}<p>{children}</p></div>
+      <div>{title && <strong>{title}</strong>}<p>{children}</p>{actions && <div className="ds-alert-actions">{actions}</div>}</div>
     </div>
   )
 })

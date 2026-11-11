@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 DATASET_DIR = Path("/mnt/data/ai-control-tower/act")
 
+DEMO_AGENT_OWNER = "recon-ops@example-bank.com"
 SERVICE_ACCOUNT = "svc-act-recon-demo"
 APPROVER_ID = "demo-approver-simulated"
 APPROVER_NAME = "demo-approver (simulated second user)"

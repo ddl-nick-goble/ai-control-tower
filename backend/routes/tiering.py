@@ -1,16 +1,15 @@
 """POST /api/tiering/preview: read-only tier preview for the Register page (scores via backend/tiering.py)."""
 import math
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 
-from ..domino_identity import User, require_user
 from ..tiering import TieringInputRejected, score_tier
 
 router = APIRouter()
 
 
 @router.post("/api/tiering/preview")
-def preview_tier(body=Body(...), user: User = Depends(require_user)):
+def preview_tier(body=Body(...)):
     if not isinstance(body, dict) or not isinstance(body.get("criteria"), dict):
         raise HTTPException(422, "body must be {criteria: {...}}")
     crit = body["criteria"]

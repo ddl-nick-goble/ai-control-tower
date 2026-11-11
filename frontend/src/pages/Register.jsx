@@ -57,6 +57,7 @@ export default function Register() {
   const [serverUrlError, setServerUrlError] = React.useState('')
   const [preview, setPreview] = React.useState(null)
   const [previewState, setPreviewState] = React.useState('loading') // loading | ready | error
+  const [previewStatus, setPreviewStatus] = React.useState(0)
   const inflight = React.useRef(false)
   const alertRef = React.useRef(null)
   const urlRef = React.useRef(null)
@@ -77,7 +78,7 @@ export default function Register() {
     const t = setTimeout(() => {
       previewTier(vals).then(
         (r) => { if (live) { setPreview(r); setPreviewState('ready') } },
-        () => { if (live) { setPreview(null); setPreviewState('error') } })
+        (err) => { if (live) { setPreview(null); setPreviewStatus(err?.status || 0); setPreviewState('error') } })
     }, 250)
     return () => { live = false; clearTimeout(t) }
   }, [vals])
@@ -154,8 +155,8 @@ export default function Register() {
           <Summary title="Summary" testid="register-summary">
             <div className={`ds-summary-tier${previewState === 'stale' ? ' ds-dim' : ''}`} aria-busy={previewState === 'stale' ? 'true' : undefined}>
               {preview ? <TierBadge tier={preview.tier} /> : <span className="ds-skeleton" aria-hidden="true" />}
-              <span className="ds-summary-tier-text" role={previewState === 'error' ? 'status' : undefined}>
-                {preview ? TIER_MEANING[preview.tier] : previewState === 'error' ? 'Preview unavailable' : 'Calculating…'}
+              <span className="ds-summary-tier-text" role="status">
+                {preview ? TIER_MEANING[preview.tier] : previewState === 'error' ? (previewStatus === 401 ? 'Sign in to Domino to see the tier preview' : 'Preview unavailable. Try again in a moment.') : 'Calculating…'}
               </span>
             </div>
             <dl className="ds-summary-list">

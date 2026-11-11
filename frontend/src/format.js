@@ -40,3 +40,33 @@ export function fmtMessages(v) {
   }
   return fmtJson(v)
 }
+
+// One lookup for how a source platform code is shown. Codes stay the filter values and data attributes.
+const SOURCE_LABELS = { aws: 'AWS AgentCore', google: 'Google', microsoft: 'Microsoft', databricks: 'Databricks', domino: 'Domino', external: 'External' }
+export function sourceLabel(code) {
+  if (!code) return 'Unknown'
+  if (SOURCE_LABELS[code]) return SOURCE_LABELS[code]
+  const t = String(code).replace(/[_-]+/g, ' ')
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
+// "2 min ago"; older than 30 days falls back to the UTC date.
+export function relTime(ts, now = Date.now()) {
+  if (!ts) return '-'
+  const d = new Date(ts)
+  if (isNaN(d)) return String(ts)
+  const sec = Math.round((now - d.getTime()) / 1000)
+  if (sec < 45) return 'just now'
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min} min ago`
+  const hr = Math.round(min / 60)
+  if (hr < 24) return `${hr} ${hr === 1 ? 'hour' : 'hours'} ago`
+  const day = Math.round(hr / 24)
+  if (day <= 30) return `${day} ${day === 1 ? 'day' : 'days'} ago`
+  return d.toISOString().slice(0, 10)
+}
+
+// The one place an agent page URL is built (ids contain ':'; keep them readable in the hash).
+export function agentPath(id) {
+  return `/agents/${encodeURIComponent(id).replace(/%3A/gi, ':')}`
+}
