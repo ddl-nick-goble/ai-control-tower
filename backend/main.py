@@ -1,6 +1,7 @@
 """ACT FastAPI app: API + built frontend."""
 import asyncio
 import importlib
+import logging
 import os
 import pkgutil
 import time
@@ -16,6 +17,7 @@ from . import db, demo, llm, routes, settings
 from .prefix import ProxyPrefixMiddleware
 from .domino_identity import get_user
 
+log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "frontend" / "dist"
 
@@ -37,29 +39,44 @@ async def lifespan(_app):
     try:
         yield
     finally:
-        demo.switch_off()
+        try:
+            demo.switch_off()
+        except demo.DemoGuardError:
+            log.warning("demo switch-off at shutdown skipped: requests still running")
         demo.restore_defaults()
 
 
 app = FastAPI(title="Agent Control Tower", lifespan=lifespan)
 
 
+class DemoSwitchGate:
+    """Pure ASGI gate: counts requests in flight and holds new ones while the runtime demo switch runs, so the
+    switch can wait for in-flight requests to drain and none sees a half-seeded DB. /api/health is exempt."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"].endswith("/api/health"):
+            return await self.app(scope, receive, send)
+        deadline = time.monotonic() + 30
+        while not demo.enter():  # atomic: refuses while a switch runs, else counts this request
+            if time.monotonic() > deadline:
+                resp = JSONResponse({"detail": "The demo switch is still running. Try again in a moment."},
+                                    status_code=503, headers={"Retry-After": "5"})
+                return await resp(scope, receive, send)
+            await asyncio.sleep(0.05)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            demo.leave()
+
+
+app.add_middleware(DemoSwitchGate)
+
+
 MAX_PREVIEW_BYTES = 8 * 1024
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-
-
-@app.middleware("http")
-async def demo_switch_gate(request, call_next):
-    """Hold requests while the runtime demo switch seeds/flips the database, so none sees a half-seeded DB."""
-    if request.url.path != "/api/health" and demo.switching():
-        # Wait without holding a worker thread; give up after 30 s instead of queueing forever.
-        deadline = time.monotonic() + 30
-        while demo.switching():
-            if time.monotonic() > deadline:
-                return JSONResponse({"detail": "The demo switch is still running. Try again in a moment."},
-                                    status_code=503, headers={"Retry-After": "5"})
-            await asyncio.sleep(0.05)
-    return await call_next(request)
 
 
 @app.middleware("http")

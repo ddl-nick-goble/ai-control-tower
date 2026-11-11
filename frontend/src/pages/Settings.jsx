@@ -15,7 +15,7 @@ const COPY = {
   service_accounts: ['Service accounts', 'Comma-separated distinct-agent accounts.'],
   policy_agentic_id: ['Governance policy id (agentic bundle)', 'Policy used for agentic system bundles.'],
   policy_model_id: ['Governance policy id (model bundle)', 'Policy used for model bundles.'],
-  admins: ['Admins', 'Comma-separated usernames. The owner is always an admin.'],
+  admins: ['Admins', 'Comma-separated usernames. The owner is always included.'],
 }
 const PLATFORMS = [
   { id: 'aws', title: 'AWS AgentCore', blurb: 'An IAM role ACT assumes, or an access key as a fallback.',
@@ -117,9 +117,9 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
   else if (!entry.is_set && layout === 'row') badge = <Badge>Not set</Badge>
 
   let hintText = hint
-  if (entry.locked) hintText = <>Set by the project variable <code>{entry.env}</code>. Change it there.</>
+  if (entry.locked) hintText = <>Set by <code>{entry.env}</code>. Change it there.</>
   else if (unreadable) hintText = 'The secret key changed, so this value can no longer be read. Enter it again.'
-  else if (layout === 'stack' && setLine) hintText = <span className="st-setline" title={setLine}>{setLine}</span>
+  else if (setLine) hintText = <span className="st-setline">{setLine}</span>  // full text, wraps rather than truncates
 
   const labelId = `${id}-l`, hintId = `${id}-h`
   const plainLocked = entry.locked
@@ -128,7 +128,7 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
       {showInput || plainLocked && !secret
         ? <label id={labelId} htmlFor={`${id}-i`} className="st-label">{label}</label>
         : <span id={labelId} className="st-label">{label}</span>}
-      <div className="st-state">{badge}{layout === 'row' && setLine && <span className="st-setline" title={setLine}>{setLine}</span>}</div>
+      <div className="st-state">{badge}</div>
       <div className="st-ctl">
         {plainLocked && !secret && <input id={`${id}-i`} className="ds-input" type="text" readOnly value={entry.value || ''} aria-describedby={hintId} />}
         {plainLocked && secret && <div className="st-masked st-masked-lock" aria-hidden="true">••••••••</div>}
@@ -151,7 +151,7 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
         ? <p id={hintId} className="st-hint st-hint-error" role="alert">{Icon.err}<span>{st.msg}</span></p>
         : <p id={hintId} className="st-hint">{hintText}</p>}
       {ask && (
-        <ConfirmDialog title={`Clear ${label}?`} danger onConfirm={clear} onCancel={() => setAsk(false)}
+        <ConfirmDialog title={`Clear ${label}?`} danger confirmLabel="Clear key" onConfirm={clear} onCancel={() => setAsk(false)}
                        body={secret ? 'The stored secret is deleted and cannot be recovered. You can enter a new one later.'
                          : 'The saved value is removed and the default applies.'} />
       )}
@@ -159,7 +159,7 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
   )
 }
 
-function ConfirmDialog({ title, body, danger, onConfirm, onCancel }) {
+function ConfirmDialog({ title, body, danger, confirmLabel, onConfirm, onCancel }) {
   const ref = React.useRef(null)
   const tid = React.useId(), bid = React.useId()
   React.useEffect(() => {
@@ -183,7 +183,8 @@ function ConfirmDialog({ title, body, danger, onConfirm, onCancel }) {
         <p id={bid} className="st-dlg-body">{body}</p>
         <div className="st-dlg-actions">
           <Button onClick={onCancel}>Cancel</Button>
-          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>Confirm</Button>
+          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>
+            {confirmLabel ? <>{confirmLabel}<span className="ds-sr"> (confirm)</span></> : 'Confirm'}</Button>
         </div>
       </div>
     </div>, document.body)
@@ -360,6 +361,7 @@ export default function Settings() {
         <span className="st-empty-icon" aria-hidden="true">{Glyph.user}</span>
         <h2 className="ds-empty-title">Sign in to Domino to manage Settings</h2>
         <p className="ds-helper">Settings are limited to the project owner and the admins they list. Sign in to Domino, then open this page again.</p>
+        <Button variant="primary" onClick={() => window.location.reload()}>Reload after signing in</Button>
       </div>
     )
   } else if (state.phase === 'denied') {

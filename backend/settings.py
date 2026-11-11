@@ -346,17 +346,17 @@ def put_setting(user, name, value) -> dict:
         was_on = demo.enabled()
         if v == "true":
             try:
-                demo.switch_on()  # atomic: on failure nothing has changed
+                demo.switch_on(own=1)  # atomic: on failure nothing has changed
             except demo.DemoGuardError as e:
                 raise SettingError(409, str(e))
         try:
             _store(user, name, v, "settings.update")
         except Exception:
             if v == "true" and not was_on:
-                demo.switch_off()  # the value was not saved, so the app must not stay in demo mode
+                demo.switch_off(own=1)  # the value was not saved, so the app must not stay in demo mode
             raise
         if v == "false":
-            demo.switch_off()
+            demo.switch_off(own=1)
         return entry(name)
     stored = key_state()[0].encrypt(v.encode()).decode() if DEFS[name]["secret"] else v
     _store(user, name, stored, "settings.update")
@@ -367,7 +367,7 @@ def delete_setting(user, name) -> dict:
     _check_writable(name)
     _store(user, name, None, "settings.clear")
     if name == "demo_mode":
-        demo.switch_off()
+        demo.switch_off(own=1)
     return entry(name)
 
 

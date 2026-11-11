@@ -21,8 +21,8 @@
 /* a setting: label, status, control, hint (one grid, two layouts) */
 .st-f { display: grid; column-gap: var(--ds-s2); row-gap: 2px; min-width: 0 }
 .st-label { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
-.st-state { display: flex; align-items: center; justify-content: flex-end; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
-.st-setline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+.st-state { display: flex; align-items: center; justify-content: flex-start; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
+.st-setline { min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
 .st-hint .st-setline { display: block }
 .st-ctl { display: flex; align-items: center; gap: var(--ds-s1); min-width: 0 }
 .st-ctl .ds-input { flex: 1 1 0; min-width: 0; height: 36px; font-size: 14px }
@@ -43,7 +43,7 @@
 .ds-input[readonly] { background: #f5f6f8; color: var(--ds-text) }
 
 /* table row */
-.st-f-row { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr) minmax(0, 260px); grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
+.st-f-row { grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) 196px; grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
 .st-f-row .st-label { grid-area: label; align-self: end }
 .st-f-row .st-hint { grid-area: hint; align-self: start }
 .st-f-row .st-ctl { grid-area: ctl }
@@ -58,7 +58,7 @@
 
 /* platform cards: two-column grid inside the section card, fields paired two per row */
 .st-plat-wrap { padding: var(--ds-s2) var(--ds-s3) var(--ds-s3) }
-.st-plat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ds-s2); align-items: stretch }
+.st-plat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ds-s2); align-items: start }
 .st-plat { padding: 14px var(--ds-s2) var(--ds-s2); display: flex; flex-direction: column; box-shadow: none; background: #fbfcfd }
 .st-plat-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ds-s1) }
 .st-plat-title { margin: 0; text-transform: none; letter-spacing: normal; font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ds-ink) }
@@ -122,3 +122,5 @@
   .st-demo { grid-template-columns: minmax(0, 1fr); row-gap: 8px }
 }
 @media (prefers-reduced-motion: reduce) { .st-switch, .st-knob { transition: none } }
+
+.ds-empty .ds-helper { font-size: 13px; line-height: 20px }

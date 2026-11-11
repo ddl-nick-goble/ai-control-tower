@@ -261,7 +261,7 @@ app_settings = Table(
 )
 
 
-def _migrate() -> None:
+def _migrate(engine) -> None:
     """Idempotent additive migration: add any declared column missing from an existing table."""
     insp = inspect(engine)
     with engine.begin() as conn:
@@ -285,7 +285,7 @@ def _migrate() -> None:
                               "ON events (run_id, agent_id)"))
 
 
-def _ensure_findings_index() -> None:
+def _ensure_findings_index(engine) -> None:
     """Unique partial index for one scope_drift finding per run; never crash on legacy duplicates."""
     try:
         with engine.begin() as conn:
@@ -296,15 +296,16 @@ def _ensure_findings_index() -> None:
                     exc_info=True)
 
 
-def init_db() -> None:
+def init_db(eng=None) -> None:
+    eng = eng or engine
     try:
-        metadata.create_all(engine)
+        metadata.create_all(eng)
     except Exception as e:
         if "index" not in str(e).lower():
             raise
         log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
-    _migrate()
-    _ensure_findings_index()
+    _migrate(eng)
+    _ensure_findings_index(eng)
 
 
 def prewarm(n: int) -> None:
