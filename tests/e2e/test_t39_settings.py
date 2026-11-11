@@ -201,9 +201,9 @@ def test_st2_secret_write_only(page, shot, owner):
     expect(f).to_contain_text("Set · changed by")
     page.once("dialog", lambda d: d.accept())
     f.get_by_role("button", name="Clear").click()
-    confirm = page.get_by_role("button", name="Confirm")
-    if confirm.count():
-        confirm.click()
+    confirm = page.get_by_role("button", name=re.compile(r"^Clear key"))
+    expect(confirm).to_be_visible()
+    confirm.click()
     expect(f).not_to_contain_text("Set · changed by")
     expect(f.get_by_role("button", name="Clear")).to_have_count(0)
     shot("then")
