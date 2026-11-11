@@ -60,8 +60,10 @@ function DemoBanner({ health: h }) {
         <span className="demo-sep" aria-hidden="true">·</span>
         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
         <span className="demo-break" hidden={!open} />
-        <span id="demo-stand-ins" className="demo-panel-title" hidden={!open}>Demo mode: simulated data and stand-ins</span>
-        {h.stand_ins.map((s) => <span className="demo-chip" key={s.name} data-stand-in={s.name} hidden={!open}>{s.label}</span>)}
+        <div id="demo-stand-ins" className="demo-panel" hidden={!open}>
+          <span className="demo-panel-title">Demo mode: simulated data and stand-ins</span>
+          {h.stand_ins.map((s) => <span className="demo-chip" key={s.name} data-stand-in={s.name}>{s.label}</span>)}
+        </div>
         {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
         {err && <span className="alert error" role="alert">{err}</span>}
         {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}

@@ -131,7 +131,14 @@ export default function Fleet() {
         </Alert>
       )}
       {all.loading && !data && !all.error && <Skeleton />}
-      {ready && rows.length === 0 && (
+      {ready && rows.length === 0 && !filtered && (
+        <div className="ds-card ds-empty" data-testid="fleet-empty">
+          <h2 className="ds-empty-title">No agents yet</h2>
+          <p className="ds-helper">Register an external agent to start tracking its tier, owner and findings.</p>
+          <Button variant="primary" onClick={() => nav('/register')}>Register external agent</Button>
+        </div>
+      )}
+      {ready && rows.length === 0 && filtered && (
         <div className="ds-card ds-empty" data-testid="fleet-empty">
           <h2 className="ds-empty-title">No agents match</h2>
           <p className="ds-helper">Try a different name, source or tier.</p>

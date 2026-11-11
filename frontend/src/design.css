@@ -2,7 +2,7 @@
    Neutral greys, one accent (Domino purple), system/Inter type, 8px spacing scale. */
 :root {
   --ds-accent: #543fde; --ds-accent-hover: #4533c0; --ds-accent-soft: #efedfc;
-  --ds-ink: #14181f; --ds-text: #2b3340; --ds-muted: #596273; --ds-faint: #6b7280;
+  --ds-ink: #14181f; --ds-text: #2b3340; --ds-muted: #596273; --ds-faint: #5f6673;
   --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
   --ds-danger: #b42318; --ds-danger-bg: #fef3f2; --ds-danger-line: #fda29b;
   --ds-s1: 8px; --ds-s2: 16px; --ds-s3: 24px; --ds-s4: 32px; --ds-s5: 40px; --ds-s6: 48px;
@@ -141,7 +141,8 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .demo-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; min-height: 36px }
 .demo-inner > [hidden] { display: none }
 .demo-break { flex: 1 0 100%; height: 0 }
-.demo-panel-title { flex: 1 0 100%; font-weight: 600; padding-top: 4px }
+.demo-panel { display: contents }
+.demo-panel-title { display: block; flex: 1 0 100%; font-weight: 600; padding-top: 4px }
 .demo-inner .demo-chip { margin: 6px 0 6px; }
 .demo-sep { color: #b07a00 }
 .demo-toggle, .demo-reset { font: inherit; font-size: 13px; color: #6b4a00; background: transparent; border: 0; padding: 2px 6px; margin: 0 -2px; border-radius: 4px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px }
