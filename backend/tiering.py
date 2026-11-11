@@ -22,16 +22,21 @@ def load_config(path=None):
     return yaml.safe_load(pathlib.Path(path or CONFIG_PATH).read_text())
 
 
+def _short(k, n=40):
+    k = str(k)
+    return k if len(k) <= n else k[:n] + "..."
+
+
 def score_tier(criteria, config=None):
     cfg = config or load_config()
     rule = cfg.get("no_benchmark_rule", {})
     for key in criteria:
         if any(b in key.lower() for b in rule.get("rejected_keys", ["backtest", "benchmark"])):
-            raise TieringInputRejected(f"{rule.get('message', 'Backtest/benchmark inputs are not tier inputs')} (input: {key})")
+            raise TieringInputRejected(f"{rule.get('message', 'Backtest/benchmark inputs are not tier inputs')} (input: {_short(key)})")
     spec = cfg["criteria"]
     unknown = [k for k in criteria if k not in spec]
     if unknown:
-        raise TieringInputRejected(f"Unknown tier criteria: {', '.join(sorted(unknown))}")
+        raise TieringInputRejected("Unknown tier criteria: " + ", ".join(_short(k) for k in sorted(unknown, key=str)[:5]) + (f" (and {len(unknown) - 5} more)" if len(unknown) > 5 else ""))
     missing = [k for k in spec if k not in criteria]
     if missing:
         raise ValueError(f"Missing criteria: {', '.join(missing)}")

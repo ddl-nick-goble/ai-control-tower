@@ -4,6 +4,7 @@ import { api, demoApi, standIn } from '../api'
 import { clean, fmtStatus, fmtTs } from '../format'
 import Passport from '../components/Passport'
 import Markdown from '../components/Markdown'
+import { Breadcrumb } from '../components/form'
 import EvidencePack from '../components/EvidencePack'
 import { ErrorBox, Loading, Panel, StatusPill, TierBadge, useAsync, useHealth } from '../components/ui'
 
@@ -271,7 +272,7 @@ function AgentView({ id }) {
   const a = agent.data
   return (
     <div>
-      <p><Link to="/">Fleet</Link> / {clean(a.name)}</p>
+      <Breadcrumb items={[{ label: 'Fleet', to: '/' }, { label: clean(a.name) }]} />
       <div className="page-head" style={{ flexWrap: 'wrap' }}>
         <h1>{clean(a.name)}</h1>
       </div>

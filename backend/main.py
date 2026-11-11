@@ -39,12 +39,21 @@ async def lifespan(_app):
 app = FastAPI(title="Agent Control Tower", lifespan=lifespan)
 
 
+MAX_PREVIEW_BYTES = 8 * 1024
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 @app.middleware("http")
 async def write_guard(request, call_next):
     """Reject unauthenticated writes on every path (incl. /v1/*) before routing."""
+    if request.method == "POST" and request.url.path == "/api/tiering/preview":
+        try:
+            too_big = int(request.headers.get("content-length") or 0) > MAX_PREVIEW_BYTES
+        except ValueError:
+            too_big = True
+        if too_big:
+            return JSONResponse({"detail": "Request body too large (limit 8 KB)"}, status_code=413)
+        return await call_next(request)  # read-only scoring; the only anonymous POST
     if request.method in WRITE_METHODS and await run_in_threadpool(get_user, request) is None:
         return JSONResponse({"detail": "Authentication required"}, status_code=401)
     return await call_next(request)

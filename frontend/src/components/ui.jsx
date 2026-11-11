@@ -1,5 +1,5 @@
 import React from 'react'
-import { Link } from 'react-router-dom'
+import { Link, NavLink, useLocation } from 'react-router-dom'
 import { clean, fmtStatus } from '../format'
 import { demoApi, health } from '../api'
 
@@ -48,15 +48,42 @@ function DemoBanner({ health: h }) {
       return () => clearTimeout(t)
     }
   }, [])
+  const [open, setOpen] = React.useState(true)
+  const n = h.stand_ins.length
   return (
     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
-      <strong>Demo mode: simulated data and stand-ins</strong>
-      <ul>{h.stand_ins.map((s) => <li key={s.name} data-stand-in={s.name}>{s.label}</li>)}</ul>
-      <button className="btn" onClick={reset} disabled={busy}>Reset demo</button>
-      {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
-      {err && <span className="alert error" role="alert">{err}</span>}
-      {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
+      <div className="ds-shell-inner demo-inner">
+        <strong>Demo mode:</strong>
+        <span>simulated data</span>
+        <span className="demo-sep" aria-hidden="true">·</span>
+        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={["demo-stand-ins", ...h.stand_ins.map((s) => `demo-chip-${s.name}`)].join(" ")} onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
+        <span className="demo-sep" aria-hidden="true">·</span>
+        <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
+        <span className="demo-break" hidden={!open} />
+        <span id="demo-stand-ins" className="demo-panel-title" hidden={!open}>Demo mode: simulated data and stand-ins</span>
+        {h.stand_ins.map((s) => <span className="demo-chip" id={`demo-chip-${s.name}`} key={s.name} data-stand-in={s.name} hidden={!open}>{s.label}</span>)}
+        {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
+        {err && <span className="alert error" role="alert">{err}</span>}
+        {note && <div className="toast" role="status" data-testid="demo-reset-notice">Demo reset to its starting state</div>}
+      </div>
     </div>
+  )
+}
+
+// Fleet is the parent of agent and run pages: current page on "/", current section on its children.
+function FleetLink() {
+  const { pathname } = useLocation()
+  const exact = pathname === '/'
+  const child = /^\/(agents|runs)\//.test(pathname)
+  return <Link to="/" aria-current={exact ? 'page' : child ? 'true' : undefined}>Fleet</Link>
+}
+
+function LogoMark() {
+  return (
+    <svg className="ds-logo" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+      <rect width="24" height="24" rx="6" fill="currentColor" />
+      <path d="M12 5v14M7 8.5h10M9 19h6" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+    </svg>
   )
 }
 
@@ -64,12 +91,19 @@ export function Shell({ children }) {
   const h = useHealth()
   return (
     <div className="app">
+      <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
       {h && h.demo_mode && <DemoBanner health={h} />}
-      <nav className="topbar">
-        <Link to="/" className="brand">Agent Control Tower</Link>
-        <span className="muted">Agent system of record</span>
-      </nav>
-      <main className="content">{children}</main>
+      <header className="ds-topbar" data-testid="app-topbar">
+        <div className="ds-shell-inner ds-topbar-row">
+          <Link to="/" className="ds-brand"><LogoMark />Agent Control Tower</Link>
+          <span className="ds-subtitle" data-testid="app-subtitle">Agent system of record</span>
+          <nav aria-label="Primary" className="ds-nav">
+            <FleetLink />
+            <NavLink to="/register">Register external agent</NavLink>
+          </nav>
+        </div>
+      </header>
+      <main className="content" id="main" tabIndex={-1}>{children}</main>
     </div>
   )
 }

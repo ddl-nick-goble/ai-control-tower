@@ -109,9 +109,10 @@ def test_ac_r5_writes_nothing(client):
     assert snap() == before
 
 
-def test_ac_r5_anonymous_post_blocked_by_write_guard(client):
+def test_ac_r5_anonymous_post_allowed_p1(client):
+    # T-19a P-1 supersedes the old 401: preview is open without identity.
     r = client.post(URL, json={"criteria": ALL5})
-    assert r.status_code == 401
+    assert r.status_code == 200
 
 
 def test_ac_r5_identified_user_gets_200(client):

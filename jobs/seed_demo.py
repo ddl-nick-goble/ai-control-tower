@@ -194,7 +194,9 @@ def seed(db_path=None, governance=False) -> dict:
     user = os.environ.get("DOMINO_STARTING_USERNAME") or "seed-user"
     explicit_provider = os.environ.get("ACT_LLM_PROVIDER")
     provider = explicit_provider or ("gateway" if os.environ.get("LLM_GATEWAY_URL") else "mock")
-    owner = None if os.environ.get("ACT_LOCAL_AGENT_OWNER") else user
+    from backend import demo as _demo
+    # Demo mode shows a neutral owner instead of the real username; non-demo keeps the starting user.
+    owner = None if os.environ.get("ACT_LOCAL_AGENT_OWNER") else (_demo.DEMO_AGENT_OWNER if _demo.enabled() else user)
     with _env(ACT_DB=str(db_path) if db_path else None, DOMINO_STARTING_USERNAME=user,
               ACT_LOCAL_AGENT_OWNER=owner,
               ACT_LLM_PROVIDER=provider,
