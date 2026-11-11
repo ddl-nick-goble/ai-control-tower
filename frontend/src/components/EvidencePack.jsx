@@ -1,7 +1,7 @@
 import React from 'react'
 import { clean } from '../format'
 import Markdown from './Markdown'
-import { Panel } from './ui'
+import { Card, InlineError, Skel } from './agentui'
 
 // Split the pack Markdown into the title (h3) and the seven sections (h3), each with a safe Markdown body.
 function Preview({ markdown }) {
@@ -13,7 +13,7 @@ function Preview({ markdown }) {
     else if (cur) cur.body.push(line)
   }
   return (
-    <div data-testid="evidence-pack-preview" className="evidence-preview">
+    <div data-testid="evidence-pack-preview" className="evidence-preview ag-preview" tabIndex={0} role="region" aria-label="Evidence pack preview">
       {parts.map((p, i) => (
         <section key={i} style={{ marginTop: i ? 16 : 0 }}>
           <h3 style={p.level === 1 ? { fontSize: 18 } : undefined}>{clean(unescapeText(p.title))}</h3>
@@ -35,7 +35,8 @@ function bundleNote(res) {
   return `${where} Attaching to the bundle failed; files are saved in the project dataset.`
 }
 
-export default function EvidencePack({ id }) {
+// Generation state lives in the page (the header button triggers it); the card shows the state and the pack.
+export function useEvidencePack(id) {
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState(null)
   const [res, setRes] = React.useState(null)
@@ -52,23 +53,27 @@ export default function EvidencePack({ id }) {
       setRes(body)
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
+  return { busy, err, res, generate }
+}
+
+export default function EvidencePack({ pack }) {
+  const { busy, err, res, generate } = pack
   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
   return (
-    <Panel title="Evidence pack" testid="evidence-pack-card"
-           aside={<button className="btn primary" data-testid="evidence-pack-generate" onClick={generate} disabled={busy}>
-             {busy ? 'Generating...' : 'Generate evidence pack'}</button>}>
-      {!res && !err && <p className="muted">Generate a dated pack in OCC 2026-54 order from ACT's own records.</p>}
-      {err && <div className="alert error" role="alert">{clean(err)}</div>}
+    <Card title="Evidence pack" testid="evidence-pack-card">
+      {!res && !err && !busy && <p className="ag-note">A dated pack in OCC 2026-54 order, built from ACT's own records. Use Generate evidence pack above.</p>}
+      {busy && <Skel what="evidence pack" lines={2} />}
+      {err && <InlineError error={{ message: clean(err) }} onRetry={generate} />}
       {res && (
         <div data-testid="evidence-pack-result">
-          <p>
+          <p className="ag-note">
             <a data-testid="evidence-pack-md-link" href={`${base}/markdown`} download>Download Markdown</a>{' · '}
             <a data-testid="evidence-pack-pdf-link" href={`${base}/pdf`} download>Download PDF</a>
           </p>
-          <p data-testid="evidence-pack-bundle" className="muted">{bundleNote(res)}</p>
+          <p data-testid="evidence-pack-bundle" className="ag-note ag-muted">{bundleNote(res)}</p>
           <Preview markdown={res.markdown} />
         </div>
       )}
-    </Panel>
+    </Card>
   )
 }
