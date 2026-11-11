@@ -1,6 +1,6 @@
 """T-15 e2e: one-switch demo mode (D-2..D-10).
 
-One app on port 9889 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
+One app on a free port via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
 data-testid contract (suggested; role/text locators are primary):
   demo-banner  persistent banner with "Demo mode: simulated data and stand-ins" and the stand-in labels
 Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agent".
@@ -8,17 +8,14 @@ Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agen
 import os
 import pathlib
 import re
-import shutil
-import signal
-import subprocess
-import time
 import urllib.request
 
 import pytest
 from playwright.sync_api import expect
 
+from _server import start_app
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-PORT = "9889"  # separate from the shared suite app on 9888 so this module never kills it
 SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-15"
 
 
@@ -28,53 +25,12 @@ def _qa_dir(monkeypatch):
     monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
-def _start(tmp_path, demo):
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
-                "ACT_DB": str(tmp_path / "act.db"), "ACT_DB_PREWARM_COUNT": "0",
-                "ACT_EVIDENCE_DIR": str(tmp_path / "evidence")})
-    if demo:
-        env["ACT_DEMO_MODE"] = "1"
-    log = tmp_path / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
-                            env=env, start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{PORT}/"
-    return proc, logf, url
+def _start(tmp_path, demo, port=None):
+    return start_app(tmp_path, demo=demo, external=False, port=port)
 
 
-def _stop(proc, logf):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=20)
-    except Exception:
-        os.killpg(proc.pid, signal.SIGKILL)
-    logf.close()
+def _stop(app):
+    app.stop()
 
 
 _APP = {}
@@ -89,12 +45,12 @@ def browser_context_args(browser_context_args, demo_url):
 @pytest.fixture(scope="module")
 def demo_url(tmp_path_factory):
     """One demo-mode app for the session; the off-by-default test swaps it for a non-demo app."""
-    proc, logf, url = _start(tmp_path_factory.mktemp("t15-demo"), True)
-    _APP.update(proc=proc, logf=logf, url=url)
+    app = _start(tmp_path_factory.mktemp("t15-demo"), True)
+    _APP["app"] = app
     try:
-        yield url
+        yield app.url
     finally:
-        _stop(_APP["proc"], _APP["logf"])
+        _stop(_APP["app"])
 
 
 @pytest.fixture(autouse=True)
@@ -223,9 +179,10 @@ def test_d2_fresh_fleet(page, shot, demo_url):
 
 
 def test_d10_off_by_default(page, shot, demo_url, tmp_path_factory):
-    _stop(_APP["proc"], _APP["logf"])
-    proc, logf, _url = _start(tmp_path_factory.mktemp("t15-off"), False)
-    _APP.update(proc=proc, logf=logf)
+    old = _APP["app"]
+    _stop(old)
+    # restart without demo mode on the port just released, so this test's page (base_url = demo_url) reaches it
+    _APP["app"] = _start(tmp_path_factory.mktemp("t15-off"), False, port=old.port)
     assert page.request.get("api/health").json().get("demo_mode") in (False, None)
     page.goto("./#/")
     expect(page.get_by_role("heading").first).to_be_visible()
@@ -235,4 +192,4 @@ def test_d10_off_by_default(page, shot, demo_url, tmp_path_factory):
         expect(page.get_by_role("button", name=name)).to_have_count(0)
     assert page.request.post("api/demo/reset").status == 404
     shot("then")
-    _stop(_APP["proc"], _APP["logf"])  # leave port 9888 free for later modules
+    _stop(_APP["app"])

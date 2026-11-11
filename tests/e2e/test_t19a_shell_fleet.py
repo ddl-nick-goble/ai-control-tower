@@ -1,6 +1,6 @@
 """T-19a e2e: app shell + Fleet page enterprise redesign (S-1, S-2, S-5) and Register carry-overs.
 
-Own seeded app on port 9891 (and a demo-mode app on 9892 for the banner); the shared 9888 app is never touched.
+Own seeded app (and a demo-mode app for the banner), each on a free port.
 Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
 data-testid contract (role/label locators are primary):
   app-topbar        the top bar (landmark role=banner) holding the product name "Agent Control Tower",
@@ -13,21 +13,15 @@ data-testid contract (role/label locators are primary):
   Clear filters     button, visible only while a filter (search, source, tier) is active
   fleet-row         tabindex=0, Enter opens the agent; whole row clickable
 """
-import json
 import os
 import re
-import shutil
-import signal
-import subprocess
-import sys
-import time
-import urllib.request
 
 import pytest
 from playwright.sync_api import expect
 
+from _server import start_app
+
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-PORT, DEMO_PORT = "9891", "9892"
 SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19a"
 
 
@@ -37,78 +31,22 @@ def _qa_dir(monkeypatch):
     monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
-def _start(tmp, port, demo=False, seed=False):
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0",
-                "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
-                "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
-                "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")})
-    ids = {}
-    if seed:
-        out = subprocess.run([sys.executable, str(ROOT / "tests" / "e2e" / "seed.py"), str(tmp / "act.db")],
-                             cwd=ROOT, env=env, capture_output=True, text=True, timeout=180)
-        assert out.returncode == 0, f"seed failed:\n{out.stdout}\n{out.stderr[-3000:]}"
-        ids = json.loads(out.stdout.strip().splitlines()[-1])
-    if demo:
-        env["ACT_DEMO_MODE"] = "1"
-    log = tmp / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
-                            start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{port}/"
-    return proc, logf, url, ids
-
-
-def _stop(proc, logf):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=20)
-    except Exception:
-        os.killpg(proc.pid, signal.SIGKILL)
-    logf.close()
-
-
 @pytest.fixture(scope="module")
 def app(tmp_path_factory):
-    proc, logf, url, ids = _start(tmp_path_factory.mktemp("t19a"), PORT, seed=True)
+    a = start_app(tmp_path_factory.mktemp("t19a"), seed=True)
     try:
-        yield {"base_url": url, **ids}
+        yield {"base_url": a.url, **a.ids}
     finally:
-        _stop(proc, logf)
+        a.stop()
 
 
 @pytest.fixture(scope="module")
 def demo_url(tmp_path_factory):
-    proc, logf, url, _ = _start(tmp_path_factory.mktemp("t19a-demo"), DEMO_PORT, demo=True)
+    a = start_app(tmp_path_factory.mktemp("t19a-demo"), demo=True)
     try:
-        yield url
+        yield a.url
     finally:
-        _stop(proc, logf)
+        a.stop()
 
 
 @pytest.fixture(scope="module")

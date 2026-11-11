@@ -1,21 +1,17 @@
 """T-19a e2e: Register tier preview works without sign-in and explains failures (P-2).
 
-Own app on port 9893; the shared 9888 app is never touched. Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
+Own app on a free port. Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
 No identity headers are ever set in this module.
 """
 import os
 import re
-import shutil
-import signal
-import subprocess
-import time
-import urllib.request
 
 import pytest
 from playwright.sync_api import expect
 
+from _server import start_app
+
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-PORT = "9893"
 SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19a"
 MEANINGS = re.compile(r"Highest consequence|High consequence|Moderate consequence|Lowest consequence")
 UNAVAILABLE = re.compile(r"unavailable", re.I)
@@ -29,48 +25,11 @@ def _qa_dir(monkeypatch):
 
 @pytest.fixture(scope="module")
 def base_url(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("t19a-p2")
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
-                "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
-                "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
-                "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")})
-    log = tmp / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
-                            start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{PORT}/"
+    app = start_app(tmp_path_factory.mktemp("t19a-p2"))
     try:
-        yield url
+        yield app.url
     finally:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=20)
-        logf.close()
+        app.stop()
 
 
 @pytest.fixture

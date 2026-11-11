@@ -1,6 +1,6 @@
 """T-18 e2e: redesigned "Register external agent" page (R-1..R-9).
 
-Own app on port 9889 (the shared suite app on 9888 is never touched). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
+Own app on a free port (shared helper _server.py). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
 data-testid contract (role/label locators are primary):
   register-page         page root           register-section (x3)   numbered card, contains a heading "1 Agent card" etc.
   register-summary      sticky panel with tier-badge (data-tier, text "Tier N"), summary-score, summary-host, summary-scopes-count
@@ -13,18 +13,13 @@ data-testid contract (role/label locators are primary):
 import json
 import os
 import re
-import shutil
-import signal
-import subprocess
-import sys
-import time
-import urllib.request
 
 import pytest
 from playwright.sync_api import expect
 
+from _server import start_app
+
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-PORT = "9889"
 SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-18"
 NAMES = ["Decision impact", "Financial exposure", "Customer impact", "Autonomy", "Data sensitivity",
          "Reversibility", "Regulatory exposure"]
@@ -38,52 +33,16 @@ def _qa_dir(monkeypatch):
     monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
-# Module-scoped app on its own port; never starts the 9888 app. The conftest's session-scoped base_url is shadowed
+# Module-scoped app on its own port; never starts the shared app. The conftest's session-scoped base_url is shadowed
 # here, and browser_context_args is overridden at function scope (not chaining to the session one, which would
-# cache this module's URL for every later module or start the 9888 app).
+# cache this module's URL for every later module or start the shared app).
 @pytest.fixture(scope="module")
 def base_url(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("t18")
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
-           "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
-           "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
-           "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")}
-    log = tmp / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
-                            start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{PORT}/"
+    app = start_app(tmp_path_factory.mktemp("t18"))
     try:
-        yield url
+        yield app.url
     finally:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=20)
-        logf.close()
+        app.stop()
 
 
 @pytest.fixture
