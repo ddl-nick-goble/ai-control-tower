@@ -209,3 +209,17 @@ Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could
 - 2026-11-11: T-19b code re-review r3: approve with follow-ups (build/review/T-19b-code-r3.md). Waiting for UI run 3 + design review r3.
 - 2026-11-11: T-39 UI run 3 @694b69e: settings 16/16, full e2e 129/129, all ST ACs pass. Test baseline now ebffd72. Design review r3 running; then final builder round 3 (reset() blocker + drain + design must-fixes). T-19b UI run 3 running.
 - 2026-11-11: T-39 design review r3: 2 must-fixes (loading skeleton never captured; ST-2 'changed by' text truncated). Builder round 3 (FINAL) started: reset() blocker, in-flight drain, design must-fixes, polish.
+
+## T-47 (added 2026-11-11, Nick: "faster way to iterate"): parallel, port-safe browser test harness
+Root cause of slow and flaky QA: every e2e module hard-codes a port (9888, 9889, 9891-9895) and runs `fuser -k` on it, so only one browser run can happen at a time in the workspace (a second run kills the first one's server), and the full suite runs serially (~15-20 min per run).
+- H-1 One shared helper starts the app (app.sh) on a free OS-assigned port with its own temp DB and stops it; no module hard-codes a port or kills processes by port.
+- H-2 Every existing e2e module and conftest uses the helper; behaviour and assertions unchanged.
+- H-3 `pytest -n auto --dist loadfile` (pytest-xdist) runs the full suite in parallel with the same pass count as a serial run; per-worker DBs; screenshots still land in the QA folders.
+- H-4 Two full suites run at once from two different worktrees both pass.
+- H-5 A capture CLI (tests/e2e/capture.py) that takes routes/states and widths, starts the app on a free port, and writes full-page PNGs to a given folder, so builders can screenshot their own work before handing off.
+Touches: tests/e2e/ only, plus requirements-dev or the README test section. Owner: test-author. QA: code-reviewer. Branch task/T-47 from main. The T-19b and T-39 test files get converted after those tasks merge (small follow-up in the same task).
+
+## Process changes (2026-11-11, from Nick's request)
+- Per round: run only the task's own test file(s). Full browser suite once before merge and at end of wave.
+- Builders self-check visuals: before reporting, the builder captures its pages (capture CLI, private port) and reads its own screenshots against the design brief, fixing obvious issues inside the same round.
+- After T-47: ui-testers for different tasks run in parallel, and code review, visual review and UI tests for a task run at the same time.
