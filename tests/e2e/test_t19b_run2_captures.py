@@ -127,7 +127,7 @@ def _lengthened(route):
         if e.get("kind") == "tool_call" and not done:
             e["args_redacted"] = {f"field_{k}": "value " * 6 for k in range(30)}
             done = True
-    route.fulfill(response=resp, json=d)
+    route.fulfill(status=200, json=d)
 
 
 def test_cap_run_long_payload(page, seeded):
@@ -136,6 +136,7 @@ def test_cap_run_long_payload(page, seeded):
 
     def load():
         page.goto(f"./#/runs/{rid}")
+        page.reload()
         expect(page.get_by_test_id("timeline-event").first).to_be_visible()
         t = page.locator('[data-testid="timeline-payload"][data-collapsed="true"]').first
         t.scroll_into_view_if_needed()
