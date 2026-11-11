@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
-import { agentPath, clean, cleanText, fmtMessages, fmtTs } from '../format'
+import { agentPath, clean, fmtJson, fmtMessages, fmtTs, num } from '../format'
 import { Breadcrumb } from '../components/form'
 import { useAsync } from '../components/ui'
 import { Arrow, CopyButton, ErrorPage } from '../components/agentui'
@@ -17,15 +17,6 @@ function label(ev) {
   return clean(ev.name)
 }
 
-// Numeric strings stay strings (no precision loss above 15 digits); only the integer part gets separators.
-function num(v) {
-  const s = typeof v === 'string' ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : null
-  if (s != null && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s)) {
-    const [int, frac] = s.split('.')
-    return int.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (frac ? `.${frac}` : '')
-  }
-  return clean(v)
-}
 const nf = (n) => Number(n).toLocaleString('en-US')
 
 const REASONS = {
@@ -80,21 +71,41 @@ function Icon({ kind, violation }) {
 }
 
 const COLLAPSE_AT = 6
+const COLLAPSE_CHARS = 400
+const DISPLAY_MAX = 20000
 
-function Payload({ text, testid, what }) {
-  const lines = text.split('\n').length
-  const long = lines > COLLAPSE_AT
+const compactJson = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v)
+  : Array.isArray(v) ? `[${v.map(compactJson).join(', ')}]`
+    : `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${compactJson(x)}`).join(', ')}}`)
+
+// Short JSON payloads render on one line; everything else keeps its own formatting.
+function payloadText(v) {
+  let obj = v
+  if (typeof v === 'string' && /^\s*[[{]/.test(v)) { try { obj = JSON.parse(v) } catch { obj = null } }
+  if (obj && typeof obj === 'object') {
+    const c = compactJson(obj)
+    if (c.length <= 90) return clean(c)
+  }
+  return clean(fmtJson(v))
+}
+
+function Payload({ full, testid, what }) {
+  const id = React.useId()
+  const shown = full.length > DISPLAY_MAX ? full.slice(0, DISPLAY_MAX) + '...' : full
+  const lines = shown.split('\n').length
+  const long = lines > COLLAPSE_AT || shown.length > COLLAPSE_CHARS
   const [open, setOpen] = React.useState(false)
   const collapsed = long && !open
+  const more = lines > COLLAPSE_AT ? `Show ${lines - COLLAPSE_AT} more lines` : 'Show more'
   return (
     <>
       <div className="rt-pl" data-testid={testid} data-collapsed={collapsed ? 'true' : 'false'}>
-        <pre className="rt-pre" data-testid="timeline-payload" data-collapsed={collapsed ? 'true' : 'false'}>{text}</pre>
-        <span className="rt-pl-copy"><CopyButton value={text} label={what} /></span>
+        <pre id={id} className="rt-pre" data-testid="timeline-payload" data-collapsed={collapsed ? 'true' : 'false'}>{shown}</pre>
+        <span className="rt-pl-copy"><CopyButton value={full} label={what} /></span>
       </div>
       {long && (
-        <button type="button" className="ds-btn ds-btn-ghost ag-sm rt-toggle" data-testid="payload-toggle" aria-expanded={open}
-                onClick={() => setOpen((o) => !o)}>{open ? 'Show less' : `Show ${lines - COLLAPSE_AT} more lines`}</button>
+        <button type="button" className="ds-btn ds-btn-ghost ag-sm rt-toggle" data-testid="payload-toggle" aria-expanded={open} aria-controls={id}
+                onClick={() => setOpen((o) => !o)}>{open ? 'Show less' : more}</button>
       )}
     </>
   )
@@ -115,6 +126,10 @@ function Loading() {
 
 export default function Run() {
   const { runId } = useParams()
+  return <RunView key={runId} runId={runId} />
+}
+
+function RunView({ runId }) {
   const [rev, setRev] = React.useState(0)
   const [params, setParams] = useSearchParams()
   const tl = useAsync(() => api.timeline(runId), [runId, rev])
@@ -124,6 +139,7 @@ export default function Run() {
   const [filter, setFilter] = React.useState('all')
   const [flash, setFlash] = React.useState(null)
   const spanParam = params.get('span')
+  const [missingSpan, setMissingSpan] = React.useState(false)
   const agentName = clean(agentInfo.data?.name) || 'Agent'
   const crumbs = [{ label: 'Fleet', to: '/' },
     ...(agentId ? [{ label: agentName, to: agentPath(agentId) }] : []),
@@ -141,6 +157,7 @@ export default function Run() {
     return m
   }, [fnd.data, runId])
 
+  const findingIds = React.useMemo(() => new Set((fnd.data?.items || []).map((f) => f.id)), [fnd.data])
   const ready = !tl.error && !findingsPending
   const events = ready ? tl.data.events : []
   const rows = React.useMemo(() => events.map((ev, i) => {
@@ -166,8 +183,8 @@ export default function Run() {
         el.scrollIntoView({ block: 'center' })
         el.focus({ preventScroll: true })
         setFlash(spanParam)
-      }
-      setParams({}, { replace: true })
+      } else setMissingSpan(true)
+      setParams((cur) => { const n = new URLSearchParams(cur); n.delete('span'); return n }, { replace: true })
     })
     return () => cancelAnimationFrame(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -178,7 +195,7 @@ export default function Run() {
     return () => clearTimeout(t)
   }, [flash])
 
-  if (tl.error && !tl.data) {
+  if (tl.error) {
     return <ErrorPage title="We could not load this run" message={`${tl.error.status ? tl.error.status + ': ' : ''}${clean(tl.error.message)}`}
       onRetry={() => setRev((r) => r + 1)} back={<Link className="ds-btn ds-btn-ghost" to="/">Back to Fleet</Link>} />
   }
@@ -201,13 +218,14 @@ export default function Run() {
               <CopyButton value={runId} label="run ID" />
             </span></dd></div>
           <div><dt>Agent</dt><dd>{agentId
-            ? <Link className="ds-trunc rt-agent" to={agentPath(agentId)} title={agentName}>{agentName}</Link> : <span className="ag-none">-</span>}</dd></div>
+            ? <Link className="ds-trunc rt-agent" to={agentPath(agentId)} title={agentName}>{agentName}</Link> : <span className="ag-none">—</span>}</dd></div>
           <div><dt>Time range</dt><dd className="ds-nowrap ag-ink" data-testid="run-range">{fmtRange(t.started_at || first, t.ended_at || last)}</dd></div>
           <div><dt>Events</dt><dd className="ds-nowrap ag-ink" data-testid="run-event-count">
             {nf(events.length)} {events.length === 1 ? 'event' : 'events'}
             {nViol > 0 && <> · <span className="rt-viol-count">{nf(nViol)} {nViol === 1 ? 'violation' : 'violations'}</span></>}</dd></div>
         </dl>
       </header>
+      {missingSpan && <div className="ds-alert rt-alert" role="status" data-testid="span-missing">The event linked from the finding is not in this run's timeline.</div>}
       {findingsFailed && <div className="ds-alert ds-alert-error rt-alert" role="alert" data-testid="findings-error">Could not load findings, so violations are not highlighted on this timeline.</div>}
       {events.length > 0 && (
         <div className="rt-toolbar">
@@ -218,7 +236,7 @@ export default function Run() {
               </button>
             ))}
           </div>
-          <span className="ds-count rt-showing" aria-live="polite">Showing {nf(shown.length)} of {nf(events.length)}</span>
+          <span className="ds-count rt-showing"><span aria-live="polite">Showing {nf(shown.length)} of {nf(events.length)}</span> <span aria-hidden="true">·</span> Times in UTC</span>
         </div>
       )}
       {!events.length && (
@@ -237,32 +255,32 @@ export default function Run() {
       {shown.length > 0 && (
         <ol className="rt-list ds-card">
           {shown.map(({ ev, i, v }) => {
-            const body = ev.kind === 'tool_call' ? cleanText(ev.args_redacted, 20000)
-              : (ev.kind === 'input' || ev.kind === 'output') ? cleanText(content(ev), 20000) : ''
+            const body = ev.kind === 'tool_call' ? payloadText(ev.args_redacted)
+              : (ev.kind === 'input' || ev.kind === 'output') ? clean(fmtJson(content(ev))) : ''
             return (
               <li key={`${ev.span_id || ev.kind}-${i}`} tabIndex={-1}
                   className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}`}
                   data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
                   data-violation={v ? 'true' : 'false'}
                   data-violation-reason={v ? clean(v.reason || 'tool_not_in_manifest') : undefined}>
-                <time className="rt-time" data-testid="timeline-event-time" dateTime={ev.ts} title={fmtTs(ev.ts)}>{isoTime(ev.ts) || '-'}</time>
+                <time className="rt-time" data-testid="timeline-event-time" dateTime={ev.ts} title={fmtTs(ev.ts)}>{isoTime(ev.ts) || '—'}</time>
                 <span className="rt-rail"><span className="rt-node"><Icon kind={ev.kind} violation={!!v} /></span></span>
                 <div className="rt-body">
                   <div className="rt-line">
                     <span className="ds-chip-tag rt-type" data-testid="timeline-event-type">{kindLabel(ev.kind)}</span>
                     {ev.kind === 'model_call'
-                      ? <span className="rt-sub">· {label(ev)}</span>
+                      ? <span className="rt-sub">{label(ev)}</span>
                       : <strong className="rt-name">{label(ev)}</strong>}
                     {v && <span className="badge violation-badge rt-badge">Violation: {REASONS[v.reason] || 'Outside manifest'}</span>}
                   </div>
                   {v && v.reason === 'value_limit_exceeded' && (
-                    <div className="rt-note">Observed {num(v.observed_value)}, limit {num(v.limit)}</div>
+                    <div className="rt-note">Observed {num(v.observed_value) ?? '—'}, limit {num(v.limit) ?? '—'}</div>
                   )}
                   {v && v.note && <div className="rt-note">{clean(v.note)}</div>}
-                  {v && agentId && v.findingId != null && (
+                  {v && agentId && v.findingId != null && findingIds.has(v.findingId) && (
                     <Link className="rt-finding-link" to={`${agentPath(agentId)}#finding-${v.findingId}`}>View finding<Arrow /></Link>
                   )}
-                  {body && <Payload text={body} testid={ev.kind === 'tool_call' ? 'timeline-event-args' : 'timeline-event-content'} what={ev.kind === 'tool_call' ? 'arguments' : 'content'} />}
+                  {body && <Payload full={body} testid={ev.kind === 'tool_call' ? 'timeline-event-args' : 'timeline-event-content'} what={ev.kind === 'tool_call' ? 'arguments' : 'content'} />}
                   {(ev.kind === 'approval' || ev.kind === 'override') && (
                     <div className="rt-note rt-note-plain">{clean(ev.actor)}{ev.decision ? ` · ${clean(ev.decision)}` : ''}{ev.reason ? ` · ${clean(ev.reason)}` : ''}</div>
                   )}

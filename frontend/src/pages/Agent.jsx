@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, demoApi, standIn } from '../api'
-import { clean, fmtStatus, fmtTs, sourceLabel } from '../format'
+import { clean, fmtStatus, fmtTs, num, sourceLabel } from '../format'
 import Passport from '../components/Passport'
 import Markdown from '../components/Markdown'
 import { Breadcrumb } from '../components/form'
@@ -16,7 +16,7 @@ const CRITERIA = [
   ['regulatory_exposure', 'Regulatory exposure'],
 ]
 
-const nf = (n) => (n == null ? '-' : Number(n).toLocaleString('en-US'))
+const nf = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'))
 
 function Bar({ value }) {
   const v = Number(value)
@@ -62,8 +62,8 @@ export function Identity({ agent }) {
       )}
       {id.simulated && <p className="ag-note"><span className="ag-demo-chip" data-testid="identity-simulated">{id.label || 'simulated service account (demo)'}</span></p>}
       <Dl rows={[
-        ['Type', id.type || <None>-</None>],
-        ['Issuer', id.issuer || <None>-</None>],
+        ['Type', id.type || <None>—</None>],
+        ['Issuer', id.issuer || <None>—</None>],
         ['Principal', <IdValue key="p" value={id.principal || id.subject} label="principal" />],
       ]} />
     </Card>
@@ -73,19 +73,18 @@ export function Identity({ agent }) {
 function Manifest({ agent }) {
   const m = agent.manifest || {}
   const limits = m.value_limits_detail || m.value_limits || {}
-  const list = (xs) => (xs && xs.length ? xs.map(clean).join(', ') : <None />)
-  const tools = m.tools || []
+  const chips = (xs, tid) => (xs && xs.length
+    ? <ul className="ag-chips">{xs.map((t) => <li key={t} data-testid={tid} className="ds-chip-tag ag-wrap">{clean(t)}</li>)}</ul>
+    : <None>none declared</None>)
+  const limitText = (v) => (v && typeof v === 'object' ? `${num(v.amount) ?? '\u2014'} ${v.currency || ''}`.trim() : (num(v) ?? '\u2014'))
   return (
     <Card title="Permitted actions" className="ag-ord-5">
-      <p className="ag-label">Tools</p>
-      {tools.length ? (
-        <ul className="ag-chips">{tools.map((t) => <li key={t} data-testid="manifest-tool" className="ds-chip-tag">{clean(t)}</li>)}</ul>
-      ) : <p className="ag-note"><None>none declared</None></p>}
       <Dl rows={[
-        ['Data scopes', list(m.data_scopes)],
-        ['Systems', list(m.systems)],
+        ['Tools', chips(m.tools, 'manifest-tool')],
+        ['Data scopes', chips(m.data_scopes)],
+        ['Systems', chips(m.systems)],
         ['Value limits', Object.keys(limits).length ? Object.entries(limits).map(([t, v]) => (
-          <div key={t}>{clean(t)}: {typeof v === 'object' ? `${nf(v.amount)} ${v.currency || ''}` : nf(v)}</div>)) : <None />],
+          <div key={t}>{clean(t)}: {limitText(v)}</div>)) : <None>none declared</None>],
       ]} />
     </Card>
   )
@@ -99,11 +98,12 @@ function Dependencies({ id }) {
     <Card title="Dependencies" className="ag-ord-5">
       {error && <InlineError error={error} what="dependencies" onRetry={() => setRev((r) => r + 1)} />}
       {loading && !data && !error && <Skel what="dependencies" />}
-      {data && (
+      {data && !data.models.length && !data.mcp_servers.length && !data.tools.length && <p className="ag-note"><None>None declared</None></p>}
+      {data && (data.models.length > 0 || data.mcp_servers.length > 0 || data.tools.length > 0) && (
         <Dl rows={[
           ['Models', data.models.length ? (
-            <ul className="ag-chips">{data.models.map((m, i) => (
-              <li key={i} data-testid="dependency-model"><span className="ds-chip-tag">{clean(m.name)}</span> <span className="ag-muted">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="ag-demo-chip" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
+            <ul className="ag-plain">{data.models.map((m, i) => (
+              <li key={i} data-testid="dependency-model" className="ag-model"><span className="ds-chip-tag">{clean(m.name)}</span><span className="ag-muted ag-model-ver">registry version {m.registry_version ?? '—'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <span className="ag-demo-chip" data-testid="demo-classifier-label">{classifier.label}</span>}</li>
             ))}</ul>) : <None />],
           ['MCP servers', data.mcp_servers.length ? (
             <ul className="ag-plain">{data.mcp_servers.map((m, i) => <li key={i} data-testid="dependency-mcp">{clean(m.name)}{m.target ? ` (${clean(m.target)})` : ''}</li>)}</ul>) : <None />],
@@ -115,8 +115,8 @@ function Dependencies({ id }) {
   )
 }
 
-function pct(x) { return x == null ? '-' : `${(Number(x) * 100).toFixed(1).replace(/\.0$/, '')}%` }
-const f3 = (x) => (x == null ? '-' : Number(x).toFixed(3))
+function pct(x) { return x == null ? '—' : `${(Number(x) * 100).toFixed(1).replace(/\.0$/, '')}%` }
+const f3 = (x) => (x == null ? '—' : Number(x).toFixed(3))
 
 function Validation({ id }) {
   const [rev, setRev] = React.useState(0)
@@ -158,7 +158,7 @@ function Governance({ gov, error, onRetry }) {
           {sim && <p className="ag-note"><span className="ag-demo-chip" data-testid="demo-governance-label">{sim.label}</span></p>}
           <Dl rows={[
             ['Bundle', gov.bundle_id ? <IdValue key="b" value={gov.bundle_id} label="bundle ID" testid="bundle-id" /> : <span data-testid="bundle-id">not yet created</span>],
-            ['Stage', gov.stage || <None>-</None>],
+            ['Stage', gov.stage || <None>—</None>],
           ]} />
           <p className="ag-label ag-label-gap">{gov.bundle_id ? 'Policies attached to this bundle' : 'Policies the bundle will carry'}</p>
           <ul className="ag-bullets" data-testid={gov.bundle_id ? 'policies-attached' : 'policies-expected'}>
@@ -216,7 +216,6 @@ function Findings({ fnd, hl, onRetry }) {
                     <span className="ds-chip-tag">{f.type}</span>
                     <strong className="ag-wrap">{clean(f.tool)}</strong>
                     <span className="pill ag-status">{fmtStatus(f.status)}</span>
-                    <span className="ds-nowrap ag-time" data-testid="finding-time">{fmtTs(f.ts)}</span>
                   </div>
                   <div className="ag-reason" data-testid="finding-reason"><Markdown text={clean(f.explanation) || 'No explanation recorded.'} /></div>
                   {src && (
@@ -225,12 +224,15 @@ function Findings({ fnd, hl, onRetry }) {
                     </span>
                   )}
                 </div>
-                {f.run_id && (
-                  <Link className="ds-btn ds-btn-ghost ag-sm ag-finding-link" data-testid="finding-timeline-link"
-                        to={`/runs/${encodeURIComponent(f.run_id)}${spanId ? `?span=${encodeURIComponent(spanId)}` : ''}`}>
-                    View run timeline<Arrow />
-                  </Link>
-                )}
+                <div className="ag-finding-side">
+                  <span className="ds-nowrap ag-time" data-testid="finding-time">{fmtTs(f.ts)}</span>
+                  {f.run_id && (
+                    <Link className="ds-btn ds-btn-ghost ag-sm ag-finding-link" data-testid="finding-timeline-link"
+                          to={`/runs/${encodeURIComponent(f.run_id)}${spanId ? `?span=${encodeURIComponent(spanId)}` : ''}`}>
+                      View run timeline<Arrow />
+                    </Link>
+                  )}
+                </div>
               </li>
             )
           })}
@@ -278,8 +280,8 @@ function Overview({ a }) {
       <Dl testid="agent-details" rows={[
         ['Agent ID', <IdValue key="i" value={a.id} label="agent ID" />],
         ['Source', sourceLabel(a.source_platform)],
-        ['Owner', clean(a.owner) || <None>-</None>],
-        ['Origin', clean(a.origin) || <None>-</None>],
+        ['Owner', a.owner ? <span className="ds-trunc" title={clean(a.owner)}>{clean(a.owner)}</span> : <None>—</None>],
+        ['Origin', clean(a.origin) || <None>—</None>],
         ['Last seen', <span className="ds-nowrap ag-ink">{fmtTs(a.last_seen)}</span>],
       ]} />
     </Card>
@@ -319,17 +321,21 @@ function AgentView({ id }) {
   }), [id, runRev])
   const demo = useHealth()
   const { hash } = useLocation()
+  const navigate = useNavigate()
   const [hl, setHl] = React.useState(null)
-  // Arriving from a run violation (#finding-<id>): scroll to that finding and flash it.
+  const hlTimer = React.useRef(null)
+  React.useEffect(() => () => clearTimeout(hlTimer.current), [])
+  // Arriving from a run violation (#finding-<id>): scroll to that finding, flash it once, then clear the hash.
   React.useEffect(() => {
     if (!hash || !/^#finding-/.test(hash) || !fnd.data) return
     const el = document.getElementById(hash.slice(1))
     if (!el) return
     el.scrollIntoView({ block: 'center' })
     setHl(hash.slice(1))
-    const t = setTimeout(() => setHl(null), 2600)
-    return () => clearTimeout(t)
-  }, [hash, fnd.data])
+    clearTimeout(hlTimer.current)
+    hlTimer.current = setTimeout(() => setHl(null), 2600)
+    navigate({ hash: '' }, { replace: true })
+  }, [hash, fnd.data, navigate])
   const pack = useEvidencePack(id)
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState(null)
@@ -369,7 +375,7 @@ function AgentView({ id }) {
               <span className="ds-chip-tag" data-testid="agent-source">{sourceLabel(a.source_platform)}</span>
               <TierBadge tier={a.tier} />
               <StatusPill status={a.status} testid="agent-status" />
-              <span className="ag-muted ag-meta-text">Owner {clean(a.owner) || '-'} · Last seen {fmtTs(a.last_seen)}</span>
+              <span className="ag-muted ag-meta-text">Owner {clean(a.owner) || '—'} · Last seen {fmtTs(a.last_seen)}</span>
             </div>
           </div>
           <div className="ag-actions" data-testid="agent-actions">
@@ -388,6 +394,7 @@ function AgentView({ id }) {
           {ok && <div className="ds-alert ag-ok" role="status" data-testid="approve-success">{ok}</div>}
         </div>
       )}
+      {agent.error && <div className="ag-alerts"><InlineError error={agent.error} what="the latest agent data" onRetry={() => setRev((r) => r + 1)} /></div>}
       {a.origin === 'external' && <div className="ag-passport"><Passport agent={a} /></div>}
       <div className="ag-cols">
         <div className="ag-main">
@@ -396,14 +403,14 @@ function AgentView({ id }) {
           <Approvals gov={gov.data} error={gov.error} onRetry={() => setRev((r) => r + 1)} />
           <Validation id={id} />
           <Governance gov={gov.data} error={gov.error} onRetry={() => setRev((r) => r + 1)} />
+          <Dependencies id={id} />
+          <div id="evidence-pack-slot" data-slot="evidence-pack" className="ag-ord-5"><EvidencePack pack={pack} /></div>
         </div>
         <div className="ag-side">
           <Overview a={a} />
           <TierCard agent={a} />
           <Identity agent={a} />
           <Manifest agent={a} />
-          <Dependencies id={id} />
-          <div id="evidence-pack-slot" data-slot="evidence-pack" className="ag-ord-5"><EvidencePack pack={pack} /></div>
         </div>
       </div>
     </div>

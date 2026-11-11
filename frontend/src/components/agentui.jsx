@@ -9,6 +9,7 @@ async function writeClipboard(text) {
     return true
   } catch {
     try {
+      const prev = document.activeElement
       const ta = document.createElement('textarea')
       ta.value = text
       ta.setAttribute('readonly', '')
@@ -18,33 +19,33 @@ async function writeClipboard(text) {
       ta.select()
       const ok = document.execCommand('copy')
       document.body.removeChild(ta)
+      if (prev && prev.focus) prev.focus({ preventScroll: true })
       return ok
     } catch { return false }
   }
 }
 
 export function CopyButton({ value, label, className = '' }) {
-  const [copied, setCopied] = React.useState(false)
+  const [copied, setCopied] = React.useState(null)
   const timer = React.useRef(null)
   React.useEffect(() => () => clearTimeout(timer.current), [])
   const onClick = async (e) => {
     e.stopPropagation()
-    if (await writeClipboard(String(value))) {
-      setCopied(true)
-      clearTimeout(timer.current)
-      timer.current = setTimeout(() => setCopied(false), 1500)
-    }
+    const ok = await writeClipboard(String(value))
+    setCopied(ok ? 'ok' : 'fail')
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => setCopied(null), ok ? 1500 : 2500)
   }
   return (
     <>
       <button type="button" className={`ag-copy ${className}`} data-testid="copy-button" aria-label={`Copy ${label}`} title={`Copy ${label}`} onClick={onClick}>
-        {copied ? (
+        {copied === 'ok' ? (
           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 4.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
         ) : (
           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10.5 3.5v-.2A1.3 1.3 0 0 0 9.2 2H3.8A1.3 1.3 0 0 0 2.5 3.3v5.4A1.3 1.3 0 0 0 3.8 10h.2" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
         )}
       </button>
-      <span className="ds-sr" role="status">{copied ? 'Copied' : ''}</span>
+      <span className={copied === 'fail' ? 'ag-copy-fail' : 'ds-sr'} role="status">{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Copy failed' : ''}</span>
     </>
   )
 }
@@ -52,7 +53,7 @@ export function CopyButton({ value, label, className = '' }) {
 // Long id / ARN: one line, ellipsis, full value in the title and a copy button.
 export function IdValue({ value, label = 'value', testid = 'id-value' }) {
   const v = value == null || value === '' ? null : String(value)
-  if (!v) return <span className="ag-none">-</span>
+  if (!v) return <span className="ag-none">—</span>
   return (
     <span className="ag-idv">
       <span className="ds-trunc ag-idv-text" data-testid={testid} title={v}>{v}</span>
@@ -61,9 +62,9 @@ export function IdValue({ value, label = 'value', testid = 'id-value' }) {
   )
 }
 
-export function Card({ title, testid, id, className = '', actions, children }) {
+export function Card({ title, testid, id, className = '', actions, cardRef, children }) {
   return (
-    <section className={`ds-card ag-card ${className}`} data-testid={testid} id={id}>
+    <section className={`ds-card ag-card ${className}`} data-testid={testid} id={id} ref={cardRef} tabIndex={cardRef ? -1 : undefined}>
       <header className="ag-card-head">
         <h2 className="ag-card-title">{title}</h2>
         {actions}

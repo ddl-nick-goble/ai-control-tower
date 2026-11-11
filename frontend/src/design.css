@@ -3,7 +3,7 @@
 :root {
   --ds-accent: #543fde; --ds-accent-hover: #4533c0; --ds-accent-soft: #efedfc;
   --ds-ink: #14181f; --ds-text: #2b3340; --ds-muted: #596273; --ds-faint: #5f6673;
-  --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
+  --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-surface-2: #eceff3; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
   --ds-danger: #b42318; --ds-danger-bg: #fef3f2; --ds-danger-line: #fda29b;
   --ds-s1: 8px; --ds-s2: 16px; --ds-s3: 24px; --ds-s4: 32px; --ds-s5: 40px; --ds-s6: 48px;
   --ds-radius: 8px; --ds-radius-sm: 6px; --ds-radius-lg: 12px;
@@ -242,14 +242,15 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ag-header-main { min-width: 0; flex: 1 1 320px }
 .ag-name { overflow-wrap: anywhere }
 .ag-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ds-s1); margin-top: var(--ds-s1) }
-.ag-meta-text { font-size: 13px; margin-left: 4px }
+.ag-meta-text { font-size: 13px }
+@media (max-width: 1100px) { .ag-meta-text { flex: 1 1 100% } }
 .ag-meta .badge { border-radius: 12px; padding: 2px 10px }
 .ag-meta .pill { border-radius: 12px; padding: 2px 10px; font-weight: 500; color: var(--ds-text) }
 .ag-meta .pill.status-pending_review { background: #fff4d6; color: #6b4a00 } .ag-meta .pill.status-approved { background: #dff5e3; color: #1b5e20 }
 .ag-actions { display: flex; flex-wrap: wrap; gap: var(--ds-s1); justify-content: flex-end; flex: 0 1 auto }
 .ag-alerts { display: flex; flex-direction: column; gap: var(--ds-s1); margin-bottom: var(--ds-s2) }
 .ag-ok { background: #e8f5e9; border-color: #b7dfbb; color: #1b5e20 }
-.ag-passport { margin-bottom: var(--ds-s2) } .ag-passport .panel { margin-bottom: 0; border-radius: var(--ds-radius-lg); box-shadow: var(--ds-shadow) }
+.ag-passport { margin-bottom: var(--ds-s2) } .ag-passport .ag-card { margin-bottom: 0 }
 
 .ag-cols { display: flex; gap: var(--ds-s2); align-items: flex-start }
 .ag-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--ds-s2) }
@@ -291,7 +292,7 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ag-idv { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; vertical-align: middle }
 .ag-idv-text { min-width: 0; flex: 0 1 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; font-weight: 500; color: var(--ds-ink); display: block }
 .ag-copy { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-muted); cursor: pointer }
-.ag-copy:hover { background: #eceff3; color: var(--ds-ink) }
+.ag-copy:hover { background: var(--ds-surface-2); color: var(--ds-ink) }
 
 /* tier */
 .ag-tierline { display: flex; align-items: center; gap: var(--ds-s1); margin: 0 0 12px; font-size: 13px }
@@ -400,3 +401,20 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .rt-violation.rt-flash { animation-name: rt-flash-v }
 @keyframes rt-flash-v { 0%, 40% { background: #fee4e2 } 100% { background: var(--ds-danger-bg) } }
 .rt-ev:focus-visible { outline: 2px solid var(--ds-accent) }
+
+/* round 2 */
+.ag-copy-fail { font-size: 12px; font-weight: 600; color: var(--ds-danger); white-space: nowrap }
+.ag-dl dd > .ds-trunc { display: block }
+.ag-model { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; padding: 2px 0 }
+.ag-model-ver { font-size: 13px; font-weight: 400 }
+.ag-plain > li + li { margin-top: 4px }
+.ag-finding-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 2px }
+.ag-finding-side .ag-time { margin-left: 0; color: var(--ds-muted) }
+.ag-finding-link { align-self: flex-end }
+@media (max-width: 1100px) { .ag-reason { -webkit-line-clamp: 3 } .ag-finding-side { flex-direction: row; align-items: center; width: 100%; justify-content: space-between } }
+.ag-runs col.c-rstart { width: 184px } .ag-runs col.c-rspans { width: 112px }
+.ag-runs th.num, .ag-runs td.num { text-align: right; padding-right: var(--ds-s3) }
+.ag-runs td.ds-nowrap { overflow: hidden; text-overflow: ellipsis }
+.rt-toolbar { border-bottom: 1px solid var(--ds-line); padding-bottom: var(--ds-s1) }
+.rt-showing { white-space: nowrap }
+.rt-flash { outline: 2px solid var(--ds-accent); outline-offset: -2px }

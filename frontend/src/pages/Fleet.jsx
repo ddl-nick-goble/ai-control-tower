@@ -14,10 +14,10 @@ function ColGroup() {
 function Tile({ id, number, label, hint, active, onClick }) {
   return (
     <button type="button" className={`ds-tile${active ? ' is-active' : ''}`} data-testid={`fleet-tile-${id}`}
-            aria-pressed={active} aria-label={`${label}: ${number}`} onClick={onClick}>
-      <span className="ds-tile-num">{number}</span>
-      <span className="ds-tile-label">{label}</span>
-      <span className="ds-tile-hint">{hint}</span>
+            aria-pressed={active} aria-labelledby={`tile-${id}-num tile-${id}-label`} aria-describedby={`tile-${id}-hint`} onClick={onClick}>
+      <span className="ds-tile-num" id={`tile-${id}-num`}>{number}</span>
+      <span className="ds-tile-label" id={`tile-${id}-label`}>{label}</span>
+      <span className="ds-tile-hint" id={`tile-${id}-hint`}>{hint}</span>
     </button>
   )
 }
@@ -107,7 +107,7 @@ export default function Fleet() {
           <label htmlFor="fleet-search">Search agents</label>
           <div className="ds-search">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-          <input id="fleet-search" type="search" className="ds-input" aria-label="Search agents" placeholder="Search by name or owner"
+          <input id="fleet-search" type="search" className="ds-input" placeholder="Search by name or owner"
                  value={q} onChange={(e) => setP({ q: e.target.value })} />
           </div>
         </div>
@@ -169,7 +169,7 @@ export default function Fleet() {
                       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) go() }}>
                     <td data-testid="fleet-source" data-source={a.source_platform}><span className="ds-chip-tag">{sourceLabel(a.source_platform)}</span></td>
                     <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
-                    <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text" title={owner}>{owner}</span></td>
+                    <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text">{owner}</span></td>
                     <td><TierBadge tier={a.tier} /></td>
                     <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
                     <td className="num"><span data-testid="open-findings" className={a.open_findings > 0 ? 'count hot' : 'count'}>{a.open_findings}</span></td>

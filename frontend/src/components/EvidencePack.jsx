@@ -40,6 +40,7 @@ export function useEvidencePack(id) {
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState(null)
   const [res, setRes] = React.useState(null)
+  const [doneAt, setDoneAt] = React.useState(0)
   const generate = async () => {
     setBusy(true); setErr(null)
     try {
@@ -51,16 +52,25 @@ export function useEvidencePack(id) {
           : (body && typeof body.detail === 'string' ? body.detail : r.statusText || 'Request failed'))
       }
       setRes(body)
+      setDoneAt(Date.now())
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
-  return { busy, err, res, generate }
+  return { busy, err, res, generate, doneAt }
 }
 
 export default function EvidencePack({ pack }) {
-  const { busy, err, res, generate } = pack
+  const { busy, err, res, generate, doneAt } = pack
+  const ref = React.useRef(null)
+  // The header button and this card can be far apart: bring the finished pack into view and move focus to it.
+  React.useEffect(() => {
+    if (!doneAt || !ref.current) return
+    ref.current.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    ref.current.focus({ preventScroll: true })
+  }, [doneAt])
   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
   return (
-    <Card title="Evidence pack" testid="evidence-pack-card">
+    <Card title="Evidence pack" testid="evidence-pack-card" cardRef={ref}
+          actions={<span className="ds-sr" role="status" aria-live="polite">{res ? 'Evidence pack ready' : err ? 'Evidence pack failed' : ''}</span>}>
       {!res && !err && !busy && <p className="ag-note">A dated pack in OCC 2026-54 order, built from ACT's own records. Use Generate evidence pack above.</p>}
       {busy && <Skel what="evidence pack" lines={2} />}
       {err && <InlineError error={{ message: clean(err) }} onRetry={generate} />}

@@ -70,3 +70,15 @@ export function relTime(ts, now = Date.now()) {
 export function agentPath(id) {
   return `/agents/${encodeURIComponent(id).replace(/%3A/gi, ':')}`
 }
+
+// Numeric strings stay strings (no precision loss above 15 digits, trailing zeros kept); only the integer part gets separators.
+// Missing values return null so callers can show a muted dash.
+export function num(v) {
+  if (v == null || v === '') return null
+  const s = typeof v === 'string' ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : null
+  if (s != null && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s)) {
+    const [int, frac] = s.split('.')
+    return int.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (frac ? `.${frac}` : '')
+  }
+  return clean(v)
+}

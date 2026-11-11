@@ -1,6 +1,7 @@
 import React from 'react'
 import { clean } from '../format'
-import { Panel, StatusPill, TierBadge } from './ui'
+import { StatusPill, TierBadge } from './ui'
+import { Card } from './agentui'
 
 const SIGNATURE = { signed: 'Signed (verified)', unsigned: 'Unsigned', invalid: 'Invalid signature' }
 
@@ -14,7 +15,7 @@ export default function Passport({ agent }) {
   const sig = SIGNATURE[agent.card_signature] || 'Unsigned'
   const sigKey = SIGNATURE[agent.card_signature] ? agent.card_signature : 'unsigned'
   return (
-    <Panel title="AI Passport" testid="passport" aside={<TierBadge tier={agent.tier} />}>
+    <Card title="AI Passport" testid="passport" actions={<TierBadge tier={agent.tier} />}>
       <dl className="kv">
         <dt>Identity</dt><dd data-testid="passport-identity">{clean(p.identity || agent.name)}</dd>
         <dt>Allowed skills</dt>
@@ -27,6 +28,6 @@ export default function Passport({ agent }) {
         <dt>Card signature</dt><dd data-testid="passport-signature" data-signature={sigKey} data-severity={sigKey === 'invalid' ? 'warning' : undefined} className={`sig sig-${sigKey}${sigKey === 'invalid' ? ' warn' : ''}`}>{sig}</dd>
         <dt>Status</dt><dd><StatusPill status={agent.status} testid="passport-status" /></dd>
       </dl>
-    </Panel>
+    </Card>
   )
 }
