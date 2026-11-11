@@ -1,7 +1,7 @@
 import React from 'react'
 import { Link, NavLink, useLocation } from 'react-router-dom'
 import { clean, fmtStatus } from '../format'
-import { demoApi, health } from '../api'
+import { demoApi, health, settingsApi } from '../api'
 
 export function TierBadge({ tier }) {
   if (tier == null) return <span className="badge tier-none" data-testid="tier-badge" data-tier="">Unrated</span>
@@ -28,7 +28,12 @@ export function ErrorBox({ error }) {
 
 export function useHealth() {
   const [h, setH] = React.useState(null)
-  React.useEffect(() => { health().then(setH) }, [])
+  React.useEffect(() => {
+    const load = () => health().then(setH)
+    load()
+    window.addEventListener('act:health', load)
+    return () => window.removeEventListener('act:health', load)
+  }, [])
   return h
 }
 
@@ -89,6 +94,8 @@ function LogoMark() {
 
 export function Shell({ children }) {
   const h = useHealth()
+  const [admin, setAdmin] = React.useState(false)
+  React.useEffect(() => { settingsApi.access().then((r) => setAdmin(!!r.admin), () => setAdmin(false)) }, [])
   return (
     <div className="app">
       <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
@@ -100,6 +107,7 @@ export function Shell({ children }) {
           <nav aria-label="Primary" className="ds-nav">
             <FleetLink />
             <NavLink to="/register">Register external agent</NavLink>
+            {admin && <NavLink to="/settings">Settings</NavLink>}
           </nav>
         </div>
       </header>

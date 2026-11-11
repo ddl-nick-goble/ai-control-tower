@@ -1,0 +1,126 @@
+/* Settings page. Built on the shared tokens and ds-* classes in design.css; only layout and the few page-specific parts live here. */
+.st-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--ds-s3); align-items: start }
+.st-main { display: flex; flex-direction: column; gap: var(--ds-s2); min-width: 0 }
+
+/* sticky section nav; below 1100px a horizontal chip row */
+.st-nav { position: sticky; top: var(--ds-s2); display: flex; flex-direction: column; gap: 2px }
+.st-nav-link { display: block; padding: 6px 12px; border-radius: var(--ds-radius-sm); color: var(--ds-text); font-size: 14px; line-height: 20px; font-weight: 500; border-left: 2px solid transparent }
+.st-nav-link:hover { background: #eceff3; color: var(--ds-ink); text-decoration: none }
+.st-nav-link[aria-current] { color: var(--ds-accent); font-weight: 600; background: var(--ds-accent-soft); border-left-color: var(--ds-accent) }
+.st-nav-sub { padding-left: 24px; font-size: 13px; font-weight: 400; color: var(--ds-muted) }
+.st-nav-link:focus-visible { outline-offset: -2px }
+.st-card, .st-plat, .st-platforms { scroll-margin-top: var(--ds-s2) }
+
+/* section card */
+.st-card-head { padding: 14px var(--ds-s3) 12px; border-bottom: 1px solid var(--ds-line) }
+.st-card-head .ds-section-title { font-size: 16px; line-height: 24px }
+.st-sub { margin: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+.st-rows { display: flex; flex-direction: column }
+.st-rows > .st-f + .st-f { border-top: 1px solid var(--ds-line) }
+
+/* a setting: label, status, control, hint (one grid, two layouts) */
+.st-f { display: grid; column-gap: var(--ds-s2); row-gap: 2px; min-width: 0 }
+.st-label { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
+.st-state { display: flex; align-items: center; justify-content: flex-start; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
+.st-setline { min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+.st-hint .st-setline { display: block }
+.st-ctl { display: flex; align-items: center; gap: var(--ds-s1); min-width: 0 }
+.st-ctl .ds-input { flex: 1 1 0; min-width: 0; height: 36px; font-size: 14px }
+.st-ctl .ds-btn { height: 36px; padding: 0 14px; flex: none }
+.st-ctl .ds-btn-ghost { padding: 0 8px }
+.st-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); min-width: 0; overflow-wrap: anywhere }
+.st-hint code, .st-warning code, .st-sub code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--ds-ink); background: #eef0f4; padding: 1px 5px; border-radius: 4px }
+.st-hint:empty { display: none }
+.st-hint-error { display: flex; gap: 6px; align-items: flex-start; color: var(--ds-danger); font-weight: 500 }
+.st-hint-error svg { flex: none; margin-top: 3px }
+.st-f-invalid .ds-input { border-color: var(--ds-danger); background: var(--ds-danger-bg) }
+.st-saved { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: #067647; white-space: nowrap }
+.st-saved:empty { display: none }
+.st-danger { color: var(--ds-danger) }
+.st-danger:hover:not(:disabled) { background: var(--ds-danger-bg) }
+.st-masked { flex: 1 1 0; min-width: 0; height: 36px; display: flex; align-items: center; padding: 0 var(--ds-s2); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: #f5f6f8; color: var(--ds-muted); font-size: 14px; letter-spacing: .12em }
+.st-masked-lock { background: #f5f6f8 }
+.ds-input[readonly] { background: #f5f6f8; color: var(--ds-text) }
+
+/* table row */
+.st-f-row { grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) 196px; grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
+.st-f-row .st-label { grid-area: label; align-self: end }
+.st-f-row .st-hint { grid-area: hint; align-self: start }
+.st-f-row .st-ctl { grid-area: ctl }
+.st-f-row .st-state { grid-area: state }
+
+/* stacked (platform cards) */
+.st-f-stack { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px; padding: 0; align-content: start }
+.st-span { grid-column: 1 / -1 }
+.st-f-stack .st-label { grid-area: label; font-size: 13px; white-space: nowrap } .st-f-stack .st-state { grid-area: state; justify-content: flex-end }
+.st-f-stack .st-ctl { grid-area: ctl } .st-f-stack .st-hint { grid-area: hint }
+
+
+/* platform cards: two-column grid inside the section card, fields paired two per row */
+.st-plat-wrap { padding: var(--ds-s2) var(--ds-s3) var(--ds-s3) }
+.st-plat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ds-s2); align-items: start }
+.st-plat { padding: 14px var(--ds-s2) var(--ds-s2); display: flex; flex-direction: column; box-shadow: none; background: #fbfcfd }
+.st-plat-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ds-s1) }
+.st-plat-title { margin: 0; text-transform: none; letter-spacing: normal; font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ds-ink) }
+.st-plat-blurb { padding: 2px 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--ds-line) }
+.st-plat-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--ds-s2); row-gap: 14px; align-content: start }
+.st-demo { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--ds-s2); align-items: center; padding: 12px var(--ds-s3) }
+.st-demo .st-hint { margin: 0 }
+.st-empty-icon { color: var(--ds-muted); display: inline-flex }
+.st-empty-danger { color: var(--ds-danger) }
+
+/* badge */
+.st-badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 11px; font-size: 12px; line-height: 20px; font-weight: 600; white-space: nowrap; border: 1px solid #d5d9e0; background: #eef0f4; color: #3f4756 }
+.st-badge-ok { background: #ecfdf3; border-color: #a6f4c5; color: #05603a }
+.st-badge-warn { background: #fff7e6; border-color: #f0c36d; color: #6b4a00 }
+.st-badge-lock { background: #f5f6f8; border-color: var(--ds-line-strong); color: var(--ds-ink) }
+
+/* warning */
+.st-warning { display: flex; gap: 10px; align-items: flex-start; margin-bottom: var(--ds-s2); padding: 10px var(--ds-s2); border: 1px solid #f0c36d; background: #fff7e6; color: #6b4a00; border-radius: var(--ds-radius); font-size: 13px; line-height: 20px }
+.st-warning svg { flex: none; margin-top: 2px }
+.st-warning p { margin: 0 } .st-warning p + p { margin-top: 2px }
+
+/* demo switch */
+.st-switch { flex: none; position: relative; width: 44px; height: 24px; border-radius: 12px; border: 1px solid #6b7280; background: #6b7280; cursor: pointer; padding: 0; transition: background .12s }
+.st-switch[aria-checked="true"] { background: var(--ds-accent); border-color: var(--ds-accent) }
+.st-switch:disabled { opacity: .6; cursor: not-allowed }
+.st-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .12s }
+.st-switch[aria-checked="true"] .st-knob { transform: translateX(20px) }
+.st-switch-text { font-size: 14px; font-weight: 600; color: var(--ds-ink) }
+
+/* dialog */
+.st-scrim { position: fixed; inset: 0; background: rgba(16, 24, 40, .5); display: grid; place-items: center; z-index: 1000; padding: var(--ds-s2) }
+.st-dialog { width: 100%; max-width: 440px; padding: var(--ds-s3); box-shadow: 0 12px 32px rgba(16, 24, 40, .24) }
+.st-dlg-body { font-size: 14px; line-height: 22px; color: var(--ds-text); margin: var(--ds-s1) 0 var(--ds-s3) }
+.st-dlg-actions { display: flex; justify-content: flex-end; gap: var(--ds-s1) }
+.st-btn-danger { background: var(--ds-danger); border-color: var(--ds-danger) }
+.st-btn-danger:hover:not(:disabled) { background: #912018 }
+
+/* loading skeleton: same grid as the page, reserved height */
+.st-loading { min-height: 1400px }
+.st-sk-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ds-s2); margin-bottom: 14px }
+.st-sk-plat { padding: 14px var(--ds-s2) 2px; box-shadow: none }
+.st-nav-sk { gap: 14px; padding: 6px 12px; position: static }
+.ds-skel-s { height: 10px; margin-top: 8px }
+.st-sk-row { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: var(--ds-s2); align-items: center; padding: 10px var(--ds-s3) }
+.st-sk-row + .st-sk-row { border-top: 1px solid var(--ds-line) }
+.st-sk-input { height: 36px; border-radius: var(--ds-radius) }
+
+@media (max-width: 1099px) {
+  .st-layout { grid-template-columns: minmax(0, 1fr); gap: var(--ds-s2) }
+  .st-nav { position: sticky; top: 0; z-index: 4; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; gap: 6px; padding: 8px 0; background: var(--ds-bg); box-shadow: 0 1px 0 var(--ds-line) }
+  .st-nav-link { flex: none; border: 1px solid var(--ds-line); border-radius: 16px; background: var(--ds-surface); padding: 4px 12px }
+  .st-nav-link[aria-current] { border-color: var(--ds-accent) }
+  .st-nav-sub { display: none }
+  .st-nav-sk { flex-direction: row }
+  .st-card, .st-plat, .st-platforms { scroll-margin-top: 56px }
+}
+@media (max-width: 899px) {
+  .st-plat-grid, .st-plat-fields { grid-template-columns: minmax(0, 1fr) }
+  .st-f-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px }
+  .st-sk-row { grid-template-columns: minmax(0, 1fr) }
+  .st-demo { grid-template-columns: minmax(0, 1fr); row-gap: 8px }
+}
+@media (prefers-reduced-motion: reduce) { .st-switch, .st-knob { transition: none } }
+
+.ds-empty .ds-helper { font-size: 13px; line-height: 20px }

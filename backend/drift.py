@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import insert, select, update
 
 from . import db
+from .settings import get_setting
 
 log = logging.getLogger(__name__)
 SEVERITY = {1: "critical", 2: "high", 3: "medium", 4: "low"}
@@ -274,7 +275,7 @@ def fallback_explanation(v: dict, agent_name: str, tier: int) -> str:
 
 
 def _mock_provider() -> bool:
-    return (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock"
+    return (get_setting("llm_provider") or "gateway").strip().lower() == "mock"
 
 
 def _llm_explanation(v: dict, agent_name: str, tier: int):

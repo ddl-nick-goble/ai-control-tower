@@ -14,6 +14,8 @@ from contextlib import contextmanager
 
 import requests
 
+from agents.recon_agent import config
+
 log = logging.getLogger(__name__)
 DEFAULT_TOKEN_URL = "http://localhost:8899/access-token"
 KIND = {"internal": 1, "server": 2, "client": 3}
@@ -84,7 +86,7 @@ class ActTraceBuffer:
         return {"resourceSpans": [{
             "resource": {"attributes": _attrs({
                 "service.name": self.service_name, "gen_ai.agent.id": self.agent_id,
-                "act.llm.provider": ("mock" if (os.environ.get("ACT_LLM_PROVIDER") or "").strip().lower() == "mock"
+                "act.llm.provider": ("mock" if (config.get("llm_provider") or "").strip().lower() == "mock"
                                      else None)})},
             "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
         }]}

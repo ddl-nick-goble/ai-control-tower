@@ -8,6 +8,7 @@ import Fleet from './pages/Fleet'
 import Agent from './pages/Agent'
 import Run from './pages/Run'
 import Register from './pages/Register'
+import Settings from './pages/Settings'
 
 createRoot(document.getElementById('root')).render(
   <HashRouter>
@@ -17,6 +18,7 @@ createRoot(document.getElementById('root')).render(
         <Route path="/agents/:id" element={<Agent />} />
         <Route path="/runs/:runId" element={<Run />} />
         <Route path="/register" element={<Register />} />
+        <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Fleet />} />
       </Routes>
     </Shell>

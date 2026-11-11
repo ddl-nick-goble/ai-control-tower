@@ -10,6 +10,7 @@ import requests
 from sqlalchemy import select
 
 from . import db, demo, demo_governance
+from .settings import get_setting
 
 log = logging.getLogger(__name__)
 TIMEOUT = 15
@@ -71,7 +72,7 @@ def _pname(p):
 
 def policy_ids() -> dict:
     """{'agentic': id|None, 'model': id|None}: env first, discovery by policy name as fallback."""
-    out = {"agentic": os.environ.get("ACT_POLICY_AGENTIC_ID"), "model": os.environ.get("ACT_POLICY_MODEL_ID")}
+    out = {"agentic": get_setting("policy_agentic_id"), "model": get_setting("policy_model_id")}
     if all(out.values()):
         return out
     try:

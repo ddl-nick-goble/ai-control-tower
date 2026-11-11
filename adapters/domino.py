@@ -20,6 +20,7 @@ from pathlib import Path
 import requests
 
 from backend import demo
+from backend.settings import get_setting
 
 from .base import AdapterBase, SourceAgent, SourceRun
 
@@ -151,7 +152,7 @@ class DominoAdapter(AdapterBase):
 
     @staticmethod
     def _identity(principal):
-        allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
+        allow = {x.strip() for x in (get_setting("service_accounts") or "").split(",") if x.strip()}
         principal = principal or "unknown"
         if principal in allow:
             return {"type": "domino_service_account", "principal": principal, "distinct": True}
@@ -215,7 +216,7 @@ class DominoAdapter(AdapterBase):
         out = []
         for e in entries:
             principal = e.get("principal") or e.get("owner")
-            allow = {x.strip() for x in os.environ.get("ACT_SERVICE_ACCOUNTS", "").split(",") if x.strip()}
+            allow = {x.strip() for x in (get_setting("service_accounts") or "").split(",") if x.strip()}
             if demo.enabled() and e["native_id"] == (os.environ.get("RECON_AGENT_ID") or "local-recon-agent"):
                 ident = demo.service_account_identity()  # labelled stand-in: no real service account in demo mode
             else:

@@ -1,6 +1,7 @@
 """SQLite storage for ACT (single DB, WAL, pooled connections)."""
 import logging
 import os
+import threading
 from pathlib import Path
 
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
@@ -26,23 +27,62 @@ try:
 except OSError:
     log.exception("could not create DB directory for %s", DB_PATH)
 
-engine = create_engine(
-    f"sqlite:///{DB_PATH}",
-    poolclass=QueuePool,
-    pool_size=20,
-    max_overflow=5,
-    pool_pre_ping=False,
-    connect_args={"check_same_thread": False, "timeout": 30},
-)
+def _make_engine(path: str):
+    eng = create_engine(
+        f"sqlite:///{path}",
+        poolclass=QueuePool,
+        pool_size=20,
+        max_overflow=5,
+        pool_pre_ping=False,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    event.listen(eng, "connect", _on_connect)
+    return eng
 
 
-@event.listens_for(engine, "connect")
 def _on_connect(dbapi_conn, _record):
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute("PRAGMA busy_timeout=30000")
     cur.close()
+
+
+engine = _make_engine(DB_PATH)
+# The "real" DB (settings, audit of settings changes, key file) never changes; `engine` is the active DB
+# and is swapped to a demo DB by the runtime demo switch (use_path / use_real).
+real_engine = engine
+REAL_DB_PATH = DB_PATH
+
+
+_engines_lock = threading.Lock()
+_engines: dict = {}  # demo engines by resolved path: kept for reuse, never disposed while requests may hold them
+
+
+def engine_for(path: str):
+    """The (cached) engine for `path`; one engine per path for the life of the process."""
+    key = str(Path(path).expanduser().resolve())
+    with _engines_lock:
+        if key not in _engines:
+            Path(key).parent.mkdir(parents=True, exist_ok=True)
+            _engines[key] = _make_engine(key)
+        return _engines[key]
+
+
+def swap(new_engine, new_path: str):
+    """Make `new_engine` the active DB. Returns the previous (engine, path) so a failed switch can restore it."""
+    global engine, DB_PATH
+    prev = (engine, DB_PATH)
+    engine, DB_PATH = new_engine, new_path
+    return prev
+
+
+def use_path(path: str) -> None:
+    swap(engine_for(path), path)
+
+
+def use_real() -> None:
+    swap(real_engine, REAL_DB_PATH)
 
 
 metadata = MetaData()
@@ -210,8 +250,18 @@ audit_events = Table(
     Column("detail", JSON),
 )
 
+# In-app Settings (T-39). Secret values are Fernet ciphertext; plain values are text. Always in the real DB.
+app_settings = Table(
+    "app_settings", metadata,
+    Column("name", String, primary_key=True),
+    Column("value", Text),
+    Column("is_secret", Boolean, default=False),
+    Column("changed_by", String),
+    Column("changed_at", String),
+)
 
-def _migrate() -> None:
+
+def _migrate(engine) -> None:
     """Idempotent additive migration: add any declared column missing from an existing table."""
     insp = inspect(engine)
     with engine.begin() as conn:
@@ -235,7 +285,7 @@ def _migrate() -> None:
                               "ON events (run_id, agent_id)"))
 
 
-def _ensure_findings_index() -> None:
+def _ensure_findings_index(engine) -> None:
     """Unique partial index for one scope_drift finding per run; never crash on legacy duplicates."""
     try:
         with engine.begin() as conn:
@@ -246,15 +296,16 @@ def _ensure_findings_index() -> None:
                     exc_info=True)
 
 
-def init_db() -> None:
+def init_db(eng=None) -> None:
+    eng = eng or engine
     try:
-        metadata.create_all(engine)
+        metadata.create_all(eng)
     except Exception as e:
         if "index" not in str(e).lower():
             raise
         log.warning("create_all failed (possibly the findings unique index); continuing", exc_info=True)
-    _migrate()
-    _ensure_findings_index()
+    _migrate(eng)
+    _ensure_findings_index(eng)
 
 
 def prewarm(n: int) -> None:

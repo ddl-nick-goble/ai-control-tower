@@ -64,15 +64,19 @@ def _count(table, agent_id):
 _recon_lock = threading.Lock()
 
 
-def run_recon_once(agent_id) -> str:
+def run_recon_once(agent_id, eng=None) -> str:
     """Run the recon agent once in-process (always) and return the id of the new run."""
     from backend import db
     from sqlalchemy import select
 
+    eng = eng or db.engine  # captured once: the id snapshots and the run itself see the same DB
+
     def run_ids():
-        with db.engine.connect() as cx:
+        with eng.connect() as cx:
             return {r[0] for r in cx.execute(select(db.runs.c.id).where(db.runs.c.agent_id == agent_id))}
     with _recon_lock:
+        if db.engine is not eng:
+            raise RuntimeError("the active database changed; not running the recon agent")
         before = run_ids()
         _run_recon(agent_id, {}, force=True)
         new = run_ids() - before

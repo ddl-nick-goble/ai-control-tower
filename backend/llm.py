@@ -12,6 +12,8 @@ import os
 
 import requests
 
+from .settings import get_setting
+
 log = logging.getLogger(__name__)
 _warned = False
 
@@ -26,7 +28,7 @@ class GatewayError(RuntimeError):
 def warn_if_mock() -> None:
     """Log once per process that LLM calls are answered by the offline mock, not a model."""
     global _warned
-    if not _warned and (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
+    if not _warned and (get_setting("llm_provider") or "gateway").strip().lower() == "mock":
         _warned = True
         log.warning("ACT_LLM_PROVIDER=mock: LLM calls are answered by the offline mock-llm stand-in, "
                     "NOT a model. Unset it and set LLM_GATEWAY_URL to use the LLM Gateway.")
@@ -46,7 +48,7 @@ def _token() -> str:
 
 
 def gateway_url() -> str:
-    url = os.environ.get("LLM_GATEWAY_URL", "").rstrip("/")
+    url = (get_setting("llm_gateway_url") or "").rstrip("/")
     if not url:
         raise GatewayError("LLM_GATEWAY_URL is not set (Project env var: the LLM Gateway App URL)")
     return url
@@ -84,7 +86,7 @@ def create_message(model_alias, messages, tools=None, system=None, max_tokens=10
     Returns {"stop_reason", "content": [{"type": "text"|"tool_use", ...}], "model", "usage", "id"}.
     "model" is the model id the gateway reports having served (alias resolved upstream).
     """
-    if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
+    if (get_setting("llm_provider") or "gateway").strip().lower() == "mock":
         warn_if_mock()
         from act_llm_mock import create_message as _mock  # deterministic offline stand-in, model "mock-llm"
         return _mock(model_alias, messages, tools=tools, system=system, max_tokens=max_tokens, tags=tags,

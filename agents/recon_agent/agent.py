@@ -14,7 +14,7 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from agents.recon_agent import llm, tools
+from agents.recon_agent import config, llm, tools
 from agents.recon_agent.act_export import ActTraceBuffer
 from tracing_setup import add_tracing, agent_run
 
@@ -50,7 +50,7 @@ def _payload(br):
 
 
 def _from_endpoint(url, payload):
-    key = os.environ.get("BREAK_CLASSIFIER_ACCESS_KEY")
+    key = config.get("break_classifier_access_key")
     if not key:
         raise RuntimeError("BREAK_CLASSIFIER_ACCESS_KEY is required when BREAK_CLASSIFIER_ENDPOINT_URL is set")
     # Domino sync endpoints use HTTP Basic with the endpoint access key as user and password.
@@ -160,7 +160,7 @@ def classify_break(br: dict, notes=None):
     notes = notes if notes is not None else []
     if _demo_mode():  # no endpoint, no registry
         return _demo_classify(payload), "demo"
-    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
+    url = config.get("break_classifier_endpoint_url")
     if url:
         try:
             return _from_endpoint(url, payload), "endpoint"
