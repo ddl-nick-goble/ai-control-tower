@@ -28,6 +28,7 @@ New data-testid contract (role/label/text locators are primary):
 import json
 import os
 import re
+import time
 
 import pytest
 from playwright.sync_api import expect
@@ -359,8 +360,11 @@ def test_s5_ui_never_mentions_claude(page, shot, seeded, which):
 
 def test_s5_loading_state_agent(page, shot, seeded):
     def slow(route):
-        page.wait_for_timeout(1500)
-        route.continue_()
+        time.sleep(1.5)
+        try:
+            route.continue_()
+        except Exception:
+            pass  # page/context closed during teardown
     page.route(re.compile(r"/api/agents/[^/]+$"), slow)
     page.goto(f"./#/agents/{seeded['recon_id']}")
     st = page.get_by_role("status").filter(has_text=re.compile("loading", re.I))
