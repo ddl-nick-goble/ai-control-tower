@@ -399,3 +399,93 @@ def test_st2a_short_key_warns_no_crash(env):
         assert r.status_code == 200, r.text
         assert any("short" in w.lower() or "32" in w for w in r.json()["warnings"]), r.json()["warnings"]
     _purge()
+
+
+# ---- round 2 additions ----
+def test_st2_link_oserror_falls_back_key_file_0600_round_trips(env, db_env, monkeypatch):
+    import os
+
+    def _no_link(*a, **k):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(os, "link", _no_link)
+    main = _start(env, key=False)
+    with TestClient(main.app) as c:
+        assert c.put("/api/settings/aws_access_key_id", json={"value": SECRET}, headers=ADMIN).status_code == 200
+        from backend.settings import get_setting
+        assert get_setting("aws_access_key_id") == SECRET
+    keyfiles = [p for p in db_env.parent.iterdir() if p.is_file() and "key" in p.name.lower()
+                and not p.name.startswith(db_env.name)]
+    assert len(keyfiles) == 1, list(db_env.parent.iterdir())
+    assert stat.S_IMODE(keyfiles[0].stat().st_mode) == 0o600
+    assert keyfiles[0].read_bytes().strip()
+    assert [p for p in db_env.parent.iterdir() if p.name.endswith(".tmp")] == []
+    _purge()
+    main = importlib.import_module("backend.main")  # restart: same key file still decrypts
+    with TestClient(main.app):
+        from backend.settings import get_setting
+        assert get_setting("aws_access_key_id") == SECRET
+    _purge()
+
+
+def test_st3_ambient_sdk_env_does_not_lock_platform_fields(env):
+    ambient = {"AWS_ACCESS_KEY_ID": "AMBIENT-AKIA-1", "AWS_SECRET_ACCESS_KEY": "AMBIENT-SECRET-2",
+               "AZURE_CLIENT_SECRET": "AMBIENT-AZ-3", "DATABRICKS_HOST": "https://ambient-dbx.example"}
+    for k, v in ambient.items():
+        env.setenv(k, v)
+    main = _start(env)
+    with TestClient(main.app) as c:
+        r = c.get("/api/settings", headers=ADMIN)
+        assert r.status_code == 200
+        for v in ambient.values():
+            assert v not in r.text
+        for n in ["aws_access_key_id", "aws_secret_access_key", "microsoft_client_secret", "databricks_host"]:
+            e = _entry(c, n)
+            assert e["locked"] is False and e["source"] != "env" and e["is_set"] is False, (n, e)
+        assert c.put("/api/settings/databricks_host", json={"value": "https://app.example"},
+                     headers=ADMIN).status_code == 200
+    _purge()
+
+
+def test_st3_act_prefixed_platform_env_locks(env):
+    env.setenv("ACT_DATABRICKS_HOST", "https://act-dbx.example")
+    env.setenv("ACT_AWS_SECRET_ACCESS_KEY", SECRET)
+    main = _start(env)
+    with TestClient(main.app) as c:
+        r = c.get("/api/settings", headers=ADMIN)
+        assert SECRET not in r.text
+        e = _entry(c, "databricks_host")
+        assert e["locked"] is True and e["source"] == "env"
+        e = _entry(c, "aws_secret_access_key")
+        assert e["locked"] is True and e["source"] == "env" and e["is_set"] is True
+        assert c.put("/api/settings/databricks_host", json={"value": "x"}, headers=ADMIN).status_code == 423
+    _purge()
+
+
+def test_st6_no_owner_no_admins_explains_no_admin_configured(env):
+    env.delenv("DOMINO_PROJECT_OWNER", raising=False)
+    main = _start(env)
+    with TestClient(main.app) as c:
+        assert c.get("/api/settings").status_code == 401
+        r = c.get("/api/settings", headers=OTHER)
+        assert r.status_code == 403
+        assert "no" in r.text.lower() and "admin" in r.text.lower() and "configured" in r.text.lower(), r.text
+    _purge()
+
+
+def test_st6_non_admin_403_when_owner_set(client):
+    r = client.get("/api/settings", headers=OTHER)
+    assert r.status_code == 403
+    assert "no project owner or admins are configured" not in r.text.lower()
+
+
+def test_accessor_does_not_create_db_file_when_missing(env, tmp_path):
+    missing = tmp_path / "nodb" / "missing.db"
+    missing.parent.mkdir()
+    env.setenv("ACT_DB", str(missing))
+    _purge()
+    import backend.settings as s
+    s.get_setting("llm_gateway_url")
+    s.get_setting("admins")
+    assert not missing.exists()
+    assert list(missing.parent.iterdir()) == []
+    _purge()
