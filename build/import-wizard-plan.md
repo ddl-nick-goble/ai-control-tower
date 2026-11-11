@@ -1,6 +1,6 @@
 # Plan: Import wizard and connected sources (replace the manual Register flow)
 
-Status: PROPOSED, waiting for Nick's go-ahead. Written 2026-11-11.
+Status: APPROVED 2026-11-11 ("lets go"); starts after T-39 Settings. Written 2026-11-11.
 Replaces T-27 (Connections) and T-31 (paste JSON / bulk import) in build/superblocks-plan.md.
 
 ## 1. The problem (Nick, 2026-11-11)
@@ -64,7 +64,7 @@ One card per connected system showing status, auth method, last test, last sync,
 | Piece | Domino building block | Custom |
 |---|---|---|
 | Crawl and sync runs | **Domino Jobs** (started from the app through the Jobs API with the user's or app's identity), **scheduled Jobs** for ongoing sync | `jobs/discover.py` (one connection, one scope set, writes a discovery run) |
-| Secrets | **Project secret variable** `ACT_SECRET_KEY` holds the encryption key | `connections.secret` encrypted with it (Fernet); never returned by any API |
+| Secrets | **Project secret variable** `ACT_SECRET_KEY` holds the encryption key | platform credentials are entered and replaced on the in-app Settings page (T-39) and stored encrypted; the wizard's sign-in step writes to the same store; never returned by any API |
 | Storage | **Dataset** (existing SQLite DB) | new tables: `connections`, `discovery_runs`, `discovered_agents` (staging, with a diff against `agents`) |
 | Inventory and review | existing records, Governance bundles, audit | import endpoint that turns staging rows into records |
 | Adapters | Domino API proxy for the Domino adapter | contract extended with `auth_methods()`, `test_connection(creds) -> {permission: ok/missing, fix}`, `list_scopes(creds)`, `discover(creds, scopes, progress)` |
@@ -77,7 +77,7 @@ APIs (all behind sign-in; connect and import need the Admin or Owner role once r
 
 | Id | Title | Depends | Main files | Builder | QA |
 |---|---|---|---|---|---|
-| T-40 | Connections backend: tables, encrypted secrets, connection CRUD + test, adapter contract extension (test_connection, list_scopes, auth_methods) with sample-tenant mode | T-19a | backend/connections.py, backend/routes/connections.py, backend/db.py, adapters/base.py | builder | test-author, code-reviewer |
+| T-40 | (needs T-39) Connections backend: tables, encrypted secrets, connection CRUD + test, adapter contract extension (test_connection, list_scopes, auth_methods) with sample-tenant mode | T-19a | backend/connections.py, backend/routes/connections.py, backend/db.py, adapters/base.py | builder | test-author, code-reviewer |
 | T-42 | Suggested criteria engine with "why" per score; override needs a reason, audited | T-19a | config/criteria_rules.yaml, backend/suggest.py | builder | test-author, code-reviewer |
 | T-41 | Discovery: jobs/discover.py as a Domino Job launched from the API, progress, staging + diff (new/changed/unchanged/missing), import endpoint (Pending review, bundles, audit, re-tier) | T-40, T-42 | jobs/discover.py, backend/discovery.py, backend/routes/discovery.py | domino-setup (sonnet) for the Job launch, then builder | test-author, code-reviewer |
 | T-45 | Live adapters hardened per platform: real auth flows, scope listing, permission checks, contract tests against recorded HTTP; live Domino crawl of Agents, Apps, endpoints, models | T-40 | adapters/*.py, fixtures/http/ | builder | test-author, code-reviewer |
@@ -107,3 +107,7 @@ Merges with the Superblocks plan: T-43's wizard shares the shell from T-20. If b
 3. **Secret storage.** Proposed: encrypted in ACT's DB with the key in a Domino Project secret variable. The alternative is the admin putting each credential in Project variables and the wizard only detecting them. That's simpler and safer, but there's no in-app sign-in.
 4. **Suggested scores** for imported agents: should the reviewer confirm them in the wizard (proposed), or should they be taken as is and confirmed at approval?
 5. **Order** relative to T-19b and the Superblocks plan. Proposed: T-19a → T-19b → this plan (it fixes the most visible demo gap) → the Superblocks Must tasks.
+
+## 7. Decisions taken (2026-11-11)
+- Secrets: edited in the app on a Settings page (T-39), encrypted at rest; demo mode toggled there too.
+- Defaults until Nick says otherwise: sample tenants for the clouds until credentials are entered; reviewers confirm suggested scores in the wizard; order T-19a, then T-19b + T-39, then T-40..T-46.
