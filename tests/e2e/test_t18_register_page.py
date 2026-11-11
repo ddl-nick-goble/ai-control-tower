@@ -435,5 +435,6 @@ def test_r5_preview_unavailable(page, shot):
         status=500, content_type="application/json", body='{"detail":"boom"}'))
     _open(page)
     _set_all(page, 5)
-    expect(page.get_by_test_id("register-summary")).to_contain_text("Preview unavailable")
+    status = page.get_by_test_id("register-summary").get_by_role("status")
+    expect(status).to_contain_text("Preview unavailable. Try again in a moment.")
     shot("then")
