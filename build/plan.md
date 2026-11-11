@@ -168,7 +168,7 @@ Superblocks plan approved by Nick. At most three tasks run at once; tasks in a w
 | Wave | Tasks |
 |------|-------|
 | W1 | T-19a (in progress) |
-| W2 | T-19b, T-39 |
+| W2 | T-19b (task/T-19b, worktree created from 3dd366e), T-39 (task/T-39, worktree created from 3dd366e) |
 | W3 | T-20 (navigation + routes for Home, Findings, Policies, Audit, Connections, Import) |
 | W4 | T-21 Audit, T-22 Approval gate, T-42 Suggested scores |
 | W5 | T-40 Connections backend, T-23 Findings center, T-25 Policies |
@@ -179,5 +179,6 @@ Superblocks plan approved by Nick. At most three tasks run at once; tasks in a w
 Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could ACs are written when the task is scheduled), T-40..T-46 in build/import-wizard-plan.md section 5, T-39 above. Spend at approval: about $110 of $1,900.
 - 2026-11-11: T-19a round 2 @128223a: demo tests pass but by moving the banner after <main> (DOM/tab order mismatch); rejected. Round 3 (final): banner back first in DOM with stand-ins visible by default, plus visual-review fixes.
 - 2026-11-11: T-19a re-review @867a839: approve, no blockers/majors. Minors logged for T-19b carry-over: Run.jsx:20 >15-digit numeric strings lose precision; Fleet.jsx:172 duplicate title; Fleet.jsx:110 redundant aria-label; Fleet.jsx:17 tile aria-label hides hint (use aria-describedby); ui.jsx:59 slugify stand-in ids.
-- 2026-11-11: T-19a final: e2e 107/107 + 6 capture tests (a9ad5ab), re-review approved, final visual pass except the sticky-header capture (the demo fleet is too short to scroll; CSS th sticky top:0 is in place). MERGED (5644987). Post-merge code tests running.
+- 2026-11-11: T-19a final: e2e 107/107 + 6 capture tests (a9ad5ab), re-review approved, final visual pass except the sticky-header capture (the demo fleet is too short to scroll; CSS th sticky top:0 is in place). MERGED (5644987). Post-merge 604 passed, 3 skipped. Worktree removed.
 - Carry into T-19b: verify the Fleet header stays pinned with a long list (th sticky inside any overflow wrapper); title tooltip on truncated agent names; demo banner expanded state repeats "Demo mode: simulated data" (drop the duplicate heading row); check a run with numbers >= 1,000 shows separators; plus the re-review minors above.
+- 2026-11-11: W1 done (T-19a, cumulative spend $112). W2 started: worktrees T-19b and T-39. T-39 code tests being written (contract: GET/PUT/DELETE /api/settings, backend.settings.get_setting). End-of-wave W1 e2e running on main. T-19b and T-39 UI tests follow (one ui-tester at a time).
