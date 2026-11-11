@@ -177,3 +177,4 @@ Superblocks plan approved by Nick. At most three tasks run at once; tasks in a w
 | W8 | T-44 Connections page + sync, T-28 Change history, T-29 Standards |
 | W9 | T-32 Data residency, then T-33 + T-46 combined: demo seed for every screen, republish the App, demo walk |
 Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could ACs are written when the task is scheduled), T-40..T-46 in build/import-wizard-plan.md section 5, T-39 above. Spend at approval: about $110 of $1,900.
+- 2026-11-11: T-19a round 2 @128223a: demo tests pass but by moving the banner after <main> (DOM/tab order mismatch); rejected. Round 3 (final): banner back first in DOM with stand-ins visible by default, plus visual-review fixes.
