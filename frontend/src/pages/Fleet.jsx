@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import { agentPath, clean, fmtTs, relTime, sourceLabel } from '../format'
 import { StatusPill, TierBadge, useAsync } from '../components/ui'
-import { Alert, Button, PageHeader } from '../components/form'
+import { Button, PageHeader } from '../components/form'
 
 const COLS = [['Source', 'c-source'], ['Name', 'c-name'], ['Owner', 'c-owner'], ['Tier', 'c-tier'], ['Status', 'c-status'], ['Open findings', 'c-findings'], ['Last seen', 'c-seen']]
 
@@ -103,10 +103,13 @@ export default function Fleet() {
       </div>
 
       <div className="ds-filterbar" role="search">
-        <div className="ds-search">
+        <div className="ds-filter ds-search-filter">
+          <label htmlFor="fleet-search">Search agents</label>
+          <div className="ds-search">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
-          <input type="search" className="ds-input" aria-label="Search agents" placeholder="Search by name or owner"
+          <input id="fleet-search" type="search" className="ds-input" aria-label="Search agents" placeholder="Search by name or owner"
                  value={q} onChange={(e) => setP({ q: e.target.value })} />
+          </div>
         </div>
         <label className="ds-filter">Source
           <select className="ds-input ds-select" data-testid="source-filter" value={source} onChange={(e) => setP({ source: e.target.value })}>
@@ -125,10 +128,15 @@ export default function Fleet() {
       </div>
 
       {all.error && !data && (
-        <Alert title="We could not load the fleet" data-testid="fleet-error" className="ds-fleet-error"
-               actions={<Button variant="secondary" onClick={() => setRev((r) => r + 1)}>Try again</Button>}>
-          Something went wrong while fetching agents. Check your connection and try again.
-        </Alert>
+        <div className="ds-card ds-empty ds-empty-error" data-testid="fleet-error" role="alert">
+          <svg className="ds-empty-icon" width="32" height="32" viewBox="0 0 20 20" aria-hidden="true">
+            <circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M10 5.5v5.5M10 13.5v1.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+          <h2 className="ds-empty-title">We could not load the fleet</h2>
+          <p className="ds-helper">Something went wrong while fetching agents. Check your connection and try again.</p>
+          <Button variant="secondary" onClick={() => setRev((r) => r + 1)}>Try again</Button>
+        </div>
       )}
       {all.loading && !data && !all.error && <Skeleton />}
       {ready && rows.length === 0 && !filtered && (
@@ -142,7 +150,7 @@ export default function Fleet() {
         <div className="ds-card ds-empty" data-testid="fleet-empty">
           <h2 className="ds-empty-title">No agents match</h2>
           <p className="ds-helper">Try a different name, source or tier.</p>
-          <Button variant="secondary" onClick={clear}>Clear filters</Button>
+          <Button variant="ghost" onClick={clear}>Clear filters</Button>
         </div>
       )}
       {ready && rows.length > 0 && (
@@ -161,7 +169,7 @@ export default function Fleet() {
                       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) go() }}>
                     <td data-testid="fleet-source" data-source={a.source_platform}><span className="ds-chip-tag">{sourceLabel(a.source_platform)}</span></td>
                     <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
-                    <td data-testid="fleet-owner" className="ds-trunc" title={owner}>{owner}</td>
+                    <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text" title={owner}>{owner}</span></td>
                     <td><TierBadge tier={a.tier} /></td>
                     <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
                     <td className="num"><span data-testid="open-findings" className={a.open_findings > 0 ? 'count hot' : 'count'}>{a.open_findings}</span></td>

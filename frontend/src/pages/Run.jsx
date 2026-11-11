@@ -16,6 +16,11 @@ function label(ev) {
   return clean(ev.name)
 }
 
+function num(v) {
+  if (typeof v === 'number' || (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()))) return Number(v).toLocaleString('en-US')
+  return clean(v)
+}
+
 const REASONS = {
   tool_not_in_manifest: 'Outside manifest',
   value_limit_exceeded: 'Over limit',
@@ -88,7 +93,7 @@ export default function Run() {
                 <pre data-testid="timeline-event-args">{cleanText(ev.args_redacted, 2000)}</pre>
               )}
               {isV && v.reason === 'value_limit_exceeded' && (
-                <div className="tl-note">Observed {clean(v.observed_value)}, limit {clean(v.limit)}</div>
+                <div className="tl-note">Observed {num(v.observed_value)}, limit {num(v.limit)}</div>
               )}
               {isV && v.note && <div className="tl-note">{clean(v.note)}</div>}
               {(ev.kind === 'input' || ev.kind === 'output') && content(ev) && (

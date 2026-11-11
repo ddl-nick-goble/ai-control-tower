@@ -1,5 +1,5 @@
 import React from 'react'
-import { Link, NavLink } from 'react-router-dom'
+import { Link, NavLink, useLocation } from 'react-router-dom'
 import { clean, fmtStatus } from '../format'
 import { demoApi, health } from '../api'
 
@@ -48,7 +48,7 @@ function DemoBanner({ health: h }) {
       return () => clearTimeout(t)
     }
   }, [])
-  const [open, setOpen] = React.useState(false)
+  const [open, setOpen] = React.useState(true)
   const n = h.stand_ins.length
   return (
     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
@@ -70,6 +70,14 @@ function DemoBanner({ health: h }) {
   )
 }
 
+// Fleet is the parent of agent and run pages: current page on "/", current section on its children.
+function FleetLink() {
+  const { pathname } = useLocation()
+  const exact = pathname === '/'
+  const child = /^\/(agents|runs)\//.test(pathname)
+  return <Link to="/" aria-current={exact ? 'page' : child ? 'true' : undefined}>Fleet</Link>
+}
+
 function LogoMark() {
   return (
     <svg className="ds-logo" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
@@ -84,19 +92,18 @@ export function Shell({ children }) {
   return (
     <div className="app">
       <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
+      {h && h.demo_mode && <DemoBanner health={h} />}
       <header className="ds-topbar" data-testid="app-topbar">
         <div className="ds-shell-inner ds-topbar-row">
           <Link to="/" className="ds-brand"><LogoMark />Agent Control Tower</Link>
           <span className="ds-subtitle" data-testid="app-subtitle">Agent system of record</span>
           <nav aria-label="Primary" className="ds-nav">
-            <NavLink to="/" end>Fleet</NavLink>
+            <FleetLink />
             <NavLink to="/register">Register external agent</NavLink>
           </nav>
         </div>
       </header>
       <main className="content" id="main" tabIndex={-1}>{children}</main>
-      {/* After <main> in the DOM so on-page stand-in labels precede the banner's collapsed chips; CSS order puts it on top. */}
-      {h && h.demo_mode && <DemoBanner health={h} />}
     </div>
   )
 }

@@ -34,8 +34,8 @@ select:focus { outline:2px solid var(--brand); outline-offset:1px }
 .findings li.sev-critical { border-left-color:var(--red) }
 .f-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
 .markdown p { margin:4px 0 } .markdown code { background:#eef0f4; padding:0 4px; border-radius:3px }
-.timeline { list-style:none; padding:0; margin:12px 0; border-left:2px solid var(--line) }
-.tl-event { background:var(--card); border:1px solid var(--line); border-radius:6px; margin:0 0 8px 12px; padding:8px 12px }
+.timeline { list-style:none; padding:0; margin:12px 0 }
+.tl-event { background:var(--card); border:1px solid var(--line); border-radius:6px; margin:0 0 8px; padding:8px 12px }
 .tl-event.violation { border-color:var(--red); background:#fff5f5; border-left:4px solid var(--red) }
 .tl-head { display:flex; gap:10px; align-items:center; flex-wrap:wrap } .tl-ts { color:var(--muted); font-variant-numeric:tabular-nums }
 .violation-badge { background:var(--red) } .tl-note { color:var(--red); margin-top:4px }
