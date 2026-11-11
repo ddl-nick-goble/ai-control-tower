@@ -206,3 +206,4 @@ Each task's ACs: T-20..T-33 in build/superblocks-plan.md section 4 (Should/Could
 - 2026-11-11: T-19b design review r2: changes needed (dangling View finding link still there; Started timestamp truncated in Runs; minors). Builder round 2 (of 3) started: code-r2 banner blocker + visual-r2.
 - 2026-11-11: T-39 backend tests @694b69e: 30/30 settings (6 new: link fallback, ACT_ env names vs ambient SDK vars, 401/403 explanations, no stray DB), full backend pass with 3 skips. Pushed 9cbce45.
 - 2026-11-11: T-19b round 2 pushed da5ab4b (tests/ untouched; backend pass). The violation/finding mismatch was not a bug: one scope_drift finding per run holds all its violations; the timeline links the first ('View finding') and the rest ('Included in finding'). Code re-review r3 running; UI run 3 queued behind the T-39 UI run 3.
+- 2026-11-11: T-19b code re-review r3: approve with follow-ups (build/review/T-19b-code-r3.md). Waiting for UI run 3 + design review r3.
