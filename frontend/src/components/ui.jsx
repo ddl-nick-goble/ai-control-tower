@@ -59,8 +59,8 @@ function DemoBanner({ health: h }) {
         <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls="demo-stand-ins" onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
         <span className="demo-sep" aria-hidden="true">·</span>
         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
-        <span className="demo-break" hidden={!open} />
         <div id="demo-stand-ins" className="demo-panel" hidden={!open}>
+          <span className="demo-break" aria-hidden="true" />
           <span className="demo-panel-title">Demo mode: simulated data and stand-ins</span>
           {h.stand_ins.map((s) => <span className="demo-chip" key={s.name} data-stand-in={s.name}>{s.label}</span>)}
         </div>
