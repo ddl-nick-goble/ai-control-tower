@@ -1,0 +1,287 @@
+diff --git a/backend/routes/tiering.py b/backend/routes/tiering.py
+index d7c4360..77291b7 100644
+--- a/backend/routes/tiering.py
++++ b/backend/routes/tiering.py
+@@ -1,4 +1,6 @@
+ """POST /api/tiering/preview: read-only tier preview for the Register page (scores via backend/tiering.py)."""
++import math
++
+ from fastapi import APIRouter, Body, Depends, HTTPException
+ 
+ from ..domino_identity import User, require_user
+@@ -14,14 +16,16 @@ def preview_tier(body=Body(...), user: User = Depends(require_user)):
+     crit = body["criteria"]
+     if not crit:
+         raise HTTPException(422, "criteria must not be empty")
+-    for k, v in crit.items():
+-        if isinstance(v, bool) or not isinstance(v, (int, float)):
+-            if not any(b in str(k).lower() for b in ("backtest", "benchmark")):
+-                raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
+-        elif float(v) != int(v):
+-            raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
+     try:
++        for k, v in crit.items():
++            if isinstance(v, bool) or not isinstance(v, (int, float)):
++                if not any(b in str(k).lower() for b in ("backtest", "benchmark")):
++                    raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
++            elif not math.isfinite(v) or not float(v).is_integer():
++                raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
+         res = score_tier(dict(crit))
+-    except (TieringInputRejected, ValueError, TypeError) as e:
++    except HTTPException:
++        raise
++    except (TieringInputRejected, ValueError, TypeError, OverflowError) as e:
+         raise HTTPException(422, str(e))
+     return {"tier": res.tier, "score": res.score, "reasoning": res.reasoning}
+diff --git a/frontend/src/components/form.jsx b/frontend/src/components/form.jsx
+index 0f4aa5d..e658fc7 100644
+--- a/frontend/src/components/form.jsx
++++ b/frontend/src/components/form.jsx
+@@ -109,14 +109,18 @@ export function Segmented({ name, question, value, onChange, testid, rowTestId,
+         <p className="ds-helper" data-testid="criterion-question">{question}</p>
+       </div>
+       <div className="ds-criterion-control">
++        <span className="ds-segmented-end" aria-hidden="true">{lowLabel}</span>
+         <div role="radiogroup" aria-labelledby={id} className="ds-segmented" data-testid={testid}>
+           {options.map((n, i) => (
+             <button key={n} type="button" role="radio" aria-checked={n === value} ref={(el) => { refs.current[i] = el }}
++                    aria-describedby={i === 0 ? `${id}-lo` : i === options.length - 1 ? `${id}-hi` : undefined}
+                     tabIndex={n === value ? 0 : -1} className="ds-segment" onClick={() => onChange(n)}
+                     onKeyDown={(e) => onKey(e, i)}>{n}</button>
+           ))}
+         </div>
+-        <div className="ds-segmented-ends" aria-hidden="true"><span>{lowLabel}</span><span>{highLabel}</span></div>
++        <span className="ds-segmented-end" aria-hidden="true">{highLabel}</span>
++        <span id={`${id}-lo`} className="ds-sr">{lowLabel}</span>
++        <span id={`${id}-hi`} className="ds-sr">{highLabel}</span>
+       </div>
+     </div>
+   )
+@@ -144,6 +148,15 @@ export function ChipInput({ label, help, value, onChange, suggestions = [], plac
+       setText(parts[parts.length - 1])
+     } else setText(v)
+   }
++  const [live, setLive] = React.useState('')
++  const prev = React.useRef(value)
++  React.useEffect(() => {
++    const before = prev.current
++    const added = value.filter((x) => !before.includes(x)), removed = before.filter((x) => !value.includes(x))
++    prev.current = value
++    if (added.length) setLive(`Added scope ${added.join(', ')}. ${value.length} in total.`)
++    else if (removed.length) setLive(`Removed scope ${removed.join(', ')}. ${value.length} in total.`)
++  }, [value])
+   const open = suggestions.filter((s) => !value.includes(s))
+   return (
+     <div className="ds-field">
+@@ -162,6 +175,7 @@ export function ChipInput({ label, help, value, onChange, suggestions = [], plac
+                placeholder={value.length ? '' : placeholder} autoComplete="off" />
+       </div>
+       {help && <p className="ds-helper">{help}</p>}
++      <div className="ds-sr" role="status" aria-live="polite" aria-atomic="true">{live}</div>
+       {open.length > 0 && (
+         <div className="ds-suggest" role="group" aria-label="Suggested scopes">
+           <span className="ds-suggest-label">Suggestions</span>
+diff --git a/frontend/src/design.css b/frontend/src/design.css
+index 5aee602..7d22ec7 100644
+--- a/frontend/src/design.css
++++ b/frontend/src/design.css
+@@ -16,23 +16,25 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ds-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
+ 
+ /* page header */
++.ds-container { width: 100%; max-width: 1232px; margin-inline: auto; padding-inline: 0 }  /* inside .content (24px padding, 1280 max) */
+ .ds-page { padding-top: var(--ds-s1) }
++.ds-dim { opacity: .5; transition: opacity .12s }
+ .ds-page-header { margin-bottom: var(--ds-s4) }
+ .ds-breadcrumb ol { display: flex; gap: var(--ds-s1); list-style: none; margin: 0 0 var(--ds-s2); padding: 0; font-size: 13px; color: var(--ds-muted) }
+ .ds-breadcrumb li + li::before { content: "/"; margin-right: var(--ds-s1); color: var(--ds-line-strong) }
+-.ds-breadcrumb a { color: var(--ds-muted); border-radius: 4px } .ds-breadcrumb a:hover { color: var(--ds-accent); text-decoration: underline }
++.ds-breadcrumb a { color: var(--ds-accent); border-radius: 4px } .ds-breadcrumb a:hover { color: var(--ds-accent-hover); text-decoration: underline }
+ .ds-breadcrumb [aria-current] { color: var(--ds-ink); font-weight: 500 }
+ .ds-page-header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--ds-s2) }
+ .ds-title { font-size: 28px; line-height: 36px; font-weight: 650; letter-spacing: -.01em; color: var(--ds-ink); margin: 0 }
+ .ds-description { margin: var(--ds-s1) 0 0; font-size: 15px; line-height: 24px; color: var(--ds-muted) }
+ 
+-/* layout */
+-.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start }
+-.ds-form { display: flex; flex-direction: column; gap: var(--ds-s3); min-width: 0; max-width: 720px }
+-.ds-side { min-width: 0 }
++/* layout: below 1200 one centred column, summary first; from 1200 form + sticky summary filling the container */
++.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start; max-width: 720px }
++.ds-form { display: flex; flex-direction: column; gap: var(--ds-s3); min-width: 0 }
++.ds-side { min-width: 0; order: -1 }
+ @media (min-width: 1200px) {
+-  .ds-layout { grid-template-columns: minmax(0, 720px) 320px; gap: var(--ds-s4) }
+-  .ds-side { position: sticky; top: var(--ds-s3) }
++  .ds-layout { grid-template-columns: minmax(0, 720px) minmax(320px, 1fr); gap: var(--ds-s4); max-width: none }
++  .ds-side { order: 0; position: sticky; top: var(--ds-s3) }
+ }
+ 
+ /* cards and sections */
+@@ -59,21 +61,23 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ds-input:focus-visible { outline: none; border-color: var(--ds-accent); box-shadow: 0 0 0 3px rgba(84, 63, 222, .25) }
+ .ds-input[aria-invalid="true"] { border-color: var(--ds-danger) }
+ .ds-input[aria-invalid="true"]:focus-visible { box-shadow: 0 0 0 3px rgba(180, 35, 24, .2) }
+-.ds-field-error { margin: 6px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-danger); font-weight: 500 }
++.ds-field-error { overflow-wrap: anywhere; margin: 6px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-danger); font-weight: 500 }
+ 
+ /* criteria */
+ .ds-criteria { display: flex; flex-direction: column }
+-.ds-criterion { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--ds-s1) var(--ds-s3); padding: var(--ds-s2) 0; border-top: 1px solid var(--ds-line) }
++.ds-criterion { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--ds-s1) var(--ds-s3); padding: 12px 0; border-top: 1px solid var(--ds-line) }
+ .ds-criterion:first-child { border-top: 0; padding-top: 0 } .ds-criterion:last-child { padding-bottom: 0 }
++.ds-criterion .ds-helper { margin-top: 0 }
+ .ds-criterion-text { flex: 1 1 260px; min-width: 0 }
+-.ds-criterion-control { flex: none; width: 240px }
+-.ds-segmented { display: grid; grid-template-columns: repeat(5, 1fr); padding: 3px; gap: 2px; background: #eceff3; border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
+-.ds-segment { height: 34px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 14px; font-weight: 500;
++.ds-criterion-control { flex: none; display: flex; align-items: center; gap: var(--ds-s1) }
++.ds-segmented { width: 220px }
++.ds-segmented { display: grid; grid-template-columns: repeat(5, 1fr); padding: 2px; gap: 2px; background: #eceff3; border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
++.ds-segment { height: 26px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 14px; font-weight: 500;
+   cursor: pointer; font-variant-numeric: tabular-nums; transition: background .12s, color .12s }
+ .ds-segment:hover { background: #dfe3e9 }
+ .ds-segment[aria-checked="true"] { background: var(--ds-accent); color: #fff; font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .2) }
+ .ds-segment:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
+-.ds-segmented-ends { display: flex; justify-content: space-between; margin-top: 4px; padding: 0 4px; font-size: 12px; color: var(--ds-muted) }
++.ds-segmented-end { font-size: 12px; color: var(--ds-muted); width: 28px } .ds-segmented-end:first-child { text-align: right }
+ 
+ /* chips */
+ .ds-chip-box { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 44px; padding: 6px 8px; cursor: text }
+@@ -98,7 +102,7 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ds-btn:disabled { background: #e6e9ee; border-color: #e6e9ee; color: #6b7280; cursor: not-allowed }
+ .ds-btn[aria-busy="true"]:disabled { background: var(--ds-accent); border-color: var(--ds-accent); color: #fff; cursor: progress; opacity: .85 }
+ .ds-btn:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
+-.ds-form-footer { display: flex; justify-content: flex-end; gap: var(--ds-s2); padding: var(--ds-s2) 0 var(--ds-s3); border-top: 1px solid var(--ds-line) }
++.ds-form-footer { position: sticky; bottom: 0; z-index: 5; display: flex; justify-content: flex-end; gap: var(--ds-s2); padding: var(--ds-s2) 0; background: var(--ds-bg); border-top: 1px solid var(--ds-line) }
+ 
+ /* alert */
+ .ds-alert { display: flex; gap: 12px; padding: var(--ds-s2); border-radius: var(--ds-radius); border: 1px solid; font-size: 14px; line-height: 20px }
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+index 723dc37..889bbec 100644
+--- a/frontend/src/pages/Register.jsx
++++ b/frontend/src/pages/Register.jsx
+@@ -27,19 +27,23 @@ function parseUrl(v) {
+ }
+ 
+ // Server errors in plain language; never raw JSON or status codes.
+-export function describeError(err) {
++export function describeError(err) { return describeErrorInfo(err).message }
++
++// urlField is true when the failure is about the address the user typed (so the field can be marked invalid).
++export function describeErrorInfo(err) {
++  const msg = (message, urlField = true) => ({ message, urlField })
+   const m = String(err?.message || '').toLowerCase()
+   const st = err?.status
+-  if (st === 401 || st === 403) return 'You need to be signed in with permission to register agents.'
+-  if (m.includes('not allowed')) return 'That address is not allowed. Agent cards must be served from an approved, publicly reachable host.'
+-  if (st === 504 || m.includes('timed out')) return 'The agent card server took too long to respond. Check the address and try again.'
+-  if (m.includes('signature')) return 'The agent card signature could not be verified, so the agent was not registered.'
+-  if (m.includes('http or https') || m.includes('invalid port')) return 'That is not a valid agent card URL. Enter a full address starting with http:// or https://.'
++  if (st === 401 || st === 403) return msg('You need to be signed in with permission to register agents.', false)
++  if (m.includes('not allowed')) return msg('That address is not allowed. Agent cards must be served from an approved, publicly reachable host.')
++  if (st === 504 || m.includes('timed out')) return msg('The agent card server took too long to respond. Check the address and try again.')
++  if (m.includes('signature')) return msg('The agent card signature could not be verified, so the agent was not registered.')
++  if (m.includes('http or https') || m.includes('invalid port')) return msg('That is not a valid agent card URL. Enter a full address starting with http:// or https://.')
+   if (m.includes('a2a') || m.includes('json') || m.includes('1 mb') || m.includes('agent card does not contain')) {
+-    return 'The document at that address is not a valid agent card. Check that the URL points to the agent card JSON.'
++    return msg('The document at that address is not a valid agent card. Check that the URL points to the agent card JSON.')
+   }
+-  if (st === 502) return 'We could not fetch an agent card from that address. Check the URL and that the server is reachable.'
+-  return 'Registration did not complete. Please try again, and contact an administrator if it keeps happening.'
++  if (st === 502) return msg('We could not fetch an agent card from that address. Check the URL and that the server is reachable.')
++  return msg('Registration did not complete. Please try again, and contact an administrator if it keeps happening.', false)
+ }
+ 
+ export default function Register() {
+@@ -50,7 +54,9 @@ export default function Register() {
+   const [scopes, setScopes] = React.useState([])
+   const [busy, setBusy] = React.useState(false)
+   const [error, setError] = React.useState(null)
++  const [serverUrlError, setServerUrlError] = React.useState('')
+   const [preview, setPreview] = React.useState(null)
++  const [previewState, setPreviewState] = React.useState('loading') // loading | ready | error
+   const inflight = React.useRef(false)
+ 
+   const parsed = parseUrl(url)
+@@ -59,8 +65,11 @@ export default function Register() {
+   // Debounced, read-only tier preview; stale responses are ignored.
+   React.useEffect(() => {
+     let live = true
++    setPreviewState((st) => (st === 'error' ? 'loading' : st === 'ready' ? 'stale' : st))
+     const t = setTimeout(() => {
+-      previewTier(vals).then((r) => live && setPreview(r), () => live && setPreview((p) => p))
++      previewTier(vals).then(
++        (r) => { if (live) { setPreview(r); setPreviewState('ready') } },
++        () => { if (live) { setPreview(null); setPreviewState('error') } })
+     }, 250)
+     return () => { live = false; clearTimeout(t) }
+   }, [vals])
+@@ -74,20 +83,20 @@ export default function Register() {
+     e.preventDefault()
+     if (!parsed || inflight.current) return
+     inflight.current = true
+-    setBusy(true); setError(null)
++    setBusy(true); setError(null); setServerUrlError('')
+     try {
+       const agent = await registerExternal({ card_url: url.trim(), criteria: { ...vals, data_scopes: scopes } })
+-      // Hold the busy state briefly so the transition to the new agent page does not flash.
+-      await new Promise((r) => setTimeout(r, 700))
+       nav(`/agents/${encodeURIComponent(agent.id)}`)
+     } catch (err) {
+-      setError(describeError(err))
++      const info = describeErrorInfo(err)
++      setError(info.message)
++      if (info.urlField) setServerUrlError(info.message)
+       setBusy(false); inflight.current = false
+     }
+   }
+ 
+   return (
+-    <div data-testid="register-page" className="ds-page">
++    <div data-testid="register-page" className="ds-page ds-container">
+       <PageHeader
+         breadcrumb={<Breadcrumb items={[{ label: 'Fleet', to: '/' }, { label: 'Register external agent' }]} />}
+         title="Register external agent"
+@@ -99,12 +108,12 @@ export default function Register() {
+ 
+           <Section number={1} title="Agent card" helper="Where the agent publishes its A2A agent card. We read it once to build the record.">
+             <Field label="Agent card URL" help="Use the full address of the card, usually ending in /.well-known/agent-card.json."
+-                   helpTestId="card-url-help" error={urlError} errorTestId="card-url-error">
++                   helpTestId="card-url-help" error={urlError || serverUrlError} errorTestId="card-url-error">
+               {(p) => (
+                 <input {...p} type="url" className="ds-input" data-testid="card-url" value={url} inputMode="url"
+                        spellCheck={false} autoComplete="off"
+                        placeholder="https://agent.example.com/.well-known/agent-card.json"
+-                       onChange={(e) => { setUrl(e.target.value); if (urlError && parseUrl(e.target.value)) setUrlError('') }}
++                       onChange={(e) => { setUrl(e.target.value); setServerUrlError(''); if (urlError && parseUrl(e.target.value)) setUrlError('') }}
+                        onBlur={validate} />
+               )}
+             </Field>
+@@ -126,7 +135,7 @@ export default function Register() {
+           </Section>
+ 
+           <footer className="ds-form-footer">
+-            <Button variant="secondary" onClick={() => nav('/')}>Cancel</Button>
++            <Button variant="secondary" disabled={busy} onClick={() => nav('/')}>Cancel</Button>
+             <Button type="submit" variant="primary" busy={busy} disabled={!parsed || busy}>
+               {busy ? 'Registering…' : 'Register agent'}
+             </Button>
+@@ -135,12 +144,14 @@ export default function Register() {
+ 
+         <div className="ds-side">
+           <Summary title="Summary" testid="register-summary">
+-            <div className="ds-summary-tier">
++            <div className={`ds-summary-tier${previewState === 'stale' ? ' ds-dim' : ''}`} aria-busy={previewState === 'stale' ? 'true' : undefined}>
+               {preview ? <TierBadge tier={preview.tier} /> : <span className="ds-skeleton" aria-hidden="true" />}
+-              <span className="ds-summary-tier-text">{preview ? TIER_MEANING[preview.tier] : 'Calculating…'}</span>
++              <span className="ds-summary-tier-text">
++                {preview ? TIER_MEANING[preview.tier] : previewState === 'error' ? 'Preview unavailable' : 'Calculating…'}
++              </span>
+             </div>
+             <dl className="ds-summary-list">
+-              <div><dt>Weighted score</dt><dd data-testid="summary-score">{preview ? `${preview.score.toFixed(2)} / 5` : '–'}</dd></div>
++              <div><dt>Weighted score</dt><dd data-testid="summary-score" className={previewState === 'stale' ? 'ds-dim' : ''}>{preview ? `${preview.score.toFixed(2)} / 5` : '–'}</dd></div>
+               <div><dt>Card host</dt><dd data-testid="summary-host" className={host ? '' : 'ds-faint'}>{host || 'Not set'}</dd></div>
+               <div><dt>Data scopes</dt><dd data-testid="summary-scopes-count">{scopes.length}</dd></div>
+             </dl>

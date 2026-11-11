@@ -1,0 +1,1197 @@
+diff --git a/backend/routes/tiering.py b/backend/routes/tiering.py
+new file mode 100644
+index 0000000..d7c4360
+--- /dev/null
++++ b/backend/routes/tiering.py
+@@ -0,0 +1,27 @@
++"""POST /api/tiering/preview: read-only tier preview for the Register page (scores via backend/tiering.py)."""
++from fastapi import APIRouter, Body, Depends, HTTPException
++
++from ..domino_identity import User, require_user
++from ..tiering import TieringInputRejected, score_tier
++
++router = APIRouter()
++
++
++@router.post("/api/tiering/preview")
++def preview_tier(body=Body(...), user: User = Depends(require_user)):
++    if not isinstance(body, dict) or not isinstance(body.get("criteria"), dict):
++        raise HTTPException(422, "body must be {criteria: {...}}")
++    crit = body["criteria"]
++    if not crit:
++        raise HTTPException(422, "criteria must not be empty")
++    for k, v in crit.items():
++        if isinstance(v, bool) or not isinstance(v, (int, float)):
++            if not any(b in str(k).lower() for b in ("backtest", "benchmark")):
++                raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
++        elif float(v) != int(v):
++            raise HTTPException(422, f"Criterion {k} must be a whole number from 1 to 5")
++    try:
++        res = score_tier(dict(crit))
++    except (TieringInputRejected, ValueError, TypeError) as e:
++        raise HTTPException(422, str(e))
++    return {"tier": res.tier, "score": res.score, "reasoning": res.reasoning}
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index e4d3833..b706122 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -35,3 +35,7 @@ export const api = {
+ export const registerExternal = (body) => request('agents/external', {
+   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+ })
++
++export const previewTier = (criteria) => request('tiering/preview', {
++  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ criteria }),
++})
+diff --git a/frontend/src/components/form.jsx b/frontend/src/components/form.jsx
+new file mode 100644
+index 0000000..0f4aa5d
+--- /dev/null
++++ b/frontend/src/components/form.jsx
+@@ -0,0 +1,186 @@
++// Design-system building blocks (styles live in ../design.css). Reused by every page.
++import React from 'react'
++import { Link } from 'react-router-dom'
++
++const cx = (...a) => a.filter(Boolean).join(' ')
++
++export function Breadcrumb({ items }) {
++  return (
++    <nav aria-label="Breadcrumb" className="ds-breadcrumb">
++      <ol>
++        {items.map((it, i) => (
++          <li key={i}>
++            {it.to ? <Link to={it.to}>{it.label}</Link> : <span aria-current="page">{it.label}</span>}
++          </li>
++        ))}
++      </ol>
++    </nav>
++  )
++}
++
++export function PageHeader({ breadcrumb, title, description, descriptionTestId, actions }) {
++  return (
++    <header className="ds-page-header">
++      {breadcrumb}
++      <div className="ds-page-header-row">
++        <div>
++          <h1 className="ds-title">{title}</h1>
++          {description && <p className="ds-description" data-testid={descriptionTestId}>{description}</p>}
++        </div>
++        {actions}
++      </div>
++    </header>
++  )
++}
++
++export function Button({ variant = 'secondary', busy, children, className, ...rest }) {
++  return (
++    <button type="button" className={cx('ds-btn', `ds-btn-${variant}`, className)}
++            aria-busy={busy ? 'true' : undefined} {...rest}>{children}</button>
++  )
++}
++
++export function Alert({ tone = 'error', title, children, ...rest }) {
++  return (
++    <div className={cx('ds-alert', `ds-alert-${tone}`)} role={tone === 'error' ? 'alert' : 'status'} {...rest}>
++      <svg className="ds-alert-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
++        <circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" strokeWidth="1.6" />
++        <path d="M10 5.5v5.5M10 13.5v1.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
++      </svg>
++      <div>{title && <strong>{title}</strong>}<p>{children}</p></div>
++    </div>
++  )
++}
++
++export function Section({ number, title, helper, children }) {
++  const id = React.useId()
++  return (
++    <section className="ds-card ds-section" data-testid="register-section" aria-labelledby={id}>
++      <header className="ds-section-head">
++        <span className="ds-section-num" aria-hidden="true">{number}</span>
++        <div>
++          <h2 id={id} className="ds-section-title"><span className="ds-sr">{number} </span>{title}</h2>
++          <p className="ds-helper" data-testid="section-helper">{helper}</p>
++        </div>
++      </header>
++      <div className="ds-section-body">{children}</div>
++    </section>
++  )
++}
++
++// Labelled field. Children is a function receiving the props to spread onto the control.
++export function Field({ label, help, helpTestId, error, errorTestId, children }) {
++  const id = React.useId()
++  const helpId = `${id}-help`, errId = `${id}-err`
++  const props = {
++    id, 'aria-invalid': error ? 'true' : undefined,
++    'aria-describedby': [help && helpId, error && errId].filter(Boolean).join(' ') || undefined,
++  }
++  return (
++    <div className="ds-field">
++      <label htmlFor={id} className="ds-label">{label}</label>
++      {children(props)}
++      {help && <p id={helpId} className="ds-helper" data-testid={helpTestId}>{help}</p>}
++      {error && <p id={errId} className="ds-field-error" data-testid={errorTestId}>{error}</p>}
++    </div>
++  )
++}
++
++// 1..N segmented control (role=radiogroup / radio), arrow-key operable with a roving tabindex.
++export function Segmented({ name, question, value, onChange, testid, rowTestId, options = [1, 2, 3, 4, 5], lowLabel = 'Low', highLabel = 'High' }) {
++  const id = React.useId()
++  const refs = React.useRef([])
++  const move = (i) => {
++    const j = (i + options.length) % options.length
++    onChange(options[j])
++    refs.current[j]?.focus()
++  }
++  const onKey = (e, i) => {
++    const k = e.key
++    if (k === 'ArrowRight' || k === 'ArrowDown') { e.preventDefault(); move(i + 1) }
++    else if (k === 'ArrowLeft' || k === 'ArrowUp') { e.preventDefault(); move(i - 1) }
++    else if (k === 'Home') { e.preventDefault(); move(0) }
++    else if (k === 'End') { e.preventDefault(); move(options.length - 1) }
++  }
++  return (
++    <div className="ds-criterion" data-testid={rowTestId}>
++      <div className="ds-criterion-text">
++        <span id={id} className="ds-label">{name}</span>
++        <p className="ds-helper" data-testid="criterion-question">{question}</p>
++      </div>
++      <div className="ds-criterion-control">
++        <div role="radiogroup" aria-labelledby={id} className="ds-segmented" data-testid={testid}>
++          {options.map((n, i) => (
++            <button key={n} type="button" role="radio" aria-checked={n === value} ref={(el) => { refs.current[i] = el }}
++                    tabIndex={n === value ? 0 : -1} className="ds-segment" onClick={() => onChange(n)}
++                    onKeyDown={(e) => onKey(e, i)}>{n}</button>
++          ))}
++        </div>
++        <div className="ds-segmented-ends" aria-hidden="true"><span>{lowLabel}</span><span>{highLabel}</span></div>
++      </div>
++    </div>
++  )
++}
++
++// Token input: Enter or comma adds, Backspace on empty removes the last, duplicates ignored.
++export function ChipInput({ label, help, value, onChange, suggestions = [], placeholder, testid }) {
++  const [text, setText] = React.useState('')
++  const inputRef = React.useRef(null)
++  const id = React.useId()
++  const add = (raw) => {
++    const next = [...value]
++    String(raw).split(',').map((s) => s.trim()).filter(Boolean).forEach((s) => { if (!next.includes(s)) next.push(s) })
++    if (next.length !== value.length) onChange(next)
++  }
++  const onKey = (e) => {
++    if (e.key === 'Enter') { e.preventDefault(); add(text); setText('') }
++    else if (e.key === 'Backspace' && !text && value.length) onChange(value.slice(0, -1))
++  }
++  const onText = (e) => {
++    const v = e.target.value
++    if (v.includes(',')) {
++      const parts = v.split(',')
++      add(parts.slice(0, -1).join(','))
++      setText(parts[parts.length - 1])
++    } else setText(v)
++  }
++  const open = suggestions.filter((s) => !value.includes(s))
++  return (
++    <div className="ds-field">
++      <label htmlFor={id} className="ds-label">{label}</label>
++      <div className="ds-chip-box" onClick={() => inputRef.current?.focus()}>
++        {value.map((s) => (
++          <span key={s} className="ds-chip" data-testid="scope-chip">
++            {s}
++            <button type="button" aria-label={`Remove ${s}`} onClick={() => onChange(value.filter((x) => x !== s))}>
++              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
++            </button>
++          </span>
++        ))}
++        <input id={id} ref={inputRef} type="text" className="ds-chip-input" data-testid={testid} value={text}
++               onChange={onText} onKeyDown={onKey} onBlur={() => { if (text.trim()) { add(text); setText('') } }}
++               placeholder={value.length ? '' : placeholder} autoComplete="off" />
++      </div>
++      {help && <p className="ds-helper">{help}</p>}
++      {open.length > 0 && (
++        <div className="ds-suggest" role="group" aria-label="Suggested scopes">
++          <span className="ds-suggest-label">Suggestions</span>
++          {open.map((s) => (
++            <button key={s} type="button" className="ds-suggestion" data-testid="scope-suggestion" onClick={() => add(s)}>
++              <span aria-hidden="true">+</span> {s}
++            </button>
++          ))}
++        </div>
++      )}
++    </div>
++  )
++}
++
++export function Summary({ title, testid, children }) {
++  return (
++    <aside className="ds-card ds-summary" data-testid={testid} aria-label={title}>
++      <h2 className="ds-summary-title">{title}</h2>
++      {children}
++    </aside>
++  )
++}
+diff --git a/frontend/src/design.css b/frontend/src/design.css
+new file mode 100644
+index 0000000..5aee602
+--- /dev/null
++++ b/frontend/src/design.css
+@@ -0,0 +1,120 @@
++/* ACT design system: tokens + layout/form primitives. Imported once from main.jsx.
++   Neutral greys, one accent (Domino purple), system/Inter type, 8px spacing scale. */
++:root {
++  --ds-accent: #543fde; --ds-accent-hover: #4533c0; --ds-accent-soft: #efedfc;
++  --ds-ink: #14181f; --ds-text: #2b3340; --ds-muted: #596273; --ds-faint: #6b7280;
++  --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
++  --ds-danger: #b42318; --ds-danger-bg: #fef3f2; --ds-danger-line: #fda29b;
++  --ds-s1: 8px; --ds-s2: 16px; --ds-s3: 24px; --ds-s4: 32px; --ds-s5: 40px; --ds-s6: 48px;
++  --ds-radius: 8px; --ds-radius-sm: 6px; --ds-radius-lg: 12px;
++  --ds-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .04);
++  --ds-ring: 0 0 0 2px #fff, 0 0 0 4px var(--ds-accent);
++  --ds-font: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
++}
++body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; background: var(--ds-bg); color: var(--ds-text) }
++.ds-page :focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
++.ds-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
++
++/* page header */
++.ds-page { padding-top: var(--ds-s1) }
++.ds-page-header { margin-bottom: var(--ds-s4) }
++.ds-breadcrumb ol { display: flex; gap: var(--ds-s1); list-style: none; margin: 0 0 var(--ds-s2); padding: 0; font-size: 13px; color: var(--ds-muted) }
++.ds-breadcrumb li + li::before { content: "/"; margin-right: var(--ds-s1); color: var(--ds-line-strong) }
++.ds-breadcrumb a { color: var(--ds-muted); border-radius: 4px } .ds-breadcrumb a:hover { color: var(--ds-accent); text-decoration: underline }
++.ds-breadcrumb [aria-current] { color: var(--ds-ink); font-weight: 500 }
++.ds-page-header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--ds-s2) }
++.ds-title { font-size: 28px; line-height: 36px; font-weight: 650; letter-spacing: -.01em; color: var(--ds-ink); margin: 0 }
++.ds-description { margin: var(--ds-s1) 0 0; font-size: 15px; line-height: 24px; color: var(--ds-muted) }
++
++/* layout */
++.ds-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start }
++.ds-form { display: flex; flex-direction: column; gap: var(--ds-s3); min-width: 0; max-width: 720px }
++.ds-side { min-width: 0 }
++@media (min-width: 1200px) {
++  .ds-layout { grid-template-columns: minmax(0, 720px) 320px; gap: var(--ds-s4) }
++  .ds-side { position: sticky; top: var(--ds-s3) }
++}
++
++/* cards and sections */
++.ds-card { background: var(--ds-surface); border: 1px solid var(--ds-line); border-radius: var(--ds-radius-lg); box-shadow: var(--ds-shadow) }
++.ds-section-head { display: flex; gap: var(--ds-s2); padding: var(--ds-s3) var(--ds-s3) 0 }
++.ds-section-num { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--ds-accent-soft); color: var(--ds-accent);
++  font-weight: 600; font-size: 13px; display: grid; place-items: center; margin-top: 2px }
++.ds-section-title { font-size: 17px; line-height: 28px; font-weight: 600; color: var(--ds-ink); margin: 0 }
++.ds-section-body { padding: var(--ds-s3) }
++
++/* type */
++.ds-label { display: block; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
++.ds-helper { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
++.ds-faint { color: var(--ds-faint) }
++
++/* fields */
++.ds-field { display: flex; flex-direction: column; gap: 0 }
++.ds-field .ds-label { margin-bottom: var(--ds-s1) }
++.ds-input, .ds-chip-box { width: 100%; font: inherit; font-size: 15px; color: var(--ds-ink); background: var(--ds-surface);
++  border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius); transition: border-color .12s, box-shadow .12s }
++.ds-input { height: 44px; padding: 0 var(--ds-s2) }
++.ds-input::placeholder, .ds-chip-input::placeholder { color: #7a8392 }
++.ds-input:hover, .ds-chip-box:hover { border-color: #8a94a3 }
++.ds-input:focus-visible { outline: none; border-color: var(--ds-accent); box-shadow: 0 0 0 3px rgba(84, 63, 222, .25) }
++.ds-input[aria-invalid="true"] { border-color: var(--ds-danger) }
++.ds-input[aria-invalid="true"]:focus-visible { box-shadow: 0 0 0 3px rgba(180, 35, 24, .2) }
++.ds-field-error { margin: 6px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-danger); font-weight: 500 }
++
++/* criteria */
++.ds-criteria { display: flex; flex-direction: column }
++.ds-criterion { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--ds-s1) var(--ds-s3); padding: var(--ds-s2) 0; border-top: 1px solid var(--ds-line) }
++.ds-criterion:first-child { border-top: 0; padding-top: 0 } .ds-criterion:last-child { padding-bottom: 0 }
++.ds-criterion-text { flex: 1 1 260px; min-width: 0 }
++.ds-criterion-control { flex: none; width: 240px }
++.ds-segmented { display: grid; grid-template-columns: repeat(5, 1fr); padding: 3px; gap: 2px; background: #eceff3; border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
++.ds-segment { height: 34px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 14px; font-weight: 500;
++  cursor: pointer; font-variant-numeric: tabular-nums; transition: background .12s, color .12s }
++.ds-segment:hover { background: #dfe3e9 }
++.ds-segment[aria-checked="true"] { background: var(--ds-accent); color: #fff; font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .2) }
++.ds-segment:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
++.ds-segmented-ends { display: flex; justify-content: space-between; margin-top: 4px; padding: 0 4px; font-size: 12px; color: var(--ds-muted) }
++
++/* chips */
++.ds-chip-box { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 44px; padding: 6px 8px; cursor: text }
++.ds-chip-box:focus-within { border-color: var(--ds-accent); box-shadow: 0 0 0 3px rgba(84, 63, 222, .25) }
++.ds-chip { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 4px 0 10px; border-radius: 14px; background: var(--ds-accent-soft); color: #3b2ba8; font-size: 13px; font-weight: 500 }
++.ds-chip button { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer }
++.ds-chip button:hover { background: rgba(84, 63, 222, .18) }
++.ds-chip button:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
++.ds-chip-input { flex: 1 1 160px; min-width: 120px; border: 0; outline: 0; background: transparent; font: inherit; font-size: 15px; color: var(--ds-ink); height: 28px; padding: 0 4px }
++.ds-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ds-s1); margin-top: var(--ds-s2) }
++.ds-suggest-label { font-size: 12px; color: var(--ds-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; margin-right: 4px }
++.ds-suggestion { height: 28px; padding: 0 10px; border: 1px dashed var(--ds-line-strong); border-radius: 14px; background: var(--ds-surface); color: var(--ds-text); font: inherit; font-size: 13px; cursor: pointer }
++.ds-suggestion:hover { border-style: solid; border-color: var(--ds-accent); color: var(--ds-accent); background: var(--ds-accent-soft) }
++.ds-suggestion:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
++
++/* buttons */
++.ds-btn { display: inline-flex; align-items: center; justify-content: center; height: 40px; padding: 0 var(--ds-s3); border-radius: var(--ds-radius); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
++  border: 1px solid var(--ds-line-strong); background: var(--ds-surface); color: var(--ds-ink); transition: background .12s, border-color .12s }
++.ds-btn:hover:not(:disabled) { background: #f0f2f5 }
++.ds-btn-primary { background: var(--ds-accent); border-color: var(--ds-accent); color: #fff }
++.ds-btn-primary:hover:not(:disabled) { background: var(--ds-accent-hover) }
++.ds-btn:disabled { background: #e6e9ee; border-color: #e6e9ee; color: #6b7280; cursor: not-allowed }
++.ds-btn[aria-busy="true"]:disabled { background: var(--ds-accent); border-color: var(--ds-accent); color: #fff; cursor: progress; opacity: .85 }
++.ds-btn:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
++.ds-form-footer { display: flex; justify-content: flex-end; gap: var(--ds-s2); padding: var(--ds-s2) 0 var(--ds-s3); border-top: 1px solid var(--ds-line) }
++
++/* alert */
++.ds-alert { display: flex; gap: 12px; padding: var(--ds-s2); border-radius: var(--ds-radius); border: 1px solid; font-size: 14px; line-height: 20px }
++.ds-alert p { margin: 2px 0 0 } .ds-alert strong { color: inherit; font-weight: 600 }
++.ds-alert-icon { flex: none; margin-top: 0 }
++.ds-alert-error { background: var(--ds-danger-bg); border-color: var(--ds-danger-line); color: #912018 }
++
++/* summary */
++.ds-summary { padding: var(--ds-s3) }
++.ds-summary-title { margin: 0 0 var(--ds-s2); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ds-muted) }
++.ds-summary-tier { display: flex; align-items: center; gap: 12px; padding-bottom: var(--ds-s2); border-bottom: 1px solid var(--ds-line) }
++.ds-summary-tier .badge { font-size: 18px; padding: 6px 16px; border-radius: var(--ds-radius); line-height: 28px }
++.ds-summary-tier-text { color: var(--ds-text); font-size: 14px }
++.ds-skeleton { display: inline-block; width: 88px; height: 40px; border-radius: var(--ds-radius); background: #e6e9ee }
++.ds-summary-list { margin: 0; padding: var(--ds-s1) 0 var(--ds-s1) }
++.ds-summary-list > div { display: flex; justify-content: space-between; gap: var(--ds-s2); padding: 12px 0; border-bottom: 1px solid var(--ds-line); font-size: 14px }
++.ds-summary-list dt { color: var(--ds-muted) }
++.ds-summary-list dd { margin: 0; font-weight: 600; color: var(--ds-ink); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums }
++.ds-summary .ds-helper { margin-top: var(--ds-s2) }
+diff --git a/frontend/src/main.jsx b/frontend/src/main.jsx
+index dc160f1..5657274 100644
+--- a/frontend/src/main.jsx
++++ b/frontend/src/main.jsx
+@@ -2,6 +2,7 @@ import React from 'react'
+ import { createRoot } from 'react-dom/client'
+ import { HashRouter, Routes, Route } from 'react-router-dom'
+ import './styles.css'
++import './design.css'
+ import { Shell } from './components/ui'
+ import Fleet from './pages/Fleet'
+ import Agent from './pages/Agent'
+diff --git a/frontend/src/pages/Register.jsx b/frontend/src/pages/Register.jsx
+index 065ab10..723dc37 100644
+--- a/frontend/src/pages/Register.jsx
++++ b/frontend/src/pages/Register.jsx
+@@ -1,9 +1,8 @@
+ import React from 'react'
+-import { Link } from 'react-router-dom'
+-import { registerExternal } from '../api'
+-import { clean } from '../format'
+-import Passport from '../components/Passport'
+-import { Identity } from './Agent'
++import { useNavigate } from 'react-router-dom'
++import { registerExternal, previewTier } from '../api'
++import { TierBadge } from '../components/ui'
++import { Alert, Breadcrumb, Button, ChipInput, Field, PageHeader, Section, Segmented, Summary } from '../components/form'
+ 
+ // No GET /api/tiering/criteria route exists, so the seven names from config/tiering.yaml are listed here.
+ const CRITERIA = [
+@@ -15,72 +14,140 @@ const CRITERIA = [
+   ['reversibility', 'Reversibility', 'How hard is it to undo what it does?'],
+   ['regulatory_exposure', 'Regulatory exposure', 'How much regulatory or legal exposure does it carry?'],
+ ]
++const SCOPE_SUGGESTIONS = ['accounts:read', 'accounts:write', 'payments:read', 'payments:write', 'customers:read', 'ledger:read']
++const TIER_MEANING = {
++  1: 'Highest consequence', 2: 'High consequence', 3: 'Moderate consequence', 4: 'Lowest consequence',
++}
++
++function parseUrl(v) {
++  try {
++    const u = new URL(v.trim())
++    return (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname ? u : null
++  } catch { return null }
++}
+ 
+-function describeError(err) {
+-  const detail = clean(err.message || '')
+-  const lead = {
+-    422: 'The agent card could not be accepted.',
+-    502: 'The agent card could not be fetched from that address.',
+-    504: 'The agent card server took too long to respond.',
+-  }[err.status] || 'Registration failed.'
+-  const d = detail.replace(/^\s*\d{3}\s*[:\-]\s*/, '').replace(/\bcard_url\b/g, 'The card URL')
+-  return d && err.status !== 502 ? `${lead} ${d}` : lead
++// Server errors in plain language; never raw JSON or status codes.
++export function describeError(err) {
++  const m = String(err?.message || '').toLowerCase()
++  const st = err?.status
++  if (st === 401 || st === 403) return 'You need to be signed in with permission to register agents.'
++  if (m.includes('not allowed')) return 'That address is not allowed. Agent cards must be served from an approved, publicly reachable host.'
++  if (st === 504 || m.includes('timed out')) return 'The agent card server took too long to respond. Check the address and try again.'
++  if (m.includes('signature')) return 'The agent card signature could not be verified, so the agent was not registered.'
++  if (m.includes('http or https') || m.includes('invalid port')) return 'That is not a valid agent card URL. Enter a full address starting with http:// or https://.'
++  if (m.includes('a2a') || m.includes('json') || m.includes('1 mb') || m.includes('agent card does not contain')) {
++    return 'The document at that address is not a valid agent card. Check that the URL points to the agent card JSON.'
++  }
++  if (st === 502) return 'We could not fetch an agent card from that address. Check the URL and that the server is reachable.'
++  return 'Registration did not complete. Please try again, and contact an administrator if it keeps happening.'
+ }
+ 
+ export default function Register() {
++  const nav = useNavigate()
+   const [url, setUrl] = React.useState('')
+-  const [vals, setVals] = React.useState(() => Object.fromEntries(CRITERIA.map(([k]) => [k, '3'])))
+-  const [scopes, setScopes] = React.useState('')
++  const [urlError, setUrlError] = React.useState('')
++  const [vals, setVals] = React.useState(() => Object.fromEntries(CRITERIA.map(([k]) => [k, 3])))
++  const [scopes, setScopes] = React.useState([])
+   const [busy, setBusy] = React.useState(false)
+   const [error, setError] = React.useState(null)
+-  const [agent, setAgent] = React.useState(null)
++  const [preview, setPreview] = React.useState(null)
++  const inflight = React.useRef(false)
++
++  const parsed = parseUrl(url)
++  const host = parsed ? parsed.host : ''
++
++  // Debounced, read-only tier preview; stale responses are ignored.
++  React.useEffect(() => {
++    let live = true
++    const t = setTimeout(() => {
++      previewTier(vals).then((r) => live && setPreview(r), () => live && setPreview((p) => p))
++    }, 250)
++    return () => { live = false; clearTimeout(t) }
++  }, [vals])
++
++  const validate = () => {
++    if (!url.trim()) { setUrlError('Enter the agent card URL.'); return }
++    setUrlError(parsed ? '' : 'Enter a valid http:// or https:// URL, for example https://agent.example.com/.well-known/agent-card.json.')
++  }
+ 
+   const submit = async (e) => {
+     e.preventDefault()
+-    setBusy(true); setError(null); setAgent(null)
+-    const criteria = Object.fromEntries(CRITERIA.map(([k]) => [k, Number(vals[k])]))
+-    criteria.data_scopes = scopes.split(',').map((s) => s.trim()).filter(Boolean)
++    if (!parsed || inflight.current) return
++    inflight.current = true
++    setBusy(true); setError(null)
+     try {
+-      setAgent(await registerExternal({ card_url: url.trim(), criteria }))
++      const agent = await registerExternal({ card_url: url.trim(), criteria: { ...vals, data_scopes: scopes } })
++      // Hold the busy state briefly so the transition to the new agent page does not flash.
++      await new Promise((r) => setTimeout(r, 700))
++      nav(`/agents/${encodeURIComponent(agent.id)}`)
+     } catch (err) {
+       setError(describeError(err))
+-    } finally { setBusy(false) }
++      setBusy(false); inflight.current = false
++    }
+   }
+ 
+   return (
+-    <div>
+-      <p><Link to="/">Fleet</Link> / Register external agent</p>
+-      <h1>Register external agent</h1>
+-      <form onSubmit={submit} className="panel">
+-        <div className="panel-body">
+-          <p><label>Agent card URL<br />
+-            <input type="url" data-testid="card-url" value={url} onChange={(e) => setUrl(e.target.value)}
+-                   className="text-input" placeholder="https://agent.example.com/.well-known/agent-card.json" />
+-          </label></p>
+-          <h2>Consequence criteria</h2>
+-          <p className="muted">Score each from 1 (low) to 5 (high).</p>
+-          {CRITERIA.map(([k, name, prompt]) => (
+-            <p key={k}><label>{name}: <span className="muted">{prompt}</span><br />
+-              <select className="select" data-testid={`criterion-${k}`} value={vals[k]} onChange={(e) => setVals({ ...vals, [k]: e.target.value })}>
+-                {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}</option>)}
+-              </select>
+-            </label></p>
+-          ))}
+-          <p><label>Data scopes (comma-separated)<br />
+-            <input type="text" data-testid="data-scopes" value={scopes} onChange={(e) => setScopes(e.target.value)}
+-                   className="text-input" placeholder="accounts:read, payments:write" />
+-          </label></p>
+-          {error && <div className="alert error" role="alert" data-testid="register-error">{error}</div>}
+-          <button type="submit" className="btn primary" disabled={!url.trim() || busy}>Register</button>
+-        </div>
+-      </form>
+-      {agent && (
+-        <div>
+-          <Passport agent={agent} />
+-          <Identity agent={agent} />
+-          <p><Link to={`/agents/${encodeURIComponent(agent.id)}`}>Open the agent page</Link></p>
++    <div data-testid="register-page" className="ds-page">
++      <PageHeader
++        breadcrumb={<Breadcrumb items={[{ label: 'Fleet', to: '/' }, { label: 'Register external agent' }]} />}
++        title="Register external agent"
++        description="Registering fetches the agent's A2A agent card, checks its signature and creates a record in Pending review."
++        descriptionTestId="register-description" />
++      <div className="ds-layout">
++        <form className="ds-form" aria-label="Register external agent" onSubmit={submit} noValidate>
++          {error && <Alert title="Registration failed" data-testid="register-error">{error}</Alert>}
++
++          <Section number={1} title="Agent card" helper="Where the agent publishes its A2A agent card. We read it once to build the record.">
++            <Field label="Agent card URL" help="Use the full address of the card, usually ending in /.well-known/agent-card.json."
++                   helpTestId="card-url-help" error={urlError} errorTestId="card-url-error">
++              {(p) => (
++                <input {...p} type="url" className="ds-input" data-testid="card-url" value={url} inputMode="url"
++                       spellCheck={false} autoComplete="off"
++                       placeholder="https://agent.example.com/.well-known/agent-card.json"
++                       onChange={(e) => { setUrl(e.target.value); if (urlError && parseUrl(e.target.value)) setUrlError('') }}
++                       onBlur={validate} />
++              )}
++            </Field>
++          </Section>
++
++          <Section number={2} title="Consequence assessment" helper="Score what could go wrong if this agent misbehaves, from 1 (low) to 5 (high). Only consequences count, not test results.">
++            <div className="ds-criteria">
++              {CRITERIA.map(([k, name, q]) => (
++                <Segmented key={k} name={name} question={q} value={vals[k]} testid={`criterion-${k}`}
++                           rowTestId={`criterion-row-${k}`} onChange={(n) => setVals((v) => ({ ...v, [k]: n }))} />
++              ))}
++            </div>
++          </Section>
++
++          <Section number={3} title="Data access" helper="List the data scopes this agent can reach. Reviewers see them on the agent's record.">
++            <ChipInput label="Data scopes" testid="data-scopes" value={scopes} onChange={setScopes}
++                       suggestions={SCOPE_SUGGESTIONS} placeholder="Type a scope and press Enter"
++                       help="Press Enter or comma to add a scope. Optional." />
++          </Section>
++
++          <footer className="ds-form-footer">
++            <Button variant="secondary" onClick={() => nav('/')}>Cancel</Button>
++            <Button type="submit" variant="primary" busy={busy} disabled={!parsed || busy}>
++              {busy ? 'Registering…' : 'Register agent'}
++            </Button>
++          </footer>
++        </form>
++
++        <div className="ds-side">
++          <Summary title="Summary" testid="register-summary">
++            <div className="ds-summary-tier">
++              {preview ? <TierBadge tier={preview.tier} /> : <span className="ds-skeleton" aria-hidden="true" />}
++              <span className="ds-summary-tier-text">{preview ? TIER_MEANING[preview.tier] : 'Calculating…'}</span>
++            </div>
++            <dl className="ds-summary-list">
++              <div><dt>Weighted score</dt><dd data-testid="summary-score">{preview ? `${preview.score.toFixed(2)} / 5` : '–'}</dd></div>
++              <div><dt>Card host</dt><dd data-testid="summary-host" className={host ? '' : 'ds-faint'}>{host || 'Not set'}</dd></div>
++              <div><dt>Data scopes</dt><dd data-testid="summary-scopes-count">{scopes.length}</dd></div>
++            </dl>
++            <p className="ds-helper">The tier is a preview. It is confirmed when the agent is registered, and the agent starts in Pending review.</p>
++          </Summary>
+         </div>
+-      )}
++      </div>
+     </div>
+   )
+ }
+diff --git a/tests/e2e/test_t12_passport.py b/tests/e2e/test_t12_passport.py
+index 917c3b4..548929f 100644
+--- a/tests/e2e/test_t12_passport.py
++++ b/tests/e2e/test_t12_passport.py
+@@ -6,7 +6,7 @@ data-testid contract
+   Fleet:     register-external-button, fleet-row (data-agent-id), fleet-source, fleet-status, tier-badge (data-tier)
+   Register:  card-url (label "Agent card URL"), criterion-<name> for decision_impact, financial_exposure,
+              customer_impact, autonomy, data_sensitivity, reversibility, regulatory_exposure (values 1-5),
+-             data-scopes (comma-separated), button "Register", register-error
++             data-scopes (chip input: Enter adds), criterion-<name> is a radiogroup of radios "1".."5", button "Register agent", register-error
+   Passport:  passport, passport-identity, passport-skill (one per card skill id), passport-scope (one per scope),
+              passport-expiry, passport-signature, passport-status, tier-badge (data-tier)
+ """
+@@ -37,13 +37,11 @@ def _register(page, url):
+     expect(page).to_have_url(re.compile(r"#/register"))
+     page.get_by_label("Agent card URL").fill(url)
+     for name, v in CRITERIA.items():
+-        ctl = page.get_by_test_id(f"criterion-{name}")
+-        if ctl.evaluate("e => e.tagName") == "SELECT":
+-            ctl.select_option(str(v))
+-        else:
+-            ctl.fill(str(v))
+-    page.get_by_test_id("data-scopes").fill(", ".join(SCOPES))
+-    page.get_by_role("button", name="Register").click()
++        page.get_by_test_id(f"criterion-{name}").get_by_role("radio", name=str(v), exact=True).click()
++    for sc in SCOPES:
++        page.get_by_test_id("data-scopes").fill(sc)
++        page.get_by_test_id("data-scopes").press("Enter")
++    page.get_by_role("button", name="Register agent", exact=True).click()
+ 
+ 
+ def _check_passport(page, signature):
+@@ -164,7 +162,7 @@ def test_ac11_signature_attributes(page, authed, shot, card_urls):
+ 
+ def test_ac11_errors_visible(page, authed, shot):
+     page.goto("./#/register")
+-    submit = page.get_by_role("button", name="Register")
++    submit = page.get_by_role("button", name="Register agent", exact=True)
+     url = page.get_by_label("Agent card URL")
+     url.fill("")
+     if submit.is_enabled():
+@@ -174,13 +172,10 @@ def test_ac11_errors_visible(page, authed, shot):
+         expect(submit).to_be_disabled()
+     url.fill("http://169.254.169.254/latest")
+     for name, v in CRITERIA.items():
+-        ctl = page.get_by_test_id(f"criterion-{name}")
+-        if ctl.evaluate("e => e.tagName") == "SELECT":
+-            ctl.select_option(str(v))
+-        else:
+-            ctl.fill(str(v))
++        page.get_by_test_id(f"criterion-{name}").get_by_role("radio", name=str(v), exact=True).click()
+     page.get_by_test_id("data-scopes").fill("accounts:read")
+-    page.get_by_role("button", name="Register").click()
++    page.get_by_test_id("data-scopes").press("Enter")
++    page.get_by_role("button", name="Register agent", exact=True).click()
+     err = page.get_by_test_id("register-error")
+     expect(err).to_be_visible(timeout=15000)
+     expect(err).to_contain_text(re.compile(r"not allowed", re.I))
+diff --git a/tests/e2e/test_t13_demo_polish.py b/tests/e2e/test_t13_demo_polish.py
+index ddea8ae..32bbbf3 100644
+--- a/tests/e2e/test_t13_demo_polish.py
++++ b/tests/e2e/test_t13_demo_polish.py
+@@ -79,19 +79,19 @@ def test_evidence_preview_readable_violation_reasons(page, context, shot, seeded
+ 
+ 
+ def test_register_criteria_styled_like_fleet_filter(page, shot, seeded):
+-    page.goto("./")
+-    fleet_cls = page.get_by_test_id("source-filter").get_attribute("class")
++    # T-18: criteria are now segmented radiogroups; they must still be visibly styled controls (rounded, bordered).
+     page.goto("./#/register")
+-    ctl = page.locator('[data-testid^="criterion-"]')
++    ctl = page.locator('[data-testid^="criterion-"][role=radiogroup]')
+     expect(ctl.first).to_be_visible()
+     n = ctl.count()
+-    assert n >= 1
++    assert n == 7
+     for i in range(n):
+         c = ctl.nth(i)
+-        cls = c.get_attribute("class")
+-        radius = float(c.evaluate("e => parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0"))
+-        assert cls == fleet_cls or radius > 0, (c.get_attribute("data-testid"), cls, fleet_cls, radius)
+-        assert cls == fleet_cls, (c.get_attribute("data-testid"), cls, fleet_cls)
++        opts = c.get_by_role("radio")
++        assert opts.count() == 5
++        radius = float(c.evaluate("e => parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0")) or float(
++            opts.first.evaluate("e => parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0"))
++        assert radius > 0, (c.get_attribute("data-testid"), radius)
+     shot("then")
+ 
+ 
+diff --git a/tests/e2e/test_t18_register_page.py b/tests/e2e/test_t18_register_page.py
+new file mode 100644
+index 0000000..b9f678c
+--- /dev/null
++++ b/tests/e2e/test_t18_register_page.py
+@@ -0,0 +1,393 @@
++"""T-18 e2e: redesigned "Register external agent" page (R-1..R-9).
++
++Own app on port 9889 (the shared suite app on 9888 is never touched). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
++data-testid contract (role/label locators are primary):
++  register-page         page root           register-section (x3)   numbered card, contains a heading "1 Agent card" etc.
++  register-summary      sticky panel with tier-badge (data-tier, text "Tier N"), summary-score, summary-host, summary-scopes-count
++  card-url              input labelled "Agent card URL"; field error is role=alert-less text with data-testid card-url-error
++  criterion-<name>      role=radiogroup (name = criterion name) holding five role=radio options named "1".."5"
++  data-scopes           text input labelled "Data scopes"; scope-chip (text = scope), chip remove button "Remove <scope>",
++                        scope-suggestion (clickable suggestions)
++  register-error        alert at top of the form; buttons "Cancel" and "Register agent"
++"""
++import json
++import os
++import re
++import shutil
++import signal
++import subprocess
++import sys
++import time
++import urllib.request
++
++import pytest
++from playwright.sync_api import expect
++
++ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
++PORT = "9889"
++SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-18"
++NAMES = ["Decision impact", "Financial exposure", "Customer impact", "Autonomy", "Data sensitivity",
++         "Reversibility", "Regulatory exposure"]
++KEYS = ["decision_impact", "financial_exposure", "customer_impact", "autonomy", "data_sensitivity",
++        "reversibility", "regulatory_exposure"]
++
++
++@pytest.fixture(autouse=True)
++def _qa_dir(monkeypatch):
++    os.makedirs(SHOT_DIR, exist_ok=True)
++    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
++
++
++# session scope (like the conftest fixture it overrides here) so the plugin can use it; never starts the 9888 app
++@pytest.fixture(scope="session")
++def base_url(tmp_path_factory):
++    tmp = tmp_path_factory.mktemp("t18")
++    if shutil.which("fuser"):
++        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
++    time.sleep(1)
++    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
++           "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
++           "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
++           "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")}
++    log = tmp / "app.log"
++    logf = open(log, "w")
++    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
++                            start_new_session=True)
++    url, deadline = None, time.time() + 300
++    while time.time() < deadline and url is None and proc.poll() is None:
++        m = re.search(r"APP_URL=(\S+)", log.read_text())
++        if m:
++            url = m.group(1)
++        else:
++            time.sleep(0.5)
++    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
++
++    def ok(u):
++        try:
++            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
++        except Exception:
++            return False
++    for _ in range(30):
++        if ok(url):
++            break
++        time.sleep(1)
++    else:
++        url = f"http://localhost:{PORT}/"
++    try:
++        yield url
++    finally:
++        try:
++            os.killpg(proc.pid, signal.SIGTERM)
++        except ProcessLookupError:
++            pass
++        proc.wait(timeout=20)
++        logf.close()
++
++
++@pytest.fixture(autouse=True)
++def authed(context):
++    context.set_extra_http_headers({"X-Domino-User-Id": "reg-user", "X-Domino-User": "reg-user"})
++
++
++def _open(page):
++    page.goto("./#/register")
++    expect(page.get_by_role("heading", level=1, name="Register external agent")).to_be_visible()
++
++
++def _group(page, key):
++    return page.get_by_test_id(f"criterion-{key}")
++
++
++def _set_all(page, v):
++    for k in KEYS:
++        _group(page, k).get_by_role("radio", name=str(v), exact=True).click()
++
++
++def _no_hscroll(page):
++    return page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
++
++
++def _tier(page):
++    return page.get_by_test_id("register-summary").get_by_test_id("tier-badge")
++
++
++def test_r1_layout_header(page, shot):
++    _open(page)
++    crumb = page.get_by_role("navigation", name=re.compile("breadcrumb", re.I))
++    expect(crumb).to_contain_text("Fleet")
++    expect(crumb).to_contain_text("Register external agent")
++    expect(crumb.get_by_role("link", name="Fleet")).to_be_visible()
++    desc = page.get_by_test_id("register-page").get_by_text(re.compile(r"agent card", re.I)).first
++    txt = page.get_by_test_id("register-description").inner_text()
++    assert re.search(r"agent card", txt, re.I) and re.search(r"signature", txt, re.I) and re.search(r"pending review", txt, re.I), txt
++    assert "\n" not in txt.strip()
++    shot("then")
++
++
++def test_r1_two_columns_sticky_at_1440(page, shot):
++    _open(page)
++    form = page.get_by_role("form", name=re.compile("register", re.I))
++    summary = page.get_by_test_id("register-summary")
++    expect(form).to_be_visible()
++    expect(summary).to_be_visible()
++    fb, sb = form.bounding_box(), summary.bounding_box()
++    assert fb["width"] <= 740, fb
++    assert sb["x"] >= fb["x"] + fb["width"] - 1, (fb, sb)
++    assert abs(sb["y"] - fb["y"]) < 200, (fb, sb)
++    for label in ("Tier", "host", "scope"):
++        expect(summary).to_contain_text(re.compile(label, re.I))
++    expect(summary.get_by_test_id("summary-scopes-count")).to_be_visible()
++    assert _no_hscroll(page)
++    page.mouse.wheel(0, 900)
++    page.wait_for_timeout(300)
++    assert page.evaluate("window.scrollY") > 100, "page too short to scroll: form not substantial"
++    top = summary.bounding_box()["y"]
++    assert 0 <= top < 200, f"summary not sticky, top={top}"
++    shot("then")
++
++
++def test_r1_single_column_at_1024(page, shot):
++    page.set_viewport_size({"width": 1024, "height": 768})
++    _open(page)
++    form = page.get_by_role("form", name=re.compile("register", re.I))
++    summary = page.get_by_test_id("register-summary")
++    expect(summary).to_be_visible()
++    fb, sb = form.bounding_box(), summary.bounding_box()
++    assert not (sb["x"] >= fb["x"] + fb["width"] - 1 and abs(sb["y"] - fb["y"]) < 50), "still two columns"
++    assert _no_hscroll(page)
++    shot("then")
++
++
++def test_r2_sections(page, shot):
++    _open(page)
++    secs = page.get_by_test_id("register-section")
++    expect(secs).to_have_count(3)
++    for i, title in enumerate(["Agent card", "Consequence assessment", "Data access"]):
++        sec = secs.nth(i)
++        expect(sec.get_by_role("heading", name=re.compile(rf"^\s*{i + 1}\W*\s*{title}", re.I))).to_be_visible()
++        assert len(sec.get_by_test_id("section-helper").inner_text().strip()) > 10
++    shot("then")
++
++
++def test_r3_card_url_field_and_validation(page, shot):
++    _open(page)
++    url = page.get_by_label("Agent card URL")
++    expect(url).to_be_visible()
++    assert re.match(r"https?://", url.get_attribute("placeholder") or ""), url.get_attribute("placeholder")
++    expect(page.get_by_test_id("card-url-help")).to_be_visible()
++    err = page.get_by_test_id("card-url-error")
++    expect(err).to_have_count(0)
++    url.fill("not a url")
++    url.blur()
++    expect(err).to_be_visible()
++    expect(err).to_contain_text(re.compile(r"http", re.I))
++    url.fill("ftp://example.com/card")
++    url.blur()
++    expect(err).to_be_visible()
++    url.fill("https://agent.example.com/.well-known/agent-card.json")
++    url.blur()
++    expect(err).to_have_count(0)
++    url.fill("nope")
++    url.blur()
++    shot("then")
++
++
++def test_r4_criteria_segmented_radiogroups(page, shot):
++    _open(page)
++    assert page.locator("input[type=number]").count() == 0
++    groups = page.get_by_role("radiogroup")
++    expect(groups).to_have_count(7)
++    for key, name in zip(KEYS, NAMES):
++        g = _group(page, key)
++        expect(g).to_have_attribute("role", "radiogroup")
++        expect(page.get_by_role("radiogroup", name=name)).to_have_count(1)
++        radios = g.get_by_role("radio")
++        expect(radios).to_have_count(5)
++        for n in range(1, 6):
++            expect(g.get_by_role("radio", name=str(n), exact=True)).to_have_count(1)
++        expect(g.get_by_role("radio", name="3", exact=True)).to_be_checked()
++        card = page.get_by_test_id(f"criterion-row-{key}")
++        expect(card).to_contain_text(name)
++        expect(card).to_contain_text("Low")
++        expect(card).to_contain_text("High")
++        assert card.get_by_test_id("criterion-question").inner_text().strip().endswith("?")
++    shot("then")
++
++
++def test_r4_keyboard_arrows(page, shot):
++    _open(page)
++    g = _group(page, "autonomy")
++    g.get_by_role("radio", name="3", exact=True).focus()
++    page.keyboard.press("ArrowRight")
++    expect(g.get_by_role("radio", name="4", exact=True)).to_be_checked()
++    page.keyboard.press("ArrowRight")
++    expect(g.get_by_role("radio", name="5", exact=True)).to_be_checked()
++    page.keyboard.press("ArrowLeft")
++    expect(g.get_by_role("radio", name="4", exact=True)).to_be_checked()
++    expect(g.get_by_role("radio", name="4", exact=True)).to_be_focused()
++    shot("then")
++
++
++def test_r5_live_tier_preview(page, shot):
++    _open(page)
++    with page.expect_response(lambda r: "api/tiering/preview" in r.url and r.request.method == "POST"):
++        _set_all(page, 5)
++    expect(_tier(page)).to_have_text(re.compile(r"Tier 1"))
++    expect(_tier(page)).to_have_attribute("data-tier", "1")
++    score5 = page.get_by_test_id("summary-score").inner_text()
++    _set_all(page, 1)
++    expect(_tier(page)).not_to_have_attribute("data-tier", "1")
++    expect(_tier(page)).to_have_text(re.compile(r"Tier [234]"))
++    assert page.get_by_test_id("summary-score").inner_text() != score5
++    shot("then")
++
++
++def test_r6_scope_chips(page, shot):
++    _open(page)
++    inp = page.get_by_label("Data scopes")
++    chips = page.get_by_test_id("scope-chip")
++    expect(page.get_by_test_id("scope-suggestion").first).to_be_visible()
++    inp.fill("accounts:read")
++    inp.press("Enter")
++    expect(chips).to_have_count(1)
++    inp.fill("payments:write,")
++    expect(chips).to_have_count(2)
++    inp.fill("accounts:read")
++    inp.press("Enter")
++    expect(chips).to_have_count(2)  # duplicate ignored
++    expect(page.get_by_test_id("summary-scopes-count")).to_contain_text("2")
++    inp.fill("")
++    inp.press("Backspace")
++    expect(chips).to_have_count(1)
++    expect(chips.first).to_contain_text("accounts:read")
++    page.get_by_role("button", name="Remove accounts:read").click()
++    expect(chips).to_have_count(0)
++    page.get_by_test_id("scope-suggestion").first.click()
++    expect(chips).to_have_count(1)
++    shot("then")
++
++
++def test_r6_payload_scopes_list(page, shot, card_urls):
++    _open(page)
++    page.get_by_label("Agent card URL").fill(card_urls["signed"])
++    inp = page.get_by_label("Data scopes")
++    for s in ("accounts:read", "payments:write"):
++        inp.fill(s)
++        inp.press("Enter")
++    _group(page, "autonomy").get_by_role("radio", name="4", exact=True).click()
++    with page.expect_request(lambda r: r.url.endswith("api/agents/external") and r.method == "POST") as ri:
++        page.get_by_role("button", name="Register agent").click()
++    body = json.loads(ri.value.post_data)
++    assert body["card_url"] == card_urls["signed"]
++    assert body["criteria"]["data_scopes"] == ["accounts:read", "payments:write"], body
++    assert body["criteria"]["autonomy"] == 4 and body["criteria"]["decision_impact"] == 3
++    shot("then")
++
++
++def test_r7_actions_and_disabled_until_valid(page, shot):
++    _open(page)
++    submit = page.get_by_role("button", name="Register agent", exact=True)
++    expect(submit).to_be_disabled()
++    page.get_by_label("Agent card URL").fill("garbage")
++    expect(submit).to_be_disabled()
++    page.get_by_label("Agent card URL").fill("http://127.0.0.1:1/card.json")
++    expect(submit).to_be_enabled()
++    page.get_by_role("button", name="Cancel", exact=True).click()
++    expect(page).not_to_have_url(re.compile(r"#/register"))
++    expect(page.get_by_test_id("register-external-button")).to_be_visible()
++    shot("then")
++
++
++def test_r7_busy_and_no_double_submit(page, shot, card_urls):
++    posts = []
++
++    def slow(route):
++        posts.append(1)
++        time.sleep(1.5)
++        route.continue_()
++    page.route(re.compile(r"/api/agents/external$"), slow)
++    _open(page)
++    page.get_by_label("Agent card URL").fill(card_urls["signed"])
++    submit = page.get_by_role("button", name=re.compile("Regist", re.I)).filter(has_not_text="external")
++    page.get_by_role("button", name="Register agent", exact=True).click()
++    busy = page.get_by_role("button", name=re.compile("Registering", re.I))
++    expect(busy).to_be_visible()
++    expect(busy).to_be_disabled()
++    expect(busy).to_have_attribute("aria-busy", "true")
++    busy.click(force=True)
++    shot("then")
++    page.wait_for_timeout(2500)
++    assert len(posts) == 1, f"{len(posts)} submissions"
++
++
++def test_r7_server_error_plain_language(page, shot):
++    _open(page)
++    page.get_by_label("Agent card URL").fill("http://169.254.169.254/latest")
++    page.get_by_role("button", name="Register agent", exact=True).click()
++    err = page.get_by_test_id("register-error")
++    expect(err).to_be_visible(timeout=15000)
++    expect(err).to_have_attribute("role", "alert")
++    expect(err).to_contain_text(re.compile(r"not allowed", re.I))
++    t = err.inner_text()
++    assert "{" not in t and "detail" not in t.lower(), t
++    # the alert sits above the first section
++    assert err.bounding_box()["y"] < page.get_by_test_id("register-section").first.bounding_box()["y"]
++    shot("then")
++
++
++def test_r7_raw_json_error_is_humanised(page, shot):
++    page.route(re.compile(r"/api/agents/external$"), lambda r: r.fulfill(
++        status=422, content_type="application/json",
++        body=json.dumps({"detail": [{"loc": ["body", "card_url"], "msg": "bad", "type": "value_error"}]})))
++    _open(page)
++    page.get_by_label("Agent card URL").fill("http://127.0.0.1:1/card.json")
++    page.get_by_role("button", name="Register agent", exact=True).click()
++    err = page.get_by_test_id("register-error")
++    expect(err).to_be_visible()
++    t = err.inner_text()
++    assert "{" not in t and "detail" not in t.lower() and "[" not in t, t
++    shot("then")
++
++
++def test_r7_success_lands_on_agent(page, shot, card_urls):
++    _open(page)
++    page.get_by_label("Agent card URL").fill(card_urls["signed"])
++    page.get_by_role("button", name="Register agent", exact=True).click()
++    page.wait_for_function("location.hash.includes('/agents/') || document.querySelector('[data-testid=register-success]')",
++                           timeout=20000)
++    if "/agents/" not in page.url:
++        page.get_by_test_id("register-success").get_by_role("link").first.click()
++    expect(page).to_have_url(re.compile(r"#/agents/"))
++    expect(page.get_by_test_id("passport")).to_be_visible(timeout=15000)
++    expect(page.get_by_test_id("passport-signature")).to_have_attribute("data-signature", re.compile("."))
++    shot("then")
++
++
++def test_r8_focus_labels_no_claude(page, shot):
++    _open(page)
++    url = page.get_by_label("Agent card URL")
++    url.focus()
++    assert url.evaluate("e => { const s = getComputedStyle(e); return s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0 || s.boxShadow !== 'none'; }")
++    page.get_by_role("radio", name="3", exact=True).first.focus()
++    page.keyboard.press("ArrowRight")
++    focused = page.evaluate("""() => { const e = document.activeElement; const s = getComputedStyle(e);
++        const p = e.closest('[role=radiogroup]') ? getComputedStyle(e.parentElement) : s;
++        return [s.outlineStyle, s.outlineWidth, s.boxShadow, p.outlineStyle, p.boxShadow]; }""")
++    assert any(v not in ("none", "0px") for v in focused), focused
++    page.get_by_role("button", name="Cancel", exact=True).focus()
++    assert page.get_by_role("button", name="Cancel", exact=True).evaluate(
++        "e => { const s = getComputedStyle(e); return s.outlineStyle !== 'none' || s.boxShadow !== 'none'; }")
++    unlabeled = page.evaluate("""() => [...document.querySelectorAll('input,select,textarea')].filter(e => e.type !== 'hidden')
++        .filter(e => !(e.labels && e.labels.length) && !e.getAttribute('aria-label') && !e.getAttribute('aria-labelledby'))
++        .map(e => e.outerHTML.slice(0, 80))""")
++    assert unlabeled == [], unlabeled
++    assert "claude" not in page.content().lower()
++    shot("then")
++
++
++def test_r9_fleet_button_opens_page(page, shot):
++    page.goto("./")
++    page.get_by_test_id("register-external-button").click()
++    expect(page).to_have_url(re.compile(r"#/register"))
++    expect(page.get_by_test_id("register-summary")).to_be_visible()
++    shot("then")
+diff --git a/tests/test_t18_tier_preview.py b/tests/test_t18_tier_preview.py
+new file mode 100644
+index 0000000..f753e0d
+--- /dev/null
++++ b/tests/test_t18_tier_preview.py
+@@ -0,0 +1,119 @@
++"""T-18 tests: POST /api/tiering/preview (R-5), read-only tier preview via score_tier()."""
++import importlib
++import sys
++
++import pytest
++from fastapi.testclient import TestClient
++from sqlalchemy import select
++
++HDR = {"X-Domino-User-Id": "u18", "X-Domino-User": "preview-tester"}
++NAMES = ["decision_impact", "financial_exposure", "customer_impact", "autonomy",
++         "data_sensitivity", "reversibility", "regulatory_exposure"]
++ALL5 = {k: 5 for k in NAMES}
++ALL1 = {k: 1 for k in NAMES}
++MIXED = dict(zip(NAMES, [5, 4, 3, 2, 1, 3, 4]))
++MIXED2 = dict(zip(NAMES, [3, 3, 2, 3, 2, 2, 3]))
++URL = "/api/tiering/preview"
++
++
++@pytest.fixture
++def client(db_env, monkeypatch):
++    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    main = importlib.import_module("backend.main")
++    with TestClient(main.app) as c:
++        yield c
++
++
++def _expected(criteria):
++    tiering = importlib.import_module("backend.tiering")
++    r = tiering.score_tier(criteria)
++    return r.tier, r.score
++
++
++def _post(client, criteria, headers=HDR):
++    return client.post(URL, json={"criteria": criteria}, headers=headers)
++
++
++@pytest.mark.parametrize("criteria", [ALL5, ALL1, MIXED, MIXED2])
++def test_ac_r5_matches_score_tier(client, criteria):
++    r = _post(client, criteria)
++    assert r.status_code == 200, r.text
++    body = r.json()
++    tier, score = _expected(criteria)
++    assert isinstance(body["tier"], int) and 1 <= body["tier"] <= 4
++    assert body["tier"] == tier
++    assert body["score"] == pytest.approx(score)
++
++
++def test_ac_r5_extremes(client):
++    assert _post(client, ALL5).json()["tier"] == 1
++    assert _post(client, ALL1).json()["tier"] == 4
++
++
++def test_ac_r5_accepts_mid_range_ints(client):
++    assert _post(client, {k: 3 for k in NAMES}).status_code == 200
++
++
++@pytest.mark.parametrize("bad", [0, 6, -1, 100])
++def test_ac_r5_rejects_out_of_range(client, bad):
++    assert _post(client, {**ALL5, "autonomy": bad}).status_code == 422
++
++
++def test_ac_r5_rejects_missing_criterion(client):
++    c = dict(ALL5)
++    del c["reversibility"]
++    assert _post(client, c).status_code == 422
++
++
++def test_ac_r5_rejects_empty_criteria(client):
++    assert _post(client, {}).status_code == 422
++
++
++def test_ac_r5_rejects_unknown_key(client):
++    assert _post(client, {**ALL5, "bogus_factor": 3}).status_code == 422
++
++
++@pytest.mark.parametrize("bad", ["abc", None, [], {}])
++def test_ac_r5_rejects_non_numeric(client, bad):
++    assert _post(client, {**ALL5, "autonomy": bad}).status_code == 422
++
++
++def test_ac_r5_rejects_non_integer_float(client):
++    assert _post(client, {**ALL5, "autonomy": 3.5}).status_code == 422
++
++
++@pytest.mark.parametrize("key", ["backtest_score", "benchmark_accuracy", "Benchmark"])
++def test_ac_r5_no_benchmark_rule_422(client, key):
++    r = _post(client, {**ALL5, key: 5})
++    assert r.status_code == 422
++    assert "no_benchmark_rule" in r.text
++
++
++@pytest.mark.parametrize("body", [{}, {"criteria": "x"}, {"criteria": [1]}, [1, 2]])
++def test_ac_r5_rejects_malformed_body(client, body):
++    assert client.post(URL, json=body, headers=HDR).status_code == 422
++
++
++def test_ac_r5_writes_nothing(client):
++    db = importlib.import_module("backend.db")
++
++    def snap():
++        with db.engine.connect() as cx:
++            return {t.name: [tuple(r) for r in cx.execute(select(t)).fetchall()]
++                    for t in db.metadata.sorted_tables}
++    before = snap()
++    for c in (ALL5, ALL1, MIXED, {**ALL5, "autonomy": 9}, {**ALL5, "benchmark": 1}):
++        _post(client, c)
++    assert snap() == before
++
++
++def test_ac_r5_anonymous_post_blocked_by_write_guard(client):
++    r = client.post(URL, json={"criteria": ALL5})
++    assert r.status_code == 401
++
++
++def test_ac_r5_identified_user_gets_200(client):
++    r = _post(client, ALL5, headers=HDR)
++    assert r.status_code == 200
