@@ -1,0 +1,722 @@
+diff --git a/frontend/src/components/EvidencePack.jsx b/frontend/src/components/EvidencePack.jsx
+index a750952..f5690c2 100644
+--- a/frontend/src/components/EvidencePack.jsx
++++ b/frontend/src/components/EvidencePack.jsx
+@@ -40,6 +40,7 @@ export function useEvidencePack(id) {
+   const [busy, setBusy] = React.useState(false)
+   const [err, setErr] = React.useState(null)
+   const [res, setRes] = React.useState(null)
++  const [doneAt, setDoneAt] = React.useState(0)
+   const generate = async () => {
+     setBusy(true); setErr(null)
+     try {
+@@ -51,16 +52,25 @@ export function useEvidencePack(id) {
+           : (body && typeof body.detail === 'string' ? body.detail : r.statusText || 'Request failed'))
+       }
+       setRes(body)
++      setDoneAt(Date.now())
+     } catch (e) { setErr(e.message) } finally { setBusy(false) }
+   }
+-  return { busy, err, res, generate }
++  return { busy, err, res, generate, doneAt }
+ }
+ 
+ export default function EvidencePack({ pack }) {
+-  const { busy, err, res, generate } = pack
++  const { busy, err, res, generate, doneAt } = pack
++  const ref = React.useRef(null)
++  // The header button and this card can be far apart: bring the finished pack into view and move focus to it.
++  React.useEffect(() => {
++    if (!doneAt || !ref.current) return
++    ref.current.scrollIntoView({ block: 'start', behavior: 'smooth' })
++    ref.current.focus({ preventScroll: true })
++  }, [doneAt])
+   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
+   return (
+-    <Card title="Evidence pack" testid="evidence-pack-card">
++    <Card title="Evidence pack" testid="evidence-pack-card" cardRef={ref}
++          actions={<span className="ds-sr" role="status" aria-live="polite">{res ? 'Evidence pack ready' : err ? 'Evidence pack failed' : ''}</span>}>
+       {!res && !err && !busy && <p className="ag-note">A dated pack in OCC 2026-54 order, built from ACT's own records. Use Generate evidence pack above.</p>}
+       {busy && <Skel what="evidence pack" lines={2} />}
+       {err && <InlineError error={{ message: clean(err) }} onRetry={generate} />}
+diff --git a/frontend/src/components/Passport.jsx b/frontend/src/components/Passport.jsx
+index 9a97438..7ba4d9e 100644
+--- a/frontend/src/components/Passport.jsx
++++ b/frontend/src/components/Passport.jsx
+@@ -1,6 +1,7 @@
+ import React from 'react'
+ import { clean } from '../format'
+-import { Panel, StatusPill, TierBadge } from './ui'
++import { StatusPill, TierBadge } from './ui'
++import { Card } from './agentui'
+ 
+ const SIGNATURE = { signed: 'Signed (verified)', unsigned: 'Unsigned', invalid: 'Invalid signature' }
+ 
+@@ -14,7 +15,7 @@ export default function Passport({ agent }) {
+   const sig = SIGNATURE[agent.card_signature] || 'Unsigned'
+   const sigKey = SIGNATURE[agent.card_signature] ? agent.card_signature : 'unsigned'
+   return (
+-    <Panel title="AI Passport" testid="passport" aside={<TierBadge tier={agent.tier} />}>
++    <Card title="AI Passport" testid="passport" actions={<TierBadge tier={agent.tier} />}>
+       <dl className="kv">
+         <dt>Identity</dt><dd data-testid="passport-identity">{clean(p.identity || agent.name)}</dd>
+         <dt>Allowed skills</dt>
+@@ -27,6 +28,6 @@ export default function Passport({ agent }) {
+         <dt>Card signature</dt><dd data-testid="passport-signature" data-signature={sigKey} data-severity={sigKey === 'invalid' ? 'warning' : undefined} className={`sig sig-${sigKey}${sigKey === 'invalid' ? ' warn' : ''}`}>{sig}</dd>
+         <dt>Status</dt><dd><StatusPill status={agent.status} testid="passport-status" /></dd>
+       </dl>
+-    </Panel>
++    </Card>
+   )
+ }
+diff --git a/frontend/src/components/agentui.jsx b/frontend/src/components/agentui.jsx
+index 91770bc..c2a0852 100644
+--- a/frontend/src/components/agentui.jsx
++++ b/frontend/src/components/agentui.jsx
+@@ -9,6 +9,7 @@ async function writeClipboard(text) {
+     return true
+   } catch {
+     try {
++      const prev = document.activeElement
+       const ta = document.createElement('textarea')
+       ta.value = text
+       ta.setAttribute('readonly', '')
+@@ -18,33 +19,33 @@ async function writeClipboard(text) {
+       ta.select()
+       const ok = document.execCommand('copy')
+       document.body.removeChild(ta)
++      if (prev && prev.focus) prev.focus({ preventScroll: true })
+       return ok
+     } catch { return false }
+   }
+ }
+ 
+ export function CopyButton({ value, label, className = '' }) {
+-  const [copied, setCopied] = React.useState(false)
++  const [copied, setCopied] = React.useState(null)
+   const timer = React.useRef(null)
+   React.useEffect(() => () => clearTimeout(timer.current), [])
+   const onClick = async (e) => {
+     e.stopPropagation()
+-    if (await writeClipboard(String(value))) {
+-      setCopied(true)
+-      clearTimeout(timer.current)
+-      timer.current = setTimeout(() => setCopied(false), 1500)
+-    }
++    const ok = await writeClipboard(String(value))
++    setCopied(ok ? 'ok' : 'fail')
++    clearTimeout(timer.current)
++    timer.current = setTimeout(() => setCopied(null), ok ? 1500 : 2500)
+   }
+   return (
+     <>
+       <button type="button" className={`ag-copy ${className}`} data-testid="copy-button" aria-label={`Copy ${label}`} title={`Copy ${label}`} onClick={onClick}>
+-        {copied ? (
++        {copied === 'ok' ? (
+           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 4.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+         ) : (
+           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10.5 3.5v-.2A1.3 1.3 0 0 0 9.2 2H3.8A1.3 1.3 0 0 0 2.5 3.3v5.4A1.3 1.3 0 0 0 3.8 10h.2" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+         )}
+       </button>
+-      <span className="ds-sr" role="status">{copied ? 'Copied' : ''}</span>
++      <span className={copied === 'fail' ? 'ag-copy-fail' : 'ds-sr'} role="status">{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Copy failed' : ''}</span>
+     </>
+   )
+ }
+@@ -52,7 +53,7 @@ export function CopyButton({ value, label, className = '' }) {
+ // Long id / ARN: one line, ellipsis, full value in the title and a copy button.
+ export function IdValue({ value, label = 'value', testid = 'id-value' }) {
+   const v = value == null || value === '' ? null : String(value)
+-  if (!v) return <span className="ag-none">-</span>
++  if (!v) return <span className="ag-none">—</span>
+   return (
+     <span className="ag-idv">
+       <span className="ds-trunc ag-idv-text" data-testid={testid} title={v}>{v}</span>
+@@ -61,9 +62,9 @@ export function IdValue({ value, label = 'value', testid = 'id-value' }) {
+   )
+ }
+ 
+-export function Card({ title, testid, id, className = '', actions, children }) {
++export function Card({ title, testid, id, className = '', actions, cardRef, children }) {
+   return (
+-    <section className={`ds-card ag-card ${className}`} data-testid={testid} id={id}>
++    <section className={`ds-card ag-card ${className}`} data-testid={testid} id={id} ref={cardRef} tabIndex={cardRef ? -1 : undefined}>
+       <header className="ag-card-head">
+         <h2 className="ag-card-title">{title}</h2>
+         {actions}
+diff --git a/frontend/src/components/ui.jsx b/frontend/src/components/ui.jsx
+index f535203..7827021 100644
+--- a/frontend/src/components/ui.jsx
++++ b/frontend/src/components/ui.jsx
+@@ -56,11 +56,10 @@ function DemoBanner({ health: h }) {
+         <strong>Demo mode:</strong>
+         <span>simulated data</span>
+         <span className="demo-sep" aria-hidden="true">·</span>
+-        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={["demo-stand-ins", ...h.stand_ins.map((s) => `demo-chip-${s.name}`)].join(" ")} onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
++        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={h.stand_ins.map((s) => `demo-chip-${s.name}`).join(" ")} onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
+         <span className="demo-sep" aria-hidden="true">·</span>
+         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
+         <span className="demo-break" hidden={!open} />
+-        <span id="demo-stand-ins" className="demo-panel-title" hidden={!open}>Demo mode: simulated data and stand-ins</span>
+         {h.stand_ins.map((s) => <span className="demo-chip" id={`demo-chip-${s.name}`} key={s.name} data-stand-in={s.name} hidden={!open}>{s.label}</span>)}
+         {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
+         {err && <span className="alert error" role="alert">{err}</span>}
+diff --git a/frontend/src/design.css b/frontend/src/design.css
+index f079d68..5c26bcc 100644
+--- a/frontend/src/design.css
++++ b/frontend/src/design.css
+@@ -3,7 +3,7 @@
+ :root {
+   --ds-accent: #543fde; --ds-accent-hover: #4533c0; --ds-accent-soft: #efedfc;
+   --ds-ink: #14181f; --ds-text: #2b3340; --ds-muted: #596273; --ds-faint: #5f6673;
+-  --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
++  --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-surface-2: #eceff3; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
+   --ds-danger: #b42318; --ds-danger-bg: #fef3f2; --ds-danger-line: #fda29b;
+   --ds-s1: 8px; --ds-s2: 16px; --ds-s3: 24px; --ds-s4: 32px; --ds-s5: 40px; --ds-s6: 48px;
+   --ds-radius: 8px; --ds-radius-sm: 6px; --ds-radius-lg: 12px;
+@@ -242,14 +242,15 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ag-header-main { min-width: 0; flex: 1 1 320px }
+ .ag-name { overflow-wrap: anywhere }
+ .ag-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ds-s1); margin-top: var(--ds-s1) }
+-.ag-meta-text { font-size: 13px; margin-left: 4px }
++.ag-meta-text { font-size: 13px }
++@media (max-width: 1100px) { .ag-meta-text { flex: 1 1 100% } }
+ .ag-meta .badge { border-radius: 12px; padding: 2px 10px }
+ .ag-meta .pill { border-radius: 12px; padding: 2px 10px; font-weight: 500; color: var(--ds-text) }
+ .ag-meta .pill.status-pending_review { background: #fff4d6; color: #6b4a00 } .ag-meta .pill.status-approved { background: #dff5e3; color: #1b5e20 }
+ .ag-actions { display: flex; flex-wrap: wrap; gap: var(--ds-s1); justify-content: flex-end; flex: 0 1 auto }
+ .ag-alerts { display: flex; flex-direction: column; gap: var(--ds-s1); margin-bottom: var(--ds-s2) }
+ .ag-ok { background: #e8f5e9; border-color: #b7dfbb; color: #1b5e20 }
+-.ag-passport { margin-bottom: var(--ds-s2) } .ag-passport .panel { margin-bottom: 0; border-radius: var(--ds-radius-lg); box-shadow: var(--ds-shadow) }
++.ag-passport { margin-bottom: var(--ds-s2) } .ag-passport .ag-card { margin-bottom: 0 }
+ 
+ .ag-cols { display: flex; gap: var(--ds-s2); align-items: flex-start }
+ .ag-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--ds-s2) }
+@@ -291,7 +292,7 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ag-idv { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; vertical-align: middle }
+ .ag-idv-text { min-width: 0; flex: 0 1 auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; font-weight: 500; color: var(--ds-ink); display: block }
+ .ag-copy { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-muted); cursor: pointer }
+-.ag-copy:hover { background: #eceff3; color: var(--ds-ink) }
++.ag-copy:hover { background: var(--ds-surface-2); color: var(--ds-ink) }
+ 
+ /* tier */
+ .ag-tierline { display: flex; align-items: center; gap: var(--ds-s1); margin: 0 0 12px; font-size: 13px }
+@@ -400,3 +401,20 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .rt-violation.rt-flash { animation-name: rt-flash-v }
+ @keyframes rt-flash-v { 0%, 40% { background: #fee4e2 } 100% { background: var(--ds-danger-bg) } }
+ .rt-ev:focus-visible { outline: 2px solid var(--ds-accent) }
++
++/* round 2 */
++.ag-copy-fail { font-size: 12px; font-weight: 600; color: var(--ds-danger); white-space: nowrap }
++.ag-dl dd > .ds-trunc { display: block }
++.ag-model { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; padding: 2px 0 }
++.ag-model-ver { font-size: 13px; font-weight: 400 }
++.ag-plain > li + li { margin-top: 4px }
++.ag-finding-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 2px }
++.ag-finding-side .ag-time { margin-left: 0; color: var(--ds-muted) }
++.ag-finding-link { align-self: flex-end }
++@media (max-width: 1100px) { .ag-reason { -webkit-line-clamp: 3 } .ag-finding-side { flex-direction: row; align-items: center; width: 100%; justify-content: space-between } }
++.ag-runs col.c-rstart { width: 184px } .ag-runs col.c-rspans { width: 112px }
++.ag-runs th.num, .ag-runs td.num { text-align: right; padding-right: var(--ds-s3) }
++.ag-runs td.ds-nowrap { overflow: hidden; text-overflow: ellipsis }
++.rt-toolbar { border-bottom: 1px solid var(--ds-line); padding-bottom: var(--ds-s1) }
++.rt-showing { white-space: nowrap }
++.rt-flash { outline: 2px solid var(--ds-accent); outline-offset: -2px }
+diff --git a/frontend/src/format.js b/frontend/src/format.js
+index c69bf00..17e2f85 100644
+--- a/frontend/src/format.js
++++ b/frontend/src/format.js
+@@ -70,3 +70,15 @@ export function relTime(ts, now = Date.now()) {
+ export function agentPath(id) {
+   return `/agents/${encodeURIComponent(id).replace(/%3A/gi, ':')}`
+ }
++
++// Numeric strings stay strings (no precision loss above 15 digits, trailing zeros kept); only the integer part gets separators.
++// Missing values return null so callers can show a muted dash.
++export function num(v) {
++  if (v == null || v === '') return null
++  const s = typeof v === 'string' ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : null
++  if (s != null && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s)) {
++    const [int, frac] = s.split('.')
++    return int.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (frac ? `.${frac}` : '')
++  }
++  return clean(v)
++}
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index a0b046a..6d7c584 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -1,7 +1,7 @@
+ import React from 'react'
+ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
+ import { api, demoApi, standIn } from '../api'
+-import { clean, fmtStatus, fmtTs, sourceLabel } from '../format'
++import { clean, fmtStatus, fmtTs, num, sourceLabel } from '../format'
+ import Passport from '../components/Passport'
+ import Markdown from '../components/Markdown'
+ import { Breadcrumb } from '../components/form'
+@@ -16,7 +16,7 @@ const CRITERIA = [
+   ['regulatory_exposure', 'Regulatory exposure'],
+ ]
+ 
+-const nf = (n) => (n == null ? '-' : Number(n).toLocaleString('en-US'))
++const nf = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'))
+ 
+ function Bar({ value }) {
+   const v = Number(value)
+@@ -62,8 +62,8 @@ export function Identity({ agent }) {
+       )}
+       {id.simulated && <p className="ag-note"><span className="ag-demo-chip" data-testid="identity-simulated">{id.label || 'simulated service account (demo)'}</span></p>}
+       <Dl rows={[
+-        ['Type', id.type || <None>-</None>],
+-        ['Issuer', id.issuer || <None>-</None>],
++        ['Type', id.type || <None>—</None>],
++        ['Issuer', id.issuer || <None>—</None>],
+         ['Principal', <IdValue key="p" value={id.principal || id.subject} label="principal" />],
+       ]} />
+     </Card>
+@@ -73,19 +73,18 @@ export function Identity({ agent }) {
+ function Manifest({ agent }) {
+   const m = agent.manifest || {}
+   const limits = m.value_limits_detail || m.value_limits || {}
+-  const list = (xs) => (xs && xs.length ? xs.map(clean).join(', ') : <None />)
+-  const tools = m.tools || []
++  const chips = (xs, tid) => (xs && xs.length
++    ? <ul className="ag-chips">{xs.map((t) => <li key={t} data-testid={tid} className="ds-chip-tag ag-wrap">{clean(t)}</li>)}</ul>
++    : <None>none declared</None>)
++  const limitText = (v) => (v && typeof v === 'object' ? `${num(v.amount) ?? '\u2014'} ${v.currency || ''}`.trim() : (num(v) ?? '\u2014'))
+   return (
+     <Card title="Permitted actions" className="ag-ord-5">
+-      <p className="ag-label">Tools</p>
+-      {tools.length ? (
+-        <ul className="ag-chips">{tools.map((t) => <li key={t} data-testid="manifest-tool" className="ds-chip-tag">{clean(t)}</li>)}</ul>
+-      ) : <p className="ag-note"><None>none declared</None></p>}
+       <Dl rows={[
+-        ['Data scopes', list(m.data_scopes)],
+-        ['Systems', list(m.systems)],
++        ['Tools', chips(m.tools, 'manifest-tool')],
++        ['Data scopes', chips(m.data_scopes)],
++        ['Systems', chips(m.systems)],
+         ['Value limits', Object.keys(limits).length ? Object.entries(limits).map(([t, v]) => (
+-          <div key={t}>{clean(t)}: {typeof v === 'object' ? `${nf(v.amount)} ${v.currency || ''}` : nf(v)}</div>)) : <None />],
++          <div key={t}>{clean(t)}: {limitText(v)}</div>)) : <None>none declared</None>],
+       ]} />
+     </Card>
+   )
+@@ -99,11 +98,12 @@ function Dependencies({ id }) {
+     <Card title="Dependencies" className="ag-ord-5">
+       {error && <InlineError error={error} what="dependencies" onRetry={() => setRev((r) => r + 1)} />}
+       {loading && !data && !error && <Skel what="dependencies" />}
+-      {data && (
++      {data && !data.models.length && !data.mcp_servers.length && !data.tools.length && <p className="ag-note"><None>None declared</None></p>}
++      {data && (data.models.length > 0 || data.mcp_servers.length > 0 || data.tools.length > 0) && (
+         <Dl rows={[
+           ['Models', data.models.length ? (
+-            <ul className="ag-chips">{data.models.map((m, i) => (
+-              <li key={i} data-testid="dependency-model"><span className="ds-chip-tag">{clean(m.name)}</span> <span className="ag-muted">registry version {m.registry_version ?? '-'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <> <span className="ag-demo-chip" data-testid="demo-classifier-label">{classifier.label}</span></>}</li>
++            <ul className="ag-plain">{data.models.map((m, i) => (
++              <li key={i} data-testid="dependency-model" className="ag-model"><span className="ds-chip-tag">{clean(m.name)}</span><span className="ag-muted ag-model-ver">registry version {m.registry_version ?? '—'}{m.alias === 'champion' ? ' · champion' : ''}</span>{classifier && m.name === 'break_classifier' && <span className="ag-demo-chip" data-testid="demo-classifier-label">{classifier.label}</span>}</li>
+             ))}</ul>) : <None />],
+           ['MCP servers', data.mcp_servers.length ? (
+             <ul className="ag-plain">{data.mcp_servers.map((m, i) => <li key={i} data-testid="dependency-mcp">{clean(m.name)}{m.target ? ` (${clean(m.target)})` : ''}</li>)}</ul>) : <None />],
+@@ -115,8 +115,8 @@ function Dependencies({ id }) {
+   )
+ }
+ 
+-function pct(x) { return x == null ? '-' : `${(Number(x) * 100).toFixed(1).replace(/\.0$/, '')}%` }
+-const f3 = (x) => (x == null ? '-' : Number(x).toFixed(3))
++function pct(x) { return x == null ? '—' : `${(Number(x) * 100).toFixed(1).replace(/\.0$/, '')}%` }
++const f3 = (x) => (x == null ? '—' : Number(x).toFixed(3))
+ 
+ function Validation({ id }) {
+   const [rev, setRev] = React.useState(0)
+@@ -158,7 +158,7 @@ function Governance({ gov, error, onRetry }) {
+           {sim && <p className="ag-note"><span className="ag-demo-chip" data-testid="demo-governance-label">{sim.label}</span></p>}
+           <Dl rows={[
+             ['Bundle', gov.bundle_id ? <IdValue key="b" value={gov.bundle_id} label="bundle ID" testid="bundle-id" /> : <span data-testid="bundle-id">not yet created</span>],
+-            ['Stage', gov.stage || <None>-</None>],
++            ['Stage', gov.stage || <None>—</None>],
+           ]} />
+           <p className="ag-label ag-label-gap">{gov.bundle_id ? 'Policies attached to this bundle' : 'Policies the bundle will carry'}</p>
+           <ul className="ag-bullets" data-testid={gov.bundle_id ? 'policies-attached' : 'policies-expected'}>
+@@ -216,7 +216,6 @@ function Findings({ fnd, hl, onRetry }) {
+                     <span className="ds-chip-tag">{f.type}</span>
+                     <strong className="ag-wrap">{clean(f.tool)}</strong>
+                     <span className="pill ag-status">{fmtStatus(f.status)}</span>
+-                    <span className="ds-nowrap ag-time" data-testid="finding-time">{fmtTs(f.ts)}</span>
+                   </div>
+                   <div className="ag-reason" data-testid="finding-reason"><Markdown text={clean(f.explanation) || 'No explanation recorded.'} /></div>
+                   {src && (
+@@ -225,12 +224,15 @@ function Findings({ fnd, hl, onRetry }) {
+                     </span>
+                   )}
+                 </div>
+-                {f.run_id && (
+-                  <Link className="ds-btn ds-btn-ghost ag-sm ag-finding-link" data-testid="finding-timeline-link"
+-                        to={`/runs/${encodeURIComponent(f.run_id)}${spanId ? `?span=${encodeURIComponent(spanId)}` : ''}`}>
+-                    View run timeline<Arrow />
+-                  </Link>
+-                )}
++                <div className="ag-finding-side">
++                  <span className="ds-nowrap ag-time" data-testid="finding-time">{fmtTs(f.ts)}</span>
++                  {f.run_id && (
++                    <Link className="ds-btn ds-btn-ghost ag-sm ag-finding-link" data-testid="finding-timeline-link"
++                          to={`/runs/${encodeURIComponent(f.run_id)}${spanId ? `?span=${encodeURIComponent(spanId)}` : ''}`}>
++                      View run timeline<Arrow />
++                    </Link>
++                  )}
++                </div>
+               </li>
+             )
+           })}
+@@ -278,8 +280,8 @@ function Overview({ a }) {
+       <Dl testid="agent-details" rows={[
+         ['Agent ID', <IdValue key="i" value={a.id} label="agent ID" />],
+         ['Source', sourceLabel(a.source_platform)],
+-        ['Owner', clean(a.owner) || <None>-</None>],
+-        ['Origin', clean(a.origin) || <None>-</None>],
++        ['Owner', a.owner ? <span className="ds-trunc" title={clean(a.owner)}>{clean(a.owner)}</span> : <None>—</None>],
++        ['Origin', clean(a.origin) || <None>—</None>],
+         ['Last seen', <span className="ds-nowrap ag-ink">{fmtTs(a.last_seen)}</span>],
+       ]} />
+     </Card>
+@@ -319,17 +321,21 @@ function AgentView({ id }) {
+   }), [id, runRev])
+   const demo = useHealth()
+   const { hash } = useLocation()
++  const navigate = useNavigate()
+   const [hl, setHl] = React.useState(null)
+-  // Arriving from a run violation (#finding-<id>): scroll to that finding and flash it.
++  const hlTimer = React.useRef(null)
++  React.useEffect(() => () => clearTimeout(hlTimer.current), [])
++  // Arriving from a run violation (#finding-<id>): scroll to that finding, flash it once, then clear the hash.
+   React.useEffect(() => {
+     if (!hash || !/^#finding-/.test(hash) || !fnd.data) return
+     const el = document.getElementById(hash.slice(1))
+     if (!el) return
+     el.scrollIntoView({ block: 'center' })
+     setHl(hash.slice(1))
+-    const t = setTimeout(() => setHl(null), 2600)
+-    return () => clearTimeout(t)
+-  }, [hash, fnd.data])
++    clearTimeout(hlTimer.current)
++    hlTimer.current = setTimeout(() => setHl(null), 2600)
++    navigate({ hash: '' }, { replace: true })
++  }, [hash, fnd.data, navigate])
+   const pack = useEvidencePack(id)
+   const [busy, setBusy] = React.useState(false)
+   const [err, setErr] = React.useState(null)
+@@ -369,7 +375,7 @@ function AgentView({ id }) {
+               <span className="ds-chip-tag" data-testid="agent-source">{sourceLabel(a.source_platform)}</span>
+               <TierBadge tier={a.tier} />
+               <StatusPill status={a.status} testid="agent-status" />
+-              <span className="ag-muted ag-meta-text">Owner {clean(a.owner) || '-'} · Last seen {fmtTs(a.last_seen)}</span>
++              <span className="ag-muted ag-meta-text">Owner {clean(a.owner) || '—'} · Last seen {fmtTs(a.last_seen)}</span>
+             </div>
+           </div>
+           <div className="ag-actions" data-testid="agent-actions">
+@@ -388,6 +394,7 @@ function AgentView({ id }) {
+           {ok && <div className="ds-alert ag-ok" role="status" data-testid="approve-success">{ok}</div>}
+         </div>
+       )}
++      {agent.error && <div className="ag-alerts"><InlineError error={agent.error} what="the latest agent data" onRetry={() => setRev((r) => r + 1)} /></div>}
+       {a.origin === 'external' && <div className="ag-passport"><Passport agent={a} /></div>}
+       <div className="ag-cols">
+         <div className="ag-main">
+@@ -396,14 +403,14 @@ function AgentView({ id }) {
+           <Approvals gov={gov.data} error={gov.error} onRetry={() => setRev((r) => r + 1)} />
+           <Validation id={id} />
+           <Governance gov={gov.data} error={gov.error} onRetry={() => setRev((r) => r + 1)} />
++          <Dependencies id={id} />
++          <div id="evidence-pack-slot" data-slot="evidence-pack" className="ag-ord-5"><EvidencePack pack={pack} /></div>
+         </div>
+         <div className="ag-side">
+           <Overview a={a} />
+           <TierCard agent={a} />
+           <Identity agent={a} />
+           <Manifest agent={a} />
+-          <Dependencies id={id} />
+-          <div id="evidence-pack-slot" data-slot="evidence-pack" className="ag-ord-5"><EvidencePack pack={pack} /></div>
+         </div>
+       </div>
+     </div>
+diff --git a/frontend/src/pages/Fleet.jsx b/frontend/src/pages/Fleet.jsx
+index fe4ea93..56e8509 100644
+--- a/frontend/src/pages/Fleet.jsx
++++ b/frontend/src/pages/Fleet.jsx
+@@ -14,10 +14,10 @@ function ColGroup() {
+ function Tile({ id, number, label, hint, active, onClick }) {
+   return (
+     <button type="button" className={`ds-tile${active ? ' is-active' : ''}`} data-testid={`fleet-tile-${id}`}
+-            aria-pressed={active} aria-label={`${label}: ${number}`} onClick={onClick}>
+-      <span className="ds-tile-num">{number}</span>
+-      <span className="ds-tile-label">{label}</span>
+-      <span className="ds-tile-hint">{hint}</span>
++            aria-pressed={active} aria-labelledby={`tile-${id}-num tile-${id}-label`} aria-describedby={`tile-${id}-hint`} onClick={onClick}>
++      <span className="ds-tile-num" id={`tile-${id}-num`}>{number}</span>
++      <span className="ds-tile-label" id={`tile-${id}-label`}>{label}</span>
++      <span className="ds-tile-hint" id={`tile-${id}-hint`}>{hint}</span>
+     </button>
+   )
+ }
+@@ -107,7 +107,7 @@ export default function Fleet() {
+           <label htmlFor="fleet-search">Search agents</label>
+           <div className="ds-search">
+           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+-          <input id="fleet-search" type="search" className="ds-input" aria-label="Search agents" placeholder="Search by name or owner"
++          <input id="fleet-search" type="search" className="ds-input" placeholder="Search by name or owner"
+                  value={q} onChange={(e) => setP({ q: e.target.value })} />
+           </div>
+         </div>
+@@ -169,7 +169,7 @@ export default function Fleet() {
+                       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) go() }}>
+                     <td data-testid="fleet-source" data-source={a.source_platform}><span className="ds-chip-tag">{sourceLabel(a.source_platform)}</span></td>
+                     <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
+-                    <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text" title={owner}>{owner}</span></td>
++                    <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text">{owner}</span></td>
+                     <td><TierBadge tier={a.tier} /></td>
+                     <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
+                     <td className="num"><span data-testid="open-findings" className={a.open_findings > 0 ? 'count hot' : 'count'}>{a.open_findings}</span></td>
+diff --git a/frontend/src/pages/Run.jsx b/frontend/src/pages/Run.jsx
+index 953179c..ad6bfcf 100644
+--- a/frontend/src/pages/Run.jsx
++++ b/frontend/src/pages/Run.jsx
+@@ -1,7 +1,7 @@
+ import React from 'react'
+ import { Link, useParams, useSearchParams } from 'react-router-dom'
+ import { api } from '../api'
+-import { agentPath, clean, cleanText, fmtMessages, fmtTs } from '../format'
++import { agentPath, clean, fmtJson, fmtMessages, fmtTs, num } from '../format'
+ import { Breadcrumb } from '../components/form'
+ import { useAsync } from '../components/ui'
+ import { Arrow, CopyButton, ErrorPage } from '../components/agentui'
+@@ -17,15 +17,6 @@ function label(ev) {
+   return clean(ev.name)
+ }
+ 
+-// Numeric strings stay strings (no precision loss above 15 digits); only the integer part gets separators.
+-function num(v) {
+-  const s = typeof v === 'string' ? v.trim() : typeof v === 'number' && Number.isFinite(v) ? String(v) : null
+-  if (s != null && /^-?(0|[1-9]\d*)(\.\d+)?$/.test(s)) {
+-    const [int, frac] = s.split('.')
+-    return int.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (frac ? `.${frac}` : '')
+-  }
+-  return clean(v)
+-}
+ const nf = (n) => Number(n).toLocaleString('en-US')
+ 
+ const REASONS = {
+@@ -80,21 +71,41 @@ function Icon({ kind, violation }) {
+ }
+ 
+ const COLLAPSE_AT = 6
++const COLLAPSE_CHARS = 400
++const DISPLAY_MAX = 20000
++
++const compactJson = (v) => (v === null || typeof v !== 'object' ? JSON.stringify(v)
++  : Array.isArray(v) ? `[${v.map(compactJson).join(', ')}]`
++    : `{${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${compactJson(x)}`).join(', ')}}`)
++
++// Short JSON payloads render on one line; everything else keeps its own formatting.
++function payloadText(v) {
++  let obj = v
++  if (typeof v === 'string' && /^\s*[[{]/.test(v)) { try { obj = JSON.parse(v) } catch { obj = null } }
++  if (obj && typeof obj === 'object') {
++    const c = compactJson(obj)
++    if (c.length <= 90) return clean(c)
++  }
++  return clean(fmtJson(v))
++}
+ 
+-function Payload({ text, testid, what }) {
+-  const lines = text.split('\n').length
+-  const long = lines > COLLAPSE_AT
++function Payload({ full, testid, what }) {
++  const id = React.useId()
++  const shown = full.length > DISPLAY_MAX ? full.slice(0, DISPLAY_MAX) + '...' : full
++  const lines = shown.split('\n').length
++  const long = lines > COLLAPSE_AT || shown.length > COLLAPSE_CHARS
+   const [open, setOpen] = React.useState(false)
+   const collapsed = long && !open
++  const more = lines > COLLAPSE_AT ? `Show ${lines - COLLAPSE_AT} more lines` : 'Show more'
+   return (
+     <>
+       <div className="rt-pl" data-testid={testid} data-collapsed={collapsed ? 'true' : 'false'}>
+-        <pre className="rt-pre" data-testid="timeline-payload" data-collapsed={collapsed ? 'true' : 'false'}>{text}</pre>
+-        <span className="rt-pl-copy"><CopyButton value={text} label={what} /></span>
++        <pre id={id} className="rt-pre" data-testid="timeline-payload" data-collapsed={collapsed ? 'true' : 'false'}>{shown}</pre>
++        <span className="rt-pl-copy"><CopyButton value={full} label={what} /></span>
+       </div>
+       {long && (
+-        <button type="button" className="ds-btn ds-btn-ghost ag-sm rt-toggle" data-testid="payload-toggle" aria-expanded={open}
+-                onClick={() => setOpen((o) => !o)}>{open ? 'Show less' : `Show ${lines - COLLAPSE_AT} more lines`}</button>
++        <button type="button" className="ds-btn ds-btn-ghost ag-sm rt-toggle" data-testid="payload-toggle" aria-expanded={open} aria-controls={id}
++                onClick={() => setOpen((o) => !o)}>{open ? 'Show less' : more}</button>
+       )}
+     </>
+   )
+@@ -115,6 +126,10 @@ function Loading() {
+ 
+ export default function Run() {
+   const { runId } = useParams()
++  return <RunView key={runId} runId={runId} />
++}
++
++function RunView({ runId }) {
+   const [rev, setRev] = React.useState(0)
+   const [params, setParams] = useSearchParams()
+   const tl = useAsync(() => api.timeline(runId), [runId, rev])
+@@ -124,6 +139,7 @@ export default function Run() {
+   const [filter, setFilter] = React.useState('all')
+   const [flash, setFlash] = React.useState(null)
+   const spanParam = params.get('span')
++  const [missingSpan, setMissingSpan] = React.useState(false)
+   const agentName = clean(agentInfo.data?.name) || 'Agent'
+   const crumbs = [{ label: 'Fleet', to: '/' },
+     ...(agentId ? [{ label: agentName, to: agentPath(agentId) }] : []),
+@@ -141,6 +157,7 @@ export default function Run() {
+     return m
+   }, [fnd.data, runId])
+ 
++  const findingIds = React.useMemo(() => new Set((fnd.data?.items || []).map((f) => f.id)), [fnd.data])
+   const ready = !tl.error && !findingsPending
+   const events = ready ? tl.data.events : []
+   const rows = React.useMemo(() => events.map((ev, i) => {
+@@ -166,8 +183,8 @@ export default function Run() {
+         el.scrollIntoView({ block: 'center' })
+         el.focus({ preventScroll: true })
+         setFlash(spanParam)
+-      }
+-      setParams({}, { replace: true })
++      } else setMissingSpan(true)
++      setParams((cur) => { const n = new URLSearchParams(cur); n.delete('span'); return n }, { replace: true })
+     })
+     return () => cancelAnimationFrame(id)
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+@@ -178,7 +195,7 @@ export default function Run() {
+     return () => clearTimeout(t)
+   }, [flash])
+ 
+-  if (tl.error && !tl.data) {
++  if (tl.error) {
+     return <ErrorPage title="We could not load this run" message={`${tl.error.status ? tl.error.status + ': ' : ''}${clean(tl.error.message)}`}
+       onRetry={() => setRev((r) => r + 1)} back={<Link className="ds-btn ds-btn-ghost" to="/">Back to Fleet</Link>} />
+   }
+@@ -201,13 +218,14 @@ export default function Run() {
+               <CopyButton value={runId} label="run ID" />
+             </span></dd></div>
+           <div><dt>Agent</dt><dd>{agentId
+-            ? <Link className="ds-trunc rt-agent" to={agentPath(agentId)} title={agentName}>{agentName}</Link> : <span className="ag-none">-</span>}</dd></div>
++            ? <Link className="ds-trunc rt-agent" to={agentPath(agentId)} title={agentName}>{agentName}</Link> : <span className="ag-none">—</span>}</dd></div>
+           <div><dt>Time range</dt><dd className="ds-nowrap ag-ink" data-testid="run-range">{fmtRange(t.started_at || first, t.ended_at || last)}</dd></div>
+           <div><dt>Events</dt><dd className="ds-nowrap ag-ink" data-testid="run-event-count">
+             {nf(events.length)} {events.length === 1 ? 'event' : 'events'}
+             {nViol > 0 && <> · <span className="rt-viol-count">{nf(nViol)} {nViol === 1 ? 'violation' : 'violations'}</span></>}</dd></div>
+         </dl>
+       </header>
++      {missingSpan && <div className="ds-alert rt-alert" role="status" data-testid="span-missing">The event linked from the finding is not in this run's timeline.</div>}
+       {findingsFailed && <div className="ds-alert ds-alert-error rt-alert" role="alert" data-testid="findings-error">Could not load findings, so violations are not highlighted on this timeline.</div>}
+       {events.length > 0 && (
+         <div className="rt-toolbar">
+@@ -218,7 +236,7 @@ export default function Run() {
+               </button>
+             ))}
+           </div>
+-          <span className="ds-count rt-showing" aria-live="polite">Showing {nf(shown.length)} of {nf(events.length)}</span>
++          <span className="ds-count rt-showing"><span aria-live="polite">Showing {nf(shown.length)} of {nf(events.length)}</span> <span aria-hidden="true">·</span> Times in UTC</span>
+         </div>
+       )}
+       {!events.length && (
+@@ -237,32 +255,32 @@ export default function Run() {
+       {shown.length > 0 && (
+         <ol className="rt-list ds-card">
+           {shown.map(({ ev, i, v }) => {
+-            const body = ev.kind === 'tool_call' ? cleanText(ev.args_redacted, 20000)
+-              : (ev.kind === 'input' || ev.kind === 'output') ? cleanText(content(ev), 20000) : ''
++            const body = ev.kind === 'tool_call' ? payloadText(ev.args_redacted)
++              : (ev.kind === 'input' || ev.kind === 'output') ? clean(fmtJson(content(ev))) : ''
+             return (
+               <li key={`${ev.span_id || ev.kind}-${i}`} tabIndex={-1}
+                   className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}`}
+                   data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
+                   data-violation={v ? 'true' : 'false'}
+                   data-violation-reason={v ? clean(v.reason || 'tool_not_in_manifest') : undefined}>
+-                <time className="rt-time" data-testid="timeline-event-time" dateTime={ev.ts} title={fmtTs(ev.ts)}>{isoTime(ev.ts) || '-'}</time>
++                <time className="rt-time" data-testid="timeline-event-time" dateTime={ev.ts} title={fmtTs(ev.ts)}>{isoTime(ev.ts) || '—'}</time>
+                 <span className="rt-rail"><span className="rt-node"><Icon kind={ev.kind} violation={!!v} /></span></span>
+                 <div className="rt-body">
+                   <div className="rt-line">
+                     <span className="ds-chip-tag rt-type" data-testid="timeline-event-type">{kindLabel(ev.kind)}</span>
+                     {ev.kind === 'model_call'
+-                      ? <span className="rt-sub">· {label(ev)}</span>
++                      ? <span className="rt-sub">{label(ev)}</span>
+                       : <strong className="rt-name">{label(ev)}</strong>}
+                     {v && <span className="badge violation-badge rt-badge">Violation: {REASONS[v.reason] || 'Outside manifest'}</span>}
+                   </div>
+                   {v && v.reason === 'value_limit_exceeded' && (
+-                    <div className="rt-note">Observed {num(v.observed_value)}, limit {num(v.limit)}</div>
++                    <div className="rt-note">Observed {num(v.observed_value) ?? '—'}, limit {num(v.limit) ?? '—'}</div>
+                   )}
+                   {v && v.note && <div className="rt-note">{clean(v.note)}</div>}
+-                  {v && agentId && v.findingId != null && (
++                  {v && agentId && v.findingId != null && findingIds.has(v.findingId) && (
+                     <Link className="rt-finding-link" to={`${agentPath(agentId)}#finding-${v.findingId}`}>View finding<Arrow /></Link>
+                   )}
+-                  {body && <Payload text={body} testid={ev.kind === 'tool_call' ? 'timeline-event-args' : 'timeline-event-content'} what={ev.kind === 'tool_call' ? 'arguments' : 'content'} />}
++                  {body && <Payload full={body} testid={ev.kind === 'tool_call' ? 'timeline-event-args' : 'timeline-event-content'} what={ev.kind === 'tool_call' ? 'arguments' : 'content'} />}
+                   {(ev.kind === 'approval' || ev.kind === 'override') && (
+                     <div className="rt-note rt-note-plain">{clean(ev.actor)}{ev.decision ? ` · ${clean(ev.decision)}` : ''}{ev.reason ? ` · ${clean(ev.reason)}` : ''}</div>
+                   )}
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 0274a3b..9041fb1 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -27,37 +27,24 @@ select:focus { outline:2px solid var(--brand); outline-offset:1px }
+ .criteria, .plain, .tags { list-style:none; padding:0; margin:0 }
+ .criteria li { display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px dashed var(--line) }
+ .tags { display:flex; flex-wrap:wrap; gap:6px } .plain li { padding:3px 0 }
+-.reasoning { margin-top:10px; color:var(--muted) }
+ .kv { display:grid; grid-template-columns:120px 1fr; gap:4px 12px; margin:0 } .kv dt { color:var(--muted) } .kv dd { margin:0; word-break:break-all }
+ .alert { padding:8px 12px; border-radius:6px; margin-bottom:8px } .alert.error { background:#fdecea; color:var(--red); border:1px solid #f5c2c0 } .alert.ok { background:#e8f5e9; color:var(--green) }
+-.findings li { border:1px solid var(--line); border-left:4px solid var(--amber); border-radius:6px; padding:8px 12px; margin-bottom:8px }
+-.findings li.sev-critical { border-left-color:var(--red) }
+-.f-head { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+ .markdown p { margin:4px 0 } .markdown code { background:#eef0f4; padding:0 4px; border-radius:3px }
+-.timeline { list-style:none; padding:0; margin:12px 0 }
+-.tl-event { background:var(--card); border:1px solid var(--line); border-radius:6px; margin:0 0 8px; padding:8px 12px }
+-.tl-event.violation { border-color:var(--red); background:#fff5f5; border-left:4px solid var(--red) }
+-.tl-head { display:flex; gap:10px; align-items:center; flex-wrap:wrap } .tl-ts { color:var(--muted); font-variant-numeric:tabular-nums }
+-.violation-badge { background:var(--red) } .tl-note { color:var(--red); margin-top:4px }
+ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:6px 0 0; font-size:12px }
+-.tool-chips { margin-bottom:14px }
+ .kv { margin-top:4px }
+-.tl-content { white-space:pre-wrap }
+ 
+ .select { appearance:none; -webkit-appearance:none; min-width:140px; padding:6px 32px 6px 12px; border-radius:4px; background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%236b7280' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 12px center }
+ .select:hover { border-color:#9aa3af }
+ .filters label { font-size:12px; text-transform:uppercase; letter-spacing:.04em }
+ .filters .select { text-transform:none; letter-spacing:0; font-size:14px; color:var(--ink) }
+ .nowrap { white-space:nowrap }
+-.panel.wide { grid-column:1 / -1 }
+-.kv dd, .chip, .tl-head strong, .plain li, .tl-note, .alert { overflow-wrap:anywhere }
++.kv dd, .chip, .plain li, .alert { overflow-wrap:anywhere }
+ .kv dd { word-break:normal }
+ 
+ .text-input { width:100%; box-sizing:border-box; padding:6px 12px; font:inherit; font-size:14px; color:var(--ink); background:#fff; border:1px solid var(--line); border-radius:6px }
+ .text-input:hover { border-color:#9aa3af }
+ .text-input:focus { outline:2px solid var(--brand); outline-offset:1px }
+ .alert.asserted { background:#fff7e6; border:1px solid #f0c36d; color:#6b4a00 }
+-.wrap-id { overflow-wrap:anywhere; word-break:break-word }
+ .sig-signed { color:#1a7f37; font-weight:600 }
+ .sig-unsigned { color:var(--ink) }
+ .sig-invalid.warn { justify-self:start; width:fit-content; color:#9a5b00; background:#fff3cd; border:1px solid #f0c36d; border-radius:4px; padding:2px 8px; display:inline-block; font-weight:600 }
+@@ -67,9 +54,7 @@ pre { background:#f1f3f6; padding:8px; border-radius:4px; overflow:auto; margin:
+ .evidence-preview section:first-child h3 { border-bottom:2px solid var(--ink) }
+ .host { font-size:12px; color:var(--muted); margin-left:6px }
+ 
+-.f-foot { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:4px }
+ 
+ .demo-chip { background:#fff; border:1px solid #f0c36d; border-radius:10px; padding:1px 8px }
+ 
+-.chip-demo, .stand-in-chip { background:#fff7e6; border:1px solid #b07a00; color:#5c3f00; font-size:12px }
+ .toast { position:fixed; bottom:16px; right:24px; background:#1f2937; color:#fff; padding:10px 16px; border-radius:6px; font-size:14px; z-index:50 }
