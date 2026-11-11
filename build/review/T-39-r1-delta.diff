@@ -1,0 +1,1249 @@
+diff --git a/agents/recon_agent/act_export.py b/agents/recon_agent/act_export.py
+index f99e4f5..d250c6f 100644
+--- a/agents/recon_agent/act_export.py
++++ b/agents/recon_agent/act_export.py
+@@ -14,6 +14,8 @@ from contextlib import contextmanager
+ 
+ import requests
+ 
++from agents.recon_agent import config
++
+ log = logging.getLogger(__name__)
+ DEFAULT_TOKEN_URL = "http://localhost:8899/access-token"
+ KIND = {"internal": 1, "server": 2, "client": 3}
+@@ -84,7 +86,7 @@ class ActTraceBuffer:
+         return {"resourceSpans": [{
+             "resource": {"attributes": _attrs({
+                 "service.name": self.service_name, "gen_ai.agent.id": self.agent_id,
+-                "act.llm.provider": ("mock" if (os.environ.get("ACT_LLM_PROVIDER") or "").strip().lower() == "mock"
++                "act.llm.provider": ("mock" if (config.get("llm_provider") or "").strip().lower() == "mock"
+                                      else None)})},
+             "scopeSpans": [{"scope": {"name": "act.recon_agent"}, "spans": self.spans}],
+         }]}
+diff --git a/agents/recon_agent/agent.py b/agents/recon_agent/agent.py
+index ed913f3..63d5d6c 100644
+--- a/agents/recon_agent/agent.py
++++ b/agents/recon_agent/agent.py
+@@ -14,7 +14,7 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+ if _ROOT not in sys.path:
+     sys.path.insert(0, _ROOT)
+ 
+-from agents.recon_agent import llm, tools
++from agents.recon_agent import config, llm, tools
+ from agents.recon_agent.act_export import ActTraceBuffer
+ from tracing_setup import add_tracing, agent_run
+ 
+@@ -50,7 +50,7 @@ def _payload(br):
+ 
+ 
+ def _from_endpoint(url, payload):
+-    key = os.environ.get("BREAK_CLASSIFIER_ACCESS_KEY")
++    key = config.get("break_classifier_access_key")
+     if not key:
+         raise RuntimeError("BREAK_CLASSIFIER_ACCESS_KEY is required when BREAK_CLASSIFIER_ENDPOINT_URL is set")
+     # Domino sync endpoints use HTTP Basic with the endpoint access key as user and password.
+@@ -160,7 +160,7 @@ def classify_break(br: dict, notes=None):
+     notes = notes if notes is not None else []
+     if _demo_mode():  # no endpoint, no registry
+         return _demo_classify(payload), "demo"
+-    url = os.environ.get("BREAK_CLASSIFIER_ENDPOINT_URL")
++    url = config.get("break_classifier_endpoint_url")
+     if url:
+         try:
+             return _from_endpoint(url, payload), "endpoint"
+diff --git a/agents/recon_agent/config.py b/agents/recon_agent/config.py
+new file mode 100644
+index 0000000..2081a68
+--- /dev/null
++++ b/agents/recon_agent/config.py
+@@ -0,0 +1,25 @@
++"""Settings read path for the recon agent (T-39, ST-4).
++
++The recon agent runs as its own process, so it cannot share the app's memory. It reads each setting through the same
++accessor the app uses (backend.settings.get_setting) against the same ACT database: a Domino Project or User variable
++still wins (ST-3), otherwise the value saved on the Settings page applies, within a few seconds and without a restart.
++If the accessor cannot be loaded (for example a stripped-down deployment without the backend package) the
++environment variable alone is used.
++"""
++import os
++
++_ENV = {
++    "llm_provider": "ACT_LLM_PROVIDER",
++    "llm_gateway_url": "LLM_GATEWAY_URL",
++    "break_classifier_endpoint_url": "BREAK_CLASSIFIER_ENDPOINT_URL",
++    "break_classifier_access_key": "BREAK_CLASSIFIER_ACCESS_KEY",
++}
++
++
++def get(name, default=None):
++    try:
++        from backend.settings import get_setting
++        return get_setting(name, default)
++    except Exception:  # noqa: BLE001
++        v = os.environ.get(_ENV[name])
++        return v if v else default
+diff --git a/agents/recon_agent/llm.py b/agents/recon_agent/llm.py
+index dfbccdd..c1defa5 100644
+--- a/agents/recon_agent/llm.py
++++ b/agents/recon_agent/llm.py
+@@ -10,6 +10,8 @@ import os
+ 
+ import requests
+ 
++from agents.recon_agent import config
++
+ log = logging.getLogger(__name__)
+ _warned = False
+ 
+@@ -24,7 +26,7 @@ class GatewayError(RuntimeError):
+ def warn_if_mock() -> None:
+     """Log once per process that LLM calls are answered by the offline mock, not a model."""
+     global _warned
+-    if not _warned and (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
++    if not _warned and (config.get("llm_provider") or "gateway").strip().lower() == "mock":
+         _warned = True
+         log.warning("ACT_LLM_PROVIDER=mock: LLM calls are answered by the offline mock-llm stand-in, "
+                     "NOT a model. Unset it and set LLM_GATEWAY_URL to use the LLM Gateway.")
+@@ -44,7 +46,7 @@ def _token() -> str:
+ 
+ 
+ def gateway_url() -> str:
+-    url = os.environ.get("LLM_GATEWAY_URL", "").rstrip("/")
++    url = (config.get("llm_gateway_url") or "").rstrip("/")
+     if not url:
+         raise GatewayError("LLM_GATEWAY_URL is not set (Project env var: the LLM Gateway App URL)")
+     return url
+@@ -82,7 +84,7 @@ def create_message(model_alias, messages, tools=None, system=None, max_tokens=10
+     Returns {"stop_reason", "content": [{"type": "text"|"tool_use", ...}], "model", "usage", "id"}.
+     "model" is the model id the gateway reports having served (alias resolved upstream).
+     """
+-    if (os.environ.get("ACT_LLM_PROVIDER") or "gateway").strip().lower() == "mock":
++    if (config.get("llm_provider") or "gateway").strip().lower() == "mock":
+         warn_if_mock()
+         from act_llm_mock import create_message as _mock  # deterministic offline stand-in, model "mock-llm"
+         return _mock(model_alias, messages, tools=tools, system=system, max_tokens=max_tokens, tags=tags,
+diff --git a/backend/db.py b/backend/db.py
+index dc44be8..5cb9105 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -54,16 +54,32 @@ real_engine = engine
+ REAL_DB_PATH = DB_PATH
+ 
+ 
+-def use_path(path: str) -> None:
+-    """Make `path` the active DB (runtime demo switch). The real DB stays reachable as real_engine."""
++_engines: dict = {}  # demo engines by resolved path: kept for reuse, never disposed while requests may hold them
++
++
++def engine_for(path: str):
++    """The (cached) engine for `path`; one engine per path for the life of the process."""
++    key = str(Path(path).expanduser().resolve())
++    if key not in _engines:
++        Path(key).parent.mkdir(parents=True, exist_ok=True)
++        _engines[key] = _make_engine(key)
++    return _engines[key]
++
++
++def swap(new_engine, new_path: str):
++    """Make `new_engine` the active DB. Returns the previous (engine, path) so a failed switch can restore it."""
+     global engine, DB_PATH
+-    Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+-    engine, DB_PATH = _make_engine(path), path
++    prev = (engine, DB_PATH)
++    engine, DB_PATH = new_engine, new_path
++    return prev
++
++
++def use_path(path: str) -> None:
++    swap(engine_for(path), path)
+ 
+ 
+ def use_real() -> None:
+-    global engine, DB_PATH
+-    engine, DB_PATH = real_engine, REAL_DB_PATH
++    swap(real_engine, REAL_DB_PATH)
+ 
+ 
+ metadata = MetaData()
+diff --git a/backend/demo.py b/backend/demo.py
+index 988377f..eaaea6e 100644
+--- a/backend/demo.py
++++ b/backend/demo.py
+@@ -48,7 +48,8 @@ _db_new = False  # ACT_DB was filled by demo defaults, or its file did not exist
+ 
+ _runtime = False  # the in-app Settings switch (no restart); ACT_DEMO_MODE in the environment always wins
+ _applied_rt: list = []
+-_rt_lock = threading.RLock()
++_rt_lock = threading.RLock()  # held for the whole of a switch; _runtime and db.engine change under it
++_switching = False
+ 
+ 
+ def env_enabled() -> bool:
+@@ -126,10 +127,22 @@ def applied_env() -> set:
+     return set(_applied) | set(_applied_rt)
+ 
+ 
++def switching() -> bool:
++    """True while a runtime switch is in progress; the app holds ordinary requests until it ends (see main.py)."""
++    return _switching
++
++
++def wait_switch() -> None:
++    with _rt_lock:  # returns once the switch (which holds the lock) is done
++        pass
++
++
+ def switch_on() -> None:
+-    """Runtime demo switch: activate the demo DB (seeding it if empty) and the demo stand-ins.
+-    Raises DemoGuardError (and leaves demo off) when the demo DB may not be used."""
+-    global _runtime, _db_new
++    """Runtime demo switch: seed the demo DB (if empty), then flip to it.
++    The active engine and the demo flag change together under one lock, and ordinary requests wait while
++    seeding runs (they never see a half-seeded demo DB). A failure restores the previous state exactly and raises
++    DemoGuardError when the demo DB may not be used. Single process only: app.sh runs one uvicorn worker."""
++    global _runtime, _db_new, _switching
+     from . import db
+     with _rt_lock:
+         if enabled():
+@@ -137,34 +150,46 @@ def switch_on() -> None:
+         path = default_db_path()
+         if Path(path).expanduser().resolve() == Path(db.REAL_DB_PATH).expanduser().resolve():
+             _refuse("refusing: the demo database path is the real database")
++        _switching = True
++        prev_new, applied_before = _db_new, len(_applied_rt)
+         _db_new = not Path(path).expanduser().exists()
++        # Seeding needs db.engine and the demo stand-ins (simulated Governance, demo owner), so both flip now;
++        # the gate in main.py holds every other request until this block ends, success or failure.
++        prev = db.swap(db.engine_for(path), path)
+         _runtime = True
+-        for k, v in _ENV_DEFAULTS.items():
+-            _fill_runtime(k, v)
+-        demo_dir = Path(path).expanduser().resolve().parent
+-        _fill_runtime("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
+-        _fill_runtime("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
+-        db.use_path(path)
+         try:
++            for k, v in _ENV_DEFAULTS.items():
++                _fill_runtime(k, v)
++            demo_dir = Path(path).expanduser().resolve().parent
++            _fill_runtime("MLFLOW_TRACKING_URI", f"file://{demo_dir / 'mlruns'}")
++            _fill_runtime("ACT_EVIDENCE_DIR", str(demo_dir / "evidence"))
+             ensure_seeded()
+         except BaseException:
+-            switch_off()
++            _runtime = False
++            db.swap(*prev)
++            _db_new = prev_new
++            while len(_applied_rt) > applied_before:
++                os.environ.pop(_applied_rt.pop(), None)
+             raise
++        finally:
++            _switching = False
+ 
+ 
+ def switch_off() -> None:
+-    global _runtime
++    """Back to the real DB. The demo engine is kept (not disposed) because in-flight requests may still hold it."""
++    global _runtime, _switching
+     from . import db
+     with _rt_lock:
+         if not _runtime:
+             return
+-        _runtime = False
+-        old = db.engine
+-        db.use_real()
+-        if old is not db.real_engine:
+-            old.dispose()
+-        while _applied_rt:
+-            os.environ.pop(_applied_rt.pop(), None)
++        _switching = True
++        try:
++            db.use_real()
++            _runtime = False
++            while _applied_rt:
++                os.environ.pop(_applied_rt.pop(), None)
++        finally:
++            _switching = False
+ 
+ 
+ def restore_defaults() -> None:
+diff --git a/backend/main.py b/backend/main.py
+index 84c8c7d..a73ed6b 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -46,6 +46,14 @@ MAX_PREVIEW_BYTES = 8 * 1024
+ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+ 
+ 
++@app.middleware("http")
++async def demo_switch_gate(request, call_next):
++    """Hold requests while the runtime demo switch seeds/flips the database, so none sees a half-seeded DB."""
++    if demo.switching():
++        await run_in_threadpool(demo.wait_switch)
++    return await call_next(request)
++
++
+ @app.middleware("http")
+ async def write_guard(request, call_next):
+     """Reject unauthenticated writes on every path (incl. /v1/*) before routing."""
+diff --git a/backend/routes/settings.py b/backend/routes/settings.py
+index 30b7a31..c823806 100644
+--- a/backend/routes/settings.py
++++ b/backend/routes/settings.py
+@@ -9,13 +9,15 @@ router = APIRouter()
+ 
+ def require_admin(user: User = Depends(require_user)) -> User:
+     if not settings.is_admin(user):
+-        raise HTTPException(403, "Settings are limited to the project owner and listed admins")
++        raise HTTPException(403, "Settings are limited to the project owner and listed admins"
++                            if settings.admins_configured() else
++                            "Nobody can open Settings yet: no project owner or admins are configured")
+     return user
+ 
+ 
+ @router.get("/api/settings/access")
+ def access(user: User = Depends(require_user)):
+-    return {"admin": settings.is_admin(user)}
++    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured()}
+ 
+ 
+ @router.get("/api/settings")
+diff --git a/backend/settings.py b/backend/settings.py
+index 1e19843..4f6861e 100644
+--- a/backend/settings.py
++++ b/backend/settings.py
+@@ -4,6 +4,10 @@ get_setting(name): the environment variable if set (a Domino Project or User var
+ saved from the Settings page (secrets are Fernet-encrypted in the ACT DB), else the default. Nothing is cached for
+ more than a couple of seconds, so a saved change is live without a restart. Secret values are never logged,
+ audited or returned by any API.
++
++ACT_SECRET_KEY is read straight from os.environ on purpose: it is the key that protects the stored secrets, so it
++cannot itself be an in-app setting. The recon agent (its own process) reads the same settings through get_setting
++against the same ACT DB (see agents/recon_agent/config.py); the demo switch is per process (app.sh runs one worker).
+ """
+ import base64
+ import hashlib
+@@ -17,6 +21,7 @@ from pathlib import Path
+ from urllib.parse import urlparse
+ 
+ from cryptography.fernet import Fernet, InvalidToken
++from sqlalchemy.exc import OperationalError
+ 
+ from . import db, demo
+ 
+@@ -41,17 +46,17 @@ _DEFS = [
+     ("service_accounts", "integrations", False, "ACT_SERVICE_ACCOUNTS", "text"),
+     ("policy_agentic_id", "integrations", False, "ACT_POLICY_AGENTIC_ID", "text"),
+     ("policy_model_id", "integrations", False, "ACT_POLICY_MODEL_ID", "text"),
+-    ("aws_role_arn", "credentials", False, None, "text"),
+-    ("aws_external_id", "credentials", False, None, "text"),
+-    ("aws_access_key_id", "credentials", True, None, "text"),
+-    ("aws_secret_access_key", "credentials", True, None, "text"),
+-    ("google_service_account_json", "credentials", True, None, "json"),
+-    ("microsoft_tenant_id", "credentials", False, None, "text"),
+-    ("microsoft_client_id", "credentials", False, None, "text"),
+-    ("microsoft_client_secret", "credentials", True, None, "text"),
+-    ("databricks_host", "credentials", False, None, "text"),
+-    ("databricks_client_id", "credentials", False, None, "text"),
+-    ("databricks_client_secret", "credentials", True, None, "text"),
++    ("aws_role_arn", "credentials", False, "ACT_AWS_ROLE_ARN", "text"),
++    ("aws_external_id", "credentials", False, "ACT_AWS_EXTERNAL_ID", "text"),
++    ("aws_access_key_id", "credentials", True, "AWS_ACCESS_KEY_ID", "text"),
++    ("aws_secret_access_key", "credentials", True, "AWS_SECRET_ACCESS_KEY", "text"),
++    ("google_service_account_json", "credentials", True, "ACT_GOOGLE_SERVICE_ACCOUNT_JSON", "json"),
++    ("microsoft_tenant_id", "credentials", False, "AZURE_TENANT_ID", "text"),
++    ("microsoft_client_id", "credentials", False, "AZURE_CLIENT_ID", "text"),
++    ("microsoft_client_secret", "credentials", True, "AZURE_CLIENT_SECRET", "text"),
++    ("databricks_host", "credentials", False, "DATABRICKS_HOST", "text"),
++    ("databricks_client_id", "credentials", False, "DATABRICKS_CLIENT_ID", "text"),
++    ("databricks_client_secret", "credentials", True, "DATABRICKS_CLIENT_SECRET", "text"),
+     ("admins", "access", False, "ACT_ADMINS", "text"),
+ ]
+ DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind}
+@@ -74,21 +79,43 @@ def _key_file() -> Path:
+ 
+ 
+ def _file_key() -> bytes:
++    """The generated key. Written to a private temp file and hard-linked into place, so a reader never sees a
++    half-written key and of two racing processes exactly one key wins."""
+     path = _key_file()
+-    try:
+-        return path.read_bytes().strip()
+-    except FileNotFoundError:
+-        pass
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    key = Fernet.generate_key()
+-    try:
+-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+-    except FileExistsError:  # another process won the race
+-        return path.read_bytes().strip()
+-    with os.fdopen(fd, "wb") as f:
+-        f.write(key)
+-    os.chmod(path, 0o600)
+-    return key
++    for _ in range(50):
++        try:
++            key = path.read_bytes().strip()
++            if key:
++                return key
++        except FileNotFoundError:
++            pass
++        path.parent.mkdir(parents=True, exist_ok=True)
++        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
++        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
++        try:
++            with os.fdopen(fd, "wb") as f:
++                f.write(Fernet.generate_key())
++            try:
++                os.link(tmp, path)
++            except FileExistsError:
++                pass
++        finally:
++            try:
++                os.unlink(tmp)
++            except FileNotFoundError:
++                pass
++        time.sleep(0.02)
++    raise RuntimeError("could not read or create the secret key file")
++
++
++_fernets: dict = {}
++
++
++def _fernet(material: bytes, source: str) -> Fernet:
++    k = (source, material)
++    if k not in _fernets:
++        _fernets[k] = Fernet(material)
++    return _fernets[k]
+ 
+ 
+ def key_state():
+@@ -96,14 +123,15 @@ def key_state():
+     env_key = os.environ.get("ACT_SECRET_KEY") or ""
+     warnings = []
+     if len(env_key) >= 32:
+-        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(env_key.encode()).digest())), "env", warnings
++        return _fernet(base64.urlsafe_b64encode(hashlib.sha256(env_key.encode()).digest()), "env"), "env", warnings
+     if env_key:
+         warnings.append("ACT_SECRET_KEY is too short (it needs 32 or more characters), so it is ignored and a "
+                         "generated key file is used instead. Set a longer Project secret variable ACT_SECRET_KEY.")
+     elif not demo.enabled():
+         warnings.append("Secrets are encrypted with a key file generated beside the database. Set the Project "
+-                        "secret variable ACT_SECRET_KEY (32 or more characters) so the key is kept apart from the data.")
+-    return Fernet(_file_key()), "file", warnings
++                        "secret variable ACT_SECRET_KEY (32 or more characters) so the key is kept apart from the data. "
++                        "Changing the key later makes stored secrets unreadable, and they must be entered again.")
++    return _fernet(_file_key(), "file"), "file", warnings
+ 
+ 
+ # ---- storage ----
+@@ -111,11 +139,19 @@ def _rows() -> dict:
+     with _lock:
+         if time.monotonic() - _cache["at"] < _TTL:
+             return _cache["rows"]
++        previous = _cache["rows"]
+     try:
+         with db.real_engine.connect() as cx:
+             rows = {r.name: r for r in cx.execute(db.app_settings.select()).all()}
+-    except Exception:  # noqa: BLE001  table not created yet
+-        rows = {}
++    except OperationalError as e:
++        if "no such table" in str(e).lower():  # not created yet: nothing is saved
++            rows = {}
++        else:  # a transient lock or I/O error: keep what we knew instead of reporting every secret as unset
++            log.warning("settings could not be read (%s); using the last known values", type(e).__name__)
++            rows = previous
++    except Exception:  # noqa: BLE001
++        log.warning("settings could not be read; using the last known values", exc_info=True)
++        rows = previous
+     with _lock:
+         _cache.update(at=time.monotonic(), rows=rows)
+     return rows
+@@ -154,12 +190,28 @@ def get_setting(name: str, default=None):
+ 
+ 
+ # ---- admins ----
++_warned_no_admin = False
++
++
++def _admin_names() -> set:
++    raw = (get_setting("admins") or "").replace(";", ",").replace("\n", ",")
++    return {a.strip() for a in raw.split(",")} - {""}
++
++
++def admins_configured() -> bool:
++    return bool((os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()) or bool(_admin_names())
++
++
+ def is_admin(user) -> bool:
++    global _warned_no_admin
+     owner = (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()
+     if owner and user.username == owner:
+         return True
+-    admins = {a.strip() for a in (get_setting("admins") or "").replace(";", ",").replace("\n", ",").split(",")}
+-    return user.username in admins - {""}
++    if not admins_configured() and not _warned_no_admin:
++        _warned_no_admin = True
++        log.warning("Settings: DOMINO_PROJECT_OWNER is not set and no admins are listed, so nobody can open Settings. "
++                    "Set ACT_ADMINS (a project variable) to a comma-separated list of usernames.")
++    return user.username in _admin_names()
+ 
+ 
+ # ---- API model ----
+@@ -169,10 +221,17 @@ def entry(name: str) -> dict:
+     row = _rows().get(name)
+     app_set = row is not None and row.value is not None
+     source = "env" if env_v is not None else "app" if app_set else "default"
+-    out = {"name": name, "section": d["section"], "secret": d["secret"], "is_set": source != "default",
++    out = {"name": name, "section": d["section"], "secret": d["secret"], "env": d["env"], "is_set": source != "default",
+            "source": source, "locked": source == "env",
+            "changed_by": row.changed_by if source == "app" else None,
+            "changed_at": row.changed_at if source == "app" else None}
++    if d["secret"]:
++        out["decryptable"] = True
++        if source == "app":
++            try:
++                key_state()[0].decrypt(row.value.encode())
++            except (InvalidToken, ValueError):  # ACT_SECRET_KEY changed after this was saved: enter it again
++                out["decryptable"] = False
+     if not d["secret"]:
+         if d["kind"] == "bool":
+             raw = env_v if env_v is not None else (row.value if app_set else "")
+@@ -220,11 +279,8 @@ def _validate(name: str, value):
+     return value
+ 
+ 
+-def _audit(user, action, name) -> None:
+-    with db.real_engine.begin() as cx:
+-        cx.execute(db.audit_events.insert().values(
+-            actor_user_id=user.user_id, actor_username=user.username, action=action, target=name, ts=now(),
+-            detail={"name": name, "secret": DEFS[name]["secret"]}))
++def _source(name, row) -> str:
++    return "app" if row is not None and row.value is not None else "none"
+ 
+ 
+ def _check_writable(name):
+@@ -235,12 +291,17 @@ def _check_writable(name):
+ 
+ 
+ def _store(user, name, stored, action):
++    """Write the value and its audit event in one transaction (the audit never carries the value)."""
+     with db.real_engine.begin() as cx:
++        before = cx.execute(db.app_settings.select().where(db.app_settings.c.name == name)).first()
+         cx.execute(db.app_settings.delete().where(db.app_settings.c.name == name))
+         if stored is not None:
+             cx.execute(db.app_settings.insert().values(name=name, value=stored, is_secret=DEFS[name]["secret"],
+                                                        changed_by=user.username, changed_at=now()))
+-    _audit(user, action, name)
++        cx.execute(db.audit_events.insert().values(
++            actor_user_id=user.user_id, actor_username=user.username, action=action, target=name, ts=now(),
++            detail={"name": name, "secret": DEFS[name]["secret"],
++                    "previous_source": _source(name, before), "new_source": "app" if stored is not None else "cleared"}))
+     _invalidate()
+ 
+ 
+@@ -248,12 +309,18 @@ def put_setting(user, name, value) -> dict:
+     _check_writable(name)
+     v = _validate(name, value)
+     if name == "demo_mode":
++        was_on = demo.enabled()
+         if v == "true":
+             try:
+-                demo.switch_on()
++                demo.switch_on()  # atomic: on failure nothing has changed
+             except demo.DemoGuardError as e:
+                 raise SettingError(409, str(e))
+-        _store(user, name, v, "settings.update")
++        try:
++            _store(user, name, v, "settings.update")
++        except Exception:
++            if v == "true" and not was_on:
++                demo.switch_off()  # the value was not saved, so the app must not stay in demo mode
++            raise
+         if v == "false":
+             demo.switch_off()
+         return entry(name)
+diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
+index 255cdab..9b22d44 100644
+--- a/docs/INTEGRATION.md
++++ b/docs/INTEGRATION.md
+@@ -22,6 +22,14 @@ labels itself honestly: template text in the console, the mock judge in the vali
+ | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
+ | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
+ 
++## Settings page (T-39)
++
++An admin (the project owner plus the users in the `Admins` field) opens **Settings** in the app to set the demo switch, the integrations above and the platform credentials, with no restart. A Domino Project or User variable with the same name always wins and the field shows "Set by project variable". Secrets are encrypted in the ACT database (key from `ACT_SECRET_KEY`, 32 or more characters; in demo mode it is optional and a generated key file beside the database is used) and are never returned by the API. Changing `ACT_SECRET_KEY` makes stored secrets unreadable: the page marks them "Re-enter this secret". Every change writes an audit event with the setting name and actor, never the value. The app runs as a single process (one uvicorn worker); the demo switch is per process.
++
++The recon agent runs as its own process and reads the LLM provider, LLM Gateway URL and break-classifier URL and access key through the same accessor (`agents/recon_agent/config.py`, which calls `backend.settings.get_setting`) against the same ACT database, so a saved change reaches it within about 5 seconds.
++
++The platform credential settings (AWS AgentCore, Google Agent Platform, Microsoft Agent 365, Databricks) are stored and editable now but are consumed by the import wizard (T-40 onward); nothing reads them yet. Their variable names, which win over the saved value, are: `ACT_AWS_ROLE_ARN`, `ACT_AWS_EXTERNAL_ID`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ACT_GOOGLE_SERVICE_ACCOUNT_JSON`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`.
++
+ Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
+ 
+ ## Running the stand-ins
+diff --git a/frontend/src/pages/Settings.jsx b/frontend/src/pages/Settings.jsx
+index c1af760..afe080d 100644
+--- a/frontend/src/pages/Settings.jsx
++++ b/frontend/src/pages/Settings.jsx
+@@ -1,54 +1,100 @@
+ import React from 'react'
++import { createPortal } from 'react-dom'
+ import { settingsApi, refreshHealth } from '../api'
+ import { PageHeader, Button } from '../components/form'
+ import '../settings.css'
+ 
+-const FIELD_COPY = {
+-  llm_provider: ['LLM provider', 'Type gateway to call the LLM Gateway, or mock for the offline stand-in. Empty means gateway.', 'gateway'],
+-  llm_gateway_url: ['LLM Gateway URL', 'The address of the LLM Gateway app that answers model calls.', 'https://'],
++// label, one-line hint, placeholder (a format example only, never a plausible value)
++const COPY = {
++  llm_provider: ['LLM provider', 'Default: gateway. Use mock for the offline stand-in.'],
++  llm_gateway_url: ['LLM Gateway URL', 'The LLM Gateway app that answers model calls.', 'https://'],
+   break_classifier_endpoint_url: ['Break-classifier endpoint URL', 'The model endpoint that classifies reconciliation breaks.', 'https://'],
+   break_classifier_access_key: ['Break-classifier access key', 'Used to call the break-classifier endpoint.'],
+-  external_allow_hosts: ['External card allowed hosts', 'Comma-separated hosts that external agent cards may be fetched from.', 'cards.example.com'],
+-  trusted_jwks_path: ['Trusted JWKS', 'Path to the JSON Web Key Set that signed external cards must verify against.', '/path/to/jwks.json'],
+-  service_accounts: ['Service accounts', 'Comma-separated Domino service accounts that count as a distinct agent identity.', 'svc-agent-one, svc-agent-two'],
++  external_allow_hosts: ['External card allowed hosts', 'Comma-separated hosts external agent cards may be fetched from.'],
++  trusted_jwks_path: ['Trusted JWKS', 'File path of the key set that signed external cards must verify against.'],
++  service_accounts: ['Service accounts', 'Comma-separated Domino service accounts that count as a distinct agent identity.'],
+   policy_agentic_id: ['Governance policy id (agentic bundle)', 'The Governance policy used for agentic system bundles.'],
+   policy_model_id: ['Governance policy id (model bundle)', 'The Governance policy used for model bundles.'],
+-  admins: ['Admins', 'Comma-separated Domino usernames who may view and change Settings. The project owner always can.', 'ann, carl'],
++  admins: ['Admins', 'Comma-separated Domino usernames. The project owner always has access.'],
+ }
+-const BLOCKS = [
+-  ['AWS AgentCore', [['aws_role_arn', 'AWS role ARN'], ['aws_external_id', 'AWS external ID'],
+-    ['aws_access_key_id', 'AWS access key ID'], ['aws_secret_access_key', 'AWS secret access key']]],
+-  ['Google Agent Platform', [['google_service_account_json', 'Google service-account JSON']]],
+-  ['Microsoft Agent 365', [['microsoft_tenant_id', 'Microsoft tenant ID'], ['microsoft_client_id', 'Microsoft client ID'],
+-    ['microsoft_client_secret', 'Microsoft client secret']]],
+-  ['Databricks', [['databricks_host', 'Databricks host'], ['databricks_client_id', 'Databricks client ID'],
+-    ['databricks_client_secret', 'Databricks client secret']]],
++const PLATFORMS = [
++  { id: 'aws', title: 'AWS AgentCore', blurb: 'An IAM role that ACT assumes (with an external ID), or an access key as a fallback.',
++    fields: [['aws_role_arn', 'AWS role ARN'], ['aws_external_id', 'AWS external ID'],
++      ['aws_access_key_id', 'AWS access key ID'], ['aws_secret_access_key', 'AWS secret access key']],
++    ready: (v) => v.aws_role_arn || (v.aws_access_key_id && v.aws_secret_access_key) },
++  { id: 'google', title: 'Google Agent Platform', blurb: 'A service-account key as JSON.',
++    fields: [['google_service_account_json', 'Google service-account JSON']],
++    ready: (v) => v.google_service_account_json },
++  { id: 'microsoft', title: 'Microsoft Agent 365', blurb: 'An Entra app registration, client-credentials flow.',
++    fields: [['microsoft_tenant_id', 'Microsoft tenant ID'], ['microsoft_client_id', 'Microsoft client ID'],
++      ['microsoft_client_secret', 'Microsoft client secret']],
++    ready: (v) => v.microsoft_tenant_id && v.microsoft_client_id && v.microsoft_client_secret },
++  { id: 'databricks', title: 'Databricks', blurb: 'A workspace URL and a service principal (OAuth M2M).',
++    fields: [['databricks_host', 'Databricks host'], ['databricks_client_id', 'Databricks client ID'],
++      ['databricks_client_secret', 'Databricks client secret']],
++    ready: (v) => v.databricks_host && v.databricks_client_id && v.databricks_client_secret },
+ ]
++const NAV = [
++  ['st-demo', 'Demo mode'],
++  ['st-platforms', 'Platform credentials', [['st-aws', 'AWS AgentCore'], ['st-google', 'Google Agent Platform'], ['st-microsoft', 'Microsoft Agent 365'], ['st-databricks', 'Databricks']]],
++  ['st-integrations', 'Integrations'],
++  ['st-access', 'Access'],
++]
++
++const cx = (...a) => a.filter(Boolean).join(' ')
+ 
+ function when(iso) {
+   const d = new Date(iso)
+   return isNaN(d) ? '' : d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+ }
++const sentence = (t) => { t = (t || '').trim(); return t ? t[0].toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.') : t }
+ 
+ function problem(err) {
+   if (!err) return 'The change could not be saved. Try again.'
+   if (err.status === 423) return 'This value is set by a project variable and cannot be changed here.'
+   if (err.status === 403 || err.status === 401) return 'You do not have permission to change settings.'
+-  if (err.status === 422) return err.message || 'That value is not valid.'
+-  if (err.status === 409) return err.message || 'That change was refused.'
++  if (err.status === 422) return sentence(err.message) || 'That value is not valid.'
++  if (err.status === 409) return sentence(err.message) || 'That change was refused.'
+   return 'The change could not be saved. Try again.'
+ }
+ 
+-function SettingField({ entry, label, help, placeholder, onChange }) {
++const Icon = {
++  lock: <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="currentColor" strokeWidth="1.6" /></svg>,
++  warn: <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5l8 14H2z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /><path d="M10 8v4M10 14.2v.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>,
++  err: <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M10 5.5v5.5M10 13.5v1.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>,
++  ok: <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10.5l4 4 8-9" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
++}
++
++function Badge({ tone = 'none', children }) {
++  return <span className={`st-badge st-badge-${tone}`}>{tone === 'lock' && Icon.lock}{children}</span>
++}
++
++/** One setting. layout "row": settings-table row (label+hint | control | status); "stack": compact, for platform cards. */
++function SettingField({ entry, label, hint, placeholder, layout = 'row', onChange }) {
+   const id = React.useId()
+-  const helpId = `${id}-h`
+   const secret = entry.secret
+-  const [draft, setDraft] = React.useState(secret ? '' : entry.value || '')
++  const saved = entry.value || ''
++  const [draft, setDraft] = React.useState(secret ? '' : saved)
+   const [replacing, setReplacing] = React.useState(false)
++  const [ask, setAsk] = React.useState(false)
+   const [st, setSt] = React.useState({ kind: 'idle', msg: '' })
+-  const saved = entry.value || ''
++  const timer = React.useRef(null)
+   React.useEffect(() => { if (!secret) setDraft(entry.value || '') }, [entry.value, secret])
++  React.useEffect(() => () => clearTimeout(timer.current), [])
++
++  const unreadable = secret && entry.source === 'app' && entry.decryptable === false
++  const hasValue = secret && entry.is_set && !unreadable
++  const showInput = !entry.locked && (!secret || !hasValue || replacing)
++  const dirty = secret ? draft !== '' : draft !== saved
++  const canSave = dirty && draft.trim() !== '' && st.kind !== 'busy'
++  const busy = st.kind === 'busy'
++  const invalid = st.kind === 'error'
+ 
++  const done = (kind) => {
++    setSt({ kind, msg: '' })
++    clearTimeout(timer.current)
++    timer.current = setTimeout(() => setSt((s) => (s.kind === kind ? { kind: 'idle', msg: '' } : s)), 4000)
++  }
+   const run = async (fn, okKind) => {
+     setSt({ kind: 'busy', msg: '' })
+     try {
+@@ -56,54 +102,66 @@ function SettingField({ entry, label, help, placeholder, onChange }) {
+       onChange(next)
+       setDraft(secret ? '' : next.value || '')
+       setReplacing(false)
+-      setSt({ kind: okKind, msg: '' })
++      done(okKind)
+     } catch (e) { setSt({ kind: 'error', msg: problem(e) }) }
+   }
+-  const save = () => run(() => settingsApi.put(entry.name, draft), 'saved')
+-  const clear = () => {
+-    if (!window.confirm(`Clear ${label}? Its stored value will be removed.`)) return
+-    run(() => settingsApi.del(entry.name), 'cleared')
+-  }
+-  const busy = st.kind === 'busy'
+-  const showInput = !entry.locked && (!secret || !entry.is_set || replacing)
+-  const canSave = !busy && draft.trim() !== '' && (secret || draft !== saved)
++  const save = () => { if (canSave) run(() => settingsApi.put(entry.name, draft), 'saved') }
++  const clear = () => { setAsk(false); run(() => settingsApi.del(entry.name), 'cleared') }
++  const edit = (v) => { setDraft(v); if (st.kind === 'error') setSt({ kind: 'idle', msg: '' }) }
+ 
+-  let state = null
+-  if (entry.locked) state = <span className="st-state st-state-lock">Set by project variable</span>
+-  else if (secret && entry.is_set) state = <span className="st-state st-state-set">Set · changed by {entry.changed_by} on {when(entry.changed_at)}</span>
+-  else if (secret) state = <span className="st-state">Not set</span>
+-  else if (entry.source === 'app' && entry.changed_by) state = <span className="st-state">Changed by {entry.changed_by} on {when(entry.changed_at)}</span>
++  let badge
++  if (entry.locked) badge = <Badge tone="lock">Set by project variable</Badge>
++  else if (unreadable) badge = <Badge tone="warn">Re-enter</Badge>
++  else if (secret && entry.is_set) badge = <><Badge tone="ok">Set</Badge><span className="st-by"> · changed by {entry.changed_by} on {when(entry.changed_at)}</span></>
++  else if (secret) badge = <Badge>Not set</Badge>
++  else if (entry.source === 'app') badge = <><Badge tone="ok">Set</Badge><span className="st-by"> · changed by {entry.changed_by} on {when(entry.changed_at)}</span></>
++  else badge = <Badge>Not set</Badge>
+ 
++  let hintText = hint
++  if (entry.locked) hintText = <>Set by the project variable <code>{entry.env}</code>. Change it there.</>
++  else if (unreadable) hintText = 'The secret key changed, so this value can no longer be read. Enter it again.'
++
++  const labelId = `${id}-l`, hintId = `${id}-h`
++  const plainLocked = entry.locked
+   return (
+-    <fieldset className="st-field" data-testid={`setting-${entry.name}`}>
+-      <legend className="st-legend">{label}</legend>
+-      <label htmlFor={id} className="ds-sr">{label}</label>
+-      <div className="st-row">
+-        {entry.locked && !secret && (
+-          <input id={id} className="ds-input" type="text" readOnly value={entry.value || ''} aria-describedby={helpId} />
+-        )}
++    <div role="group" aria-labelledby={labelId} className={cx('st-f', `st-f-${layout}`, invalid && 'st-f-invalid')} data-testid={`setting-${entry.name}`}>
++      {showInput || plainLocked && !secret
++        ? <label id={labelId} htmlFor={`${id}-i`} className="st-label">{label}</label>
++        : <span id={labelId} className="st-label">{label}</span>}
++      <div className="st-state">{badge}</div>
++      <div className="st-ctl">
++        {plainLocked && !secret && <input id={`${id}-i`} className="ds-input" type="text" readOnly value={entry.value || ''} aria-describedby={hintId} />}
++        {plainLocked && secret && <div className="st-masked st-masked-lock" aria-hidden="true">••••••••</div>}
+         {showInput && (
+-          <input id={id} className="ds-input" type={secret ? 'password' : 'text'} value={draft} placeholder={placeholder}
+-                 autoComplete={secret ? 'new-password' : 'off'} spellCheck="false" aria-describedby={helpId}
+-                 onChange={(e) => { setDraft(e.target.value); if (st.kind !== 'idle') setSt({ kind: 'idle', msg: '' }) }}
+-                 onKeyDown={(e) => { if (e.key === 'Enter' && canSave) { e.preventDefault(); save() } }} />
++          <input id={`${id}-i`} className="ds-input" type={secret ? 'password' : 'text'} value={draft} placeholder={placeholder}
++                 autoComplete={secret ? 'new-password' : 'off'} spellCheck="false" aria-describedby={hintId}
++                 aria-invalid={invalid ? 'true' : undefined}
++                 onChange={(e) => edit(e.target.value)}
++                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }} />
+         )}
+-        {!showInput && !(entry.locked && !secret) && <div className="st-secret-line">{state}</div>}
+-        {!entry.locked && showInput && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
+-        {!entry.locked && secret && entry.is_set && !replacing && <Button onClick={() => { setReplacing(true); setSt({ kind: 'idle', msg: '' }) }} disabled={busy}>Replace</Button>}
+-        {!entry.locked && secret && replacing && <Button onClick={() => { setReplacing(false); setDraft('') }} disabled={busy}>Cancel</Button>}
+-        {!entry.locked && entry.source === 'app' && !replacing && <Button onClick={clear} disabled={busy}>Clear</Button>}
++        {!showInput && !plainLocked && <div className="st-masked" aria-hidden="true">••••••••</div>}
++        {showInput && dirty && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
++        {replacing && !busy && <Button onClick={() => { setReplacing(false); setDraft(''); setSt({ kind: 'idle', msg: '' }) }}>Cancel</Button>}
++        {!entry.locked && hasValue && !replacing && <Button onClick={() => { setReplacing(true); setSt({ kind: 'idle', msg: '' }) }} disabled={busy}>Replace</Button>}
++        {!entry.locked && entry.source === 'app' && !replacing && !(showInput && dirty) && (
++          <Button variant="ghost" className="st-danger" onClick={() => setAsk(true)} disabled={busy}>Clear</Button>)}
++        <span className="st-saved" role="status">{st.kind === 'saved' ? <>{Icon.ok}Saved</> : st.kind === 'cleared' ? <>{Icon.ok}Cleared</> : ''}</span>
+       </div>
+-      {(showInput || (entry.locked && !secret)) && state && <div className="st-meta">{state}</div>}
+-      <p id={helpId} className="ds-helper st-help">{help}</p>
+-      <p className="st-status" role="status">{st.kind === 'saved' ? 'Saved' : st.kind === 'cleared' ? 'Cleared' : ''}</p>
+-      {st.kind === 'error' && <p className="st-error" role="alert">{st.msg}</p>}
+-    </fieldset>
++      {invalid
++        ? <p id={hintId} className="st-hint st-hint-error" role="alert">{Icon.err}<span>{st.msg}</span></p>
++        : <p id={hintId} className="st-hint">{hintText}</p>}
++      {ask && (
++        <ConfirmDialog title={`Clear ${label}?`} danger onConfirm={clear} onCancel={() => setAsk(false)}
++                       body={secret ? 'The stored secret is deleted and cannot be recovered. You can enter a new one later.'
++                         : 'The saved value is removed and the default applies.'} />
++      )}
++    </div>
+   )
+ }
+ 
+-function ConfirmDialog({ title, body, confirm, onConfirm, onCancel }) {
++function ConfirmDialog({ title, body, danger, onConfirm, onCancel }) {
+   const ref = React.useRef(null)
++  const tid = React.useId(), bid = React.useId()
+   React.useEffect(() => {
+     const prev = document.activeElement
+     ref.current?.querySelector('[data-autofocus]')?.focus()
+@@ -118,21 +176,20 @@ function ConfirmDialog({ title, body, confirm, onConfirm, onCancel }) {
+       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+     }
+   }
+-  return (
+-    <div className="st-scrim" onKeyDown={onKey}>
+-      <div className="st-dialog ds-card" role="dialog" aria-modal="true" aria-labelledby="st-dlg-title" aria-describedby="st-dlg-body" ref={ref}>
+-        <h2 id="st-dlg-title" className="ds-section-title">{title}</h2>
+-        <p id="st-dlg-body" className="ds-helper st-dlg-body">{body}</p>
++  return createPortal(
++    <div className="st-scrim" onKeyDown={onKey} onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel() }}>
++      <div className="st-dialog ds-card" role="dialog" aria-modal="true" aria-labelledby={tid} aria-describedby={bid} ref={ref}>
++        <h2 id={tid} className="ds-section-title">{title}</h2>
++        <p id={bid} className="st-dlg-body">{body}</p>
+         <div className="st-dlg-actions">
+           <Button onClick={onCancel}>Cancel</Button>
+-          <Button variant="primary" onClick={onConfirm} data-autofocus>Confirm</Button>
++          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>Confirm</Button>
+         </div>
+       </div>
+-    </div>
+-  )
++    </div>, document.body)
+ }
+ 
+-function DemoSwitch({ entry, onChange }) {
++function DemoRow({ entry, onChange }) {
+   const [ask, setAsk] = React.useState(false)
+   const [busy, setBusy] = React.useState(false)
+   const [err, setErr] = React.useState('')
+@@ -140,58 +197,139 @@ function DemoSwitch({ entry, onChange }) {
+   const flip = async () => {
+     setAsk(false); setBusy(true); setErr('')
+     try {
+-      const next = await settingsApi.put('demo_mode', !on)
+-      onChange(next)
++      onChange(await settingsApi.put('demo_mode', !on))
+       refreshHealth()
+     } catch (e) { setErr(problem(e)) } finally { setBusy(false) }
+   }
+-  const labelId = 'st-demo-label'
+   return (
+-    <div className="st-demo">
+-      <div className="st-demo-row">
+-        <button type="button" role="switch" aria-checked={on} aria-labelledby={labelId} aria-describedby="st-demo-help"
++    <div className="st-f st-f-row st-demo" data-testid="setting-demo_mode">
++      <span id="st-demo-label" className="st-label">Demo mode</span>
++      <div className="st-state">{entry.locked ? <Badge tone="lock">Set by project variable</Badge> : <Badge tone={on ? 'ok' : 'none'}>{on ? 'On' : 'Off'}</Badge>}</div>
++      <div className="st-ctl">
++        <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-label" aria-describedby="st-demo-help"
+                 className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
+-        <div>
+-          <span id={labelId} className="ds-label">Demo mode</span>
+-          <p id="st-demo-help" className="ds-helper st-help">
+-            {entry.locked ? 'Set by project variable. Change the variable to turn demo mode on or off.'
+-              : 'Shows simulated data from a separate demo database. Your real data is never changed.'}
+-          </p>
+-        </div>
++        <span className="st-switch-text" aria-hidden="true">{busy ? (on ? 'Switching to your real data…' : 'Switching to demo data…') : on ? 'On' : 'Off'}</span>
++        <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
+       </div>
+-      {busy && <p className="st-status" role="status">{on ? 'Switching to your real data…' : 'Switching to demo data. Seeding can take a few seconds…'}</p>}
+-      {err && <p className="st-error" role="alert">{err}</p>}
++      {err
++        ? <p id="st-demo-help" className="st-hint st-hint-error" role="alert">{Icon.err}<span>{err}</span></p>
++        : <p id="st-demo-help" className="st-hint">
++          {entry.locked ? <>Set by the project variable <code>ACT_DEMO_MODE</code>. Change it there.</>
++            : 'Shows simulated data from a separate demo database. Your real data is never changed.'}</p>}
+       {ask && (
+         <ConfirmDialog
+           title={on ? 'Turn demo mode off?' : 'Turn demo mode on?'}
+           body={on ? 'The app goes back to your real database. Demo data stays in its own database.'
+             : 'The app switches to a separate demo database with simulated agents, runs and a simulated approver. Your real database is not touched.'}
+-          confirm="Confirm" onConfirm={flip} onCancel={() => setAsk(false)} />
++          onConfirm={flip} onCancel={() => setAsk(false)} />
+       )}
+     </div>
+   )
+ }
+ 
+-function Card({ title, helper, children }) {
+-  const id = React.useId()
++function Card({ id, title, subtitle, children }) {
++  const hid = `${id}-h`
++  return (
++    <section id={id} className="ds-card st-card" aria-labelledby={hid}>
++      <header className="st-card-head">
++        <h2 id={hid} className="ds-section-title">{title}</h2>
++        {subtitle && <p className="st-sub">{subtitle}</p>}
++      </header>
++      <div className="st-rows">{children}</div>
++    </section>
++  )
++}
++
++function PlatformCard({ p, by, update }) {
++  const vals = Object.fromEntries(p.fields.map(([n]) => [n, by[n].is_set]))
++  const any = Object.values(vals).some(Boolean)
++  const ready = !!p.ready(vals)
++  const tone = ready ? 'ok' : any ? 'warn' : 'none'
++  const hid = `st-${p.id}-h`
+   return (
+-    <section className="ds-card st-section" aria-labelledby={id}>
+-      <header className="st-section-head">
+-        <h2 id={id} className="ds-section-title">{title}</h2>
+-        {helper && <p className="ds-helper">{helper}</p>}
++    <section id={`st-${p.id}`} role="group" aria-labelledby={hid} className="ds-card st-plat">
++      <header className="st-plat-head">
++        <h3 id={hid} className="st-plat-title">{p.title}</h3>
++        <Badge tone={tone}>{ready ? 'Configured' : any ? 'Incomplete' : 'Not configured'}</Badge>
+       </header>
+-      <div className="st-section-body">{children}</div>
++      <p className="st-sub st-plat-blurb">{p.blurb}</p>
++      <div className="st-plat-fields">
++        {p.fields.map(([n, label]) => <SettingField key={n} layout="stack" entry={by[n]} label={label} onChange={update} />)}
++      </div>
+     </section>
+   )
+ }
+ 
++function SectionNav({ ready }) {
++  const [active, setActive] = React.useState('st-demo')
++  React.useEffect(() => {
++    if (!ready || !('IntersectionObserver' in window)) return undefined
++    const ids = NAV.flatMap(([id, , subs]) => [id, ...(subs || []).map((s) => s[0])])
++    const seen = new Map()
++    const io = new IntersectionObserver((es) => {
++      es.forEach((e) => seen.set(e.target.id, e.isIntersecting))
++      const top = ids.find((i) => seen.get(i))
++      if (top) setActive(top)
++    }, { rootMargin: '-10% 0px -70% 0px' })
++    ids.forEach((i) => { const el = document.getElementById(i); if (el) io.observe(el) })
++    return () => io.disconnect()
++  }, [ready])
++  const go = (id) => (e) => {
++    e.preventDefault()
++    const el = document.getElementById(id)
++    if (!el) return
++    el.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
++    setActive(id)
++  }
++  const link = (id, text, sub) => (
++    <a key={id} href={`#/settings`} onClick={go(id)} className={cx('st-nav-link', sub && 'st-nav-sub')} aria-current={active === id ? 'location' : undefined}>{text}</a>
++  )
++  return (
++    <nav className="st-nav" aria-label="Settings sections">
++      {NAV.map(([id, text, subs]) => (
++        <React.Fragment key={id}>
++          {link(id, text)}
++          {subs && subs.map(([sid, st]) => link(sid, st, true))}
++        </React.Fragment>
++      ))}
++    </nav>
++  )
++}
++
++function Skeleton() {
++  const row = (k) => (
++    <div className="st-sk-row" key={k}>
++      <div><span className="ds-skel" style={{ width: '60%' }} /><span className="ds-skel ds-skel-s" style={{ width: '85%' }} /></div>
++      <span className="ds-skel st-sk-input" />
++    </div>
++  )
++  const card = (k, n) => (
++    <div className="ds-card st-card" key={k}>
++      <div className="st-card-head"><span className="ds-skel" style={{ width: 180, height: 18 }} /></div>
++      <div className="st-rows">{Array.from({ length: n }, (_, i) => row(i))}</div>
++    </div>
++  )
++  return (
++    <div role="status" data-testid="settings-loading" className="st-layout st-loading" aria-busy="true">
++      <span className="ds-sr">Loading settings</span>
++      <div className="st-nav st-nav-sk" aria-hidden="true">{[0, 1, 2, 3].map((i) => <span key={i} className="ds-skel" style={{ width: '70%' }} />)}</div>
++      <div className="st-main" aria-hidden="true">{card('a', 1)}{card('b', 3)}{card('c', 3)}</div>
++    </div>
++  )
++}
++
+ export default function Settings() {
+   const [state, setState] = React.useState({ phase: 'loading' })
+   const load = React.useCallback(() => {
+     setState({ phase: 'loading' })
+     settingsApi.list().then(
+       (data) => setState({ phase: 'ready', data }),
+-      (e) => setState(e.status === 401 || e.status === 403 ? { phase: 'denied' } : { phase: 'error' }))
++      (e) => {
++        if (e.status === 401 || e.status === 403) {
++          settingsApi.access().then((a) => setState({ phase: 'denied', unconfigured: a && a.admins_configured === false }),
++            () => setState({ phase: 'denied' }))
++        } else setState({ phase: 'error' })
++      })
+   }, [])
+   React.useEffect(load, [load])
+ 
+@@ -201,19 +339,16 @@ export default function Settings() {
+ 
+   let body
+   if (state.phase === 'loading') {
+-    body = (
+-      <div role="status" data-testid="settings-loading" className="st-loading">
+-        <span className="ds-sr">Loading settings</span>
+-        <span className="ds-skel" aria-hidden="true" style={{ width: '40%' }} />
+-        <span className="ds-skel" aria-hidden="true" style={{ width: '90%' }} />
+-        <span className="ds-skel" aria-hidden="true" style={{ width: '70%' }} />
+-      </div>
+-    )
++    body = <Skeleton />
+   } else if (state.phase === 'denied') {
+     body = (
+       <div className="ds-card ds-empty" data-testid="settings-no-access">
+         <h2 className="ds-empty-title">You have no access to Settings</h2>
+-        <p className="ds-helper">Settings are limited to the project owner and the admins they list. Ask the project owner if you need a change.</p>
++        <p className="ds-helper">
++          {state.unconfigured
++            ? 'No project owner or admins are configured, so nobody can open Settings yet. Set the project variable ACT_ADMINS to a list of usernames.'
++            : 'Settings are limited to the project owner and the admins they list. Ask the project owner if you need a change.'}
++        </p>
+       </div>
+     )
+   } else if (state.phase === 'error') {
+@@ -226,33 +361,36 @@ export default function Settings() {
+     )
+   } else {
+     const by = Object.fromEntries(state.data.settings.map((s) => [s.name, s]))
+-    const field = (name, label, help, ph) => <SettingField key={name} entry={by[name]} label={label} help={help} placeholder={ph} onChange={update} />
+-    const copy = (name) => field(name, ...FIELD_COPY[name].slice(0, 1), FIELD_COPY[name][1], FIELD_COPY[name][2])
++    const row = (name) => <SettingField key={name} entry={by[name]} label={COPY[name][0]} hint={COPY[name][1]} placeholder={COPY[name][2]} onChange={update} />
+     body = (
+-      <div className="st-stack" data-testid="settings-body">
++      <>
+         {state.data.warnings.length > 0 && (
+           <div className="st-warning" role="status" data-testid="secret-key-warning">
+-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5l8 14H2z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /><path d="M10 8v4M10 14.2v.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+-            <div>{state.data.warnings.map((w) => <p key={w}>{w}</p>)}</div>
++            {Icon.warn}
++            <div>{state.data.warnings.map((w) => <p key={w}>{w.split(/(ACT_SECRET_KEY)/).map((t, i) => (t === 'ACT_SECRET_KEY' ? <code key={i}>{t}</code> : t))}</p>)}</div>
+           </div>
+         )}
+-        <Card title="Demo mode" helper="Try the app with simulated data, without touching your real database.">
+-          <DemoSwitch entry={by.demo_mode} onChange={update} />
+-        </Card>
+-        <Card title="Platform credentials" helper="Secrets are write-only: once saved they are never shown again.">
+-          {BLOCKS.map(([title, items]) => (
+-            <fieldset className="st-block" key={title}>
+-              <legend className="st-block-title">{title}</legend>
+-              {items.map(([name, label]) => field(name, label, by[name].secret ? 'Stored encrypted. Replace or clear it later.' : '', null))}
+-            </fieldset>
+-          ))}
+-        </Card>
+-        <Card title="Integrations" helper="A value set by a project variable wins and is read-only here.">
+-          {['llm_provider', 'llm_gateway_url', 'break_classifier_endpoint_url', 'break_classifier_access_key', 'external_allow_hosts',
+-            'trusted_jwks_path', 'service_accounts', 'policy_agentic_id', 'policy_model_id'].map(copy)}
+-        </Card>
+-        <Card title="Access" helper="Only admins can open this page.">{copy('admins')}</Card>
+-      </div>
++        <div className="st-layout" data-testid="settings-body">
++          <SectionNav ready />
++          <div className="st-main">
++            <Card id="st-demo" title="Demo mode"><DemoRow entry={by.demo_mode} onChange={update} /></Card>
++            <section id="st-platforms" className="st-platforms" aria-labelledby="st-platforms-h">
++              <header className="st-plat-section-head">
++                <h2 id="st-platforms-h" className="ds-section-title">Platform credentials</h2>
++                <p className="st-sub">Used by the import wizard to read agents from each platform. Secrets are encrypted, write-only and never shown again.</p>
++              </header>
++              <div className="st-plat-grid">
++                {PLATFORMS.map((p) => <PlatformCard key={p.id} p={p} by={by} update={update} />)}
++              </div>
++            </section>
++            <Card id="st-integrations" title="Integrations" subtitle="A project variable with the same name wins and is read-only here. Secrets are encrypted and write-only.">
++              {['llm_provider', 'llm_gateway_url', 'break_classifier_endpoint_url', 'break_classifier_access_key', 'external_allow_hosts',
++                'trusted_jwks_path', 'service_accounts', 'policy_agentic_id', 'policy_model_id'].map(row)}
++            </Card>
++            <Card id="st-access" title="Access" subtitle="Only the project owner and these admins can open this page.">{row('admins')}</Card>
++          </div>
++        </div>
++      </>
+     )
+   }
+   return (
+diff --git a/frontend/src/settings.css b/frontend/src/settings.css
+index 7813997..0c1709c 100644
+--- a/frontend/src/settings.css
++++ b/frontend/src/settings.css
+@@ -1,39 +1,118 @@
+-/* Settings page. Uses the shared tokens from design.css. */
+-.st-stack { display: flex; flex-direction: column; gap: var(--ds-s3); max-width: 760px }
+-.st-section-head { padding: var(--ds-s3) var(--ds-s3) 0 }
+-.st-section-head .ds-helper { margin-top: 2px }
+-.st-section-body { padding: var(--ds-s3); display: flex; flex-direction: column; gap: var(--ds-s3) }
+-.st-field, .st-block { border: 0; margin: 0; padding: 0; min-width: 0 }
+-.st-block { border: 1px solid var(--ds-line); border-radius: var(--ds-radius); padding: var(--ds-s2); display: flex; flex-direction: column; gap: var(--ds-s2) }
+-.st-block-title { font-size: 15px; font-weight: 650; color: var(--ds-ink); padding: 0 var(--ds-s1); margin-left: calc(var(--ds-s1) * -1) }
+-.st-legend { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink); padding: 0; margin-bottom: var(--ds-s1) }
+-.st-row { display: flex; gap: var(--ds-s1); align-items: center; flex-wrap: wrap }
+-.st-row .ds-input { flex: 1 1 220px; min-width: 0 }
+-.st-row .ds-input[readonly] { background: #f0f2f5; color: var(--ds-text) }
+-.st-row .ds-btn { height: 44px }
+-.st-secret-line { flex: 1 1 220px; min-height: 44px; display: flex; align-items: center }
+-.st-state { font-size: 14px; color: var(--ds-text) }
+-.st-state-set::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #067647; margin-right: 8px }
+-.st-state-lock { font-weight: 600; color: var(--ds-ink) }
+-.st-meta { margin-top: 6px }
+-.st-help { margin-top: 6px }
+-.st-help:empty { display: none }
+-.st-status { margin: 6px 0 0; font-size: 13px; line-height: 20px; font-weight: 600; color: #067647; min-height: 0 }
+-.st-status:empty { display: none }
+-.st-error { margin: 6px 0 0; font-size: 13px; line-height: 20px; font-weight: 500; color: var(--ds-danger); overflow-wrap: anywhere }
+-.st-loading { display: flex; flex-direction: column; gap: var(--ds-s2); max-width: 560px; padding: var(--ds-s2) 0 }
+-.st-warning { display: flex; gap: 12px; align-items: flex-start; padding: var(--ds-s2); border: 1px solid #f0c36d; background: #fff7e6; color: #6b4a00; border-radius: var(--ds-radius); font-size: 14px; line-height: 22px }
+-.st-warning svg { flex: none; margin-top: 1px }
+-.st-warning p { margin: 0 } .st-warning p + p { margin-top: 4px }
+-.st-demo-row { display: flex; gap: var(--ds-s2); align-items: flex-start }
+-.st-switch { flex: none; position: relative; width: 48px; height: 28px; border-radius: 14px; border: 1px solid #6b7280; background: #6b7280; cursor: pointer; padding: 0; transition: background .12s }
++/* Settings page. Built on the shared tokens and ds-* classes in design.css; only layout and the few page-specific parts live here. */
++.st-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--ds-s3); align-items: start }
++.st-main { display: flex; flex-direction: column; gap: var(--ds-s2); min-width: 0 }
++
++/* sticky section nav; below 1100px a horizontal chip row */
++.st-nav { position: sticky; top: var(--ds-s2); display: flex; flex-direction: column; gap: 2px }
++.st-nav-link { display: block; padding: 6px 12px; border-radius: var(--ds-radius-sm); color: var(--ds-text); font-size: 14px; line-height: 20px; font-weight: 500; border-left: 2px solid transparent }
++.st-nav-link:hover { background: #eceff3; color: var(--ds-ink); text-decoration: none }
++.st-nav-link[aria-current] { color: var(--ds-accent); font-weight: 600; background: var(--ds-accent-soft); border-left-color: var(--ds-accent) }
++.st-nav-sub { padding-left: 24px; font-size: 13px; font-weight: 400; color: var(--ds-muted) }
++.st-nav-link:focus-visible { outline-offset: -2px }
++.st-card, .st-plat, .st-platforms { scroll-margin-top: var(--ds-s2) }
++
++/* section card */
++.st-card-head { padding: 14px var(--ds-s3) 12px; border-bottom: 1px solid var(--ds-line) }
++.st-card-head .ds-section-title { font-size: 16px; line-height: 24px }
++.st-sub { margin: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
++.st-rows { display: flex; flex-direction: column }
++.st-rows > .st-f + .st-f { border-top: 1px solid var(--ds-line) }
++
++/* a setting: label, status, control, hint (one grid, two layouts) */
++.st-f { display: grid; column-gap: var(--ds-s2); row-gap: 2px; min-width: 0 }
++.st-label { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
++.st-state { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0 2px; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
++.st-by { white-space: normal }
++.st-ctl { display: flex; align-items: center; gap: var(--ds-s1); min-width: 0 }
++.st-ctl .ds-input { flex: 1 1 0; min-width: 0; height: 36px; font-size: 14px }
++.st-ctl .ds-btn { height: 36px; padding: 0 14px; flex: none }
++.st-ctl .ds-btn-ghost { padding: 0 8px }
++.st-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); min-width: 0; overflow-wrap: anywhere }
++.st-hint code, .st-warning code, .st-sub code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--ds-ink); background: #eef0f4; padding: 1px 5px; border-radius: 4px }
++.st-hint:empty { display: none }
++.st-hint-error { display: flex; gap: 6px; align-items: flex-start; color: var(--ds-danger); font-weight: 500 }
++.st-hint-error svg { flex: none; margin-top: 3px }
++.st-f-invalid .ds-input { border-color: var(--ds-danger); background: var(--ds-danger-bg) }
++.st-saved { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: #067647; white-space: nowrap }
++.st-saved:empty { display: none }
++.st-danger { color: var(--ds-danger) }
++.st-danger:hover:not(:disabled) { background: var(--ds-danger-bg) }
++.st-masked { flex: 1 1 0; min-width: 0; height: 36px; display: flex; align-items: center; padding: 0 var(--ds-s2); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: #f5f6f8; color: var(--ds-muted); font-size: 14px; letter-spacing: .12em }
++.st-masked-lock { background: #f5f6f8 }
++.ds-input[readonly] { background: #f5f6f8; color: var(--ds-text) }
++
++/* table row */
++.st-f-row { grid-template-columns: minmax(200px, 280px) minmax(0, 1fr) minmax(0, 250px); grid-template-areas: "label ctl state" "hint ctl state"; padding: 12px var(--ds-s3); align-items: center }
++.st-f-row .st-label { grid-area: label; align-self: end }
++.st-f-row .st-hint { grid-area: hint; align-self: start }
++.st-f-row .st-ctl { grid-area: ctl }
++.st-f-row .st-state { grid-area: state }
++
++/* stacked (platform cards) */
++.st-f-stack { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px; padding: 10px 0 }
++.st-f-stack .st-label { grid-area: label } .st-f-stack .st-state { grid-area: state; justify-content: flex-end }
++.st-f-stack .st-ctl { grid-area: ctl } .st-f-stack .st-hint { grid-area: hint }
++
++
++/* platform cards: two-column grid */
++.st-platforms { display: flex; flex-direction: column; gap: var(--ds-s1) }
++.st-plat-section-head { padding: var(--ds-s1) 2px 0 }
++.st-plat-section-head .ds-section-title { font-size: 16px; line-height: 24px }
++.st-plat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ds-s2); align-items: start }
++.st-plat { padding: 0 var(--ds-s3) 8px }
++.st-plat-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ds-s1); padding: 14px 0 2px }
++.st-plat-title { margin: 0; font-size: 15px; line-height: 24px; font-weight: 650; color: var(--ds-ink) }
++.st-plat-blurb { padding-bottom: 6px; border-bottom: 1px solid var(--ds-line) }
++.st-plat-fields > .st-f + .st-f { border-top: 1px solid var(--ds-line) }
++.st-plat-fields > .st-f:first-child { padding-top: 12px }
++
++/* badge */
++.st-badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 11px; font-size: 12px; line-height: 20px; font-weight: 600; white-space: nowrap; border: 1px solid #d5d9e0; background: #eef0f4; color: #3f4756 }
++.st-badge-ok { background: #ecfdf3; border-color: #a6f4c5; color: #05603a }
++.st-badge-warn { background: #fff7e6; border-color: #f0c36d; color: #6b4a00 }
++.st-badge-lock { background: #f5f6f8; border-color: var(--ds-line-strong); color: var(--ds-ink) }
++
++/* warning */
++.st-warning { display: flex; gap: 10px; align-items: flex-start; margin-bottom: var(--ds-s2); padding: 10px var(--ds-s2); border: 1px solid #f0c36d; background: #fff7e6; color: #6b4a00; border-radius: var(--ds-radius); font-size: 13px; line-height: 20px }
++.st-warning svg { flex: none; margin-top: 2px }
++.st-warning p { margin: 0 } .st-warning p + p { margin-top: 2px }
++
++/* demo switch */
++.st-switch { flex: none; position: relative; width: 44px; height: 24px; border-radius: 12px; border: 1px solid #6b7280; background: #6b7280; cursor: pointer; padding: 0; transition: background .12s }
+ .st-switch[aria-checked="true"] { background: var(--ds-accent); border-color: var(--ds-accent) }
+ .st-switch:disabled { opacity: .6; cursor: not-allowed }
+-.st-knob { position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .12s }
++.st-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .12s }
+ .st-switch[aria-checked="true"] .st-knob { transform: translateX(20px) }
+-.st-switch:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 3px }
+-.st-scrim { position: fixed; inset: 0; background: rgba(16, 24, 40, .5); display: grid; place-items: center; z-index: 50; padding: var(--ds-s2) }
+-.st-dialog { width: 100%; max-width: 460px; padding: var(--ds-s3); box-shadow: 0 12px 32px rgba(16, 24, 40, .24) }
+-.st-dlg-body { font-size: 14px; margin: var(--ds-s1) 0 var(--ds-s3) }
++.st-switch-text { font-size: 14px; font-weight: 600; color: var(--ds-ink) }
++
++/* dialog */
++.st-scrim { position: fixed; inset: 0; background: rgba(16, 24, 40, .5); display: grid; place-items: center; z-index: 1000; padding: var(--ds-s2) }
++.st-dialog { width: 100%; max-width: 440px; padding: var(--ds-s3); box-shadow: 0 12px 32px rgba(16, 24, 40, .24) }
++.st-dlg-body { font-size: 14px; line-height: 22px; color: var(--ds-text); margin: var(--ds-s1) 0 var(--ds-s3) }
+ .st-dlg-actions { display: flex; justify-content: flex-end; gap: var(--ds-s1) }
++.st-btn-danger { background: var(--ds-danger); border-color: var(--ds-danger) }
++.st-btn-danger:hover:not(:disabled) { background: #912018 }
++
++/* loading skeleton: same grid as the page, reserved height */
++.st-loading { min-height: 640px }
++.st-nav-sk { gap: 14px; padding: 6px 12px; position: static }
++.ds-skel-s { height: 10px; margin-top: 8px }
++.st-sk-row { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: var(--ds-s2); align-items: center; padding: 14px var(--ds-s3) }
++.st-sk-row + .st-sk-row { border-top: 1px solid var(--ds-line) }
++.st-sk-input { height: 36px; border-radius: var(--ds-radius) }
++
++@media (max-width: 1099px) {
++  .st-layout { grid-template-columns: minmax(0, 1fr); gap: var(--ds-s2) }
++  .st-nav { position: sticky; top: 0; z-index: 4; flex-direction: row; flex-wrap: nowrap; overflow-x: auto; gap: 6px; padding: 8px 0; background: var(--ds-bg) }
++  .st-nav-link { flex: none; border: 1px solid var(--ds-line); border-radius: 16px; background: var(--ds-surface); padding: 4px 12px }
++  .st-nav-link[aria-current] { border-color: var(--ds-accent) }
++  .st-nav-sub { display: none }
++  .st-nav-sk { flex-direction: row }
++  .st-card, .st-plat, .st-platforms { scroll-margin-top: 56px }
++}
++@media (max-width: 899px) {
++  .st-plat-grid { grid-template-columns: minmax(0, 1fr) }
++  .st-f-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px }
++  .st-sk-row { grid-template-columns: minmax(0, 1fr) }
++}
+ @media (prefers-reduced-motion: reduce) { .st-switch, .st-knob { transition: none } }
