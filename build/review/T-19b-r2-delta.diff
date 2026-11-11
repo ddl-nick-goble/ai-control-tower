@@ -1,0 +1,322 @@
+diff --git a/frontend/src/components/EvidencePack.jsx b/frontend/src/components/EvidencePack.jsx
+index f5690c2..05ef5fe 100644
+--- a/frontend/src/components/EvidencePack.jsx
++++ b/frontend/src/components/EvidencePack.jsx
+@@ -64,8 +64,15 @@ export default function EvidencePack({ pack }) {
+   // The header button and this card can be far apart: bring the finished pack into view and move focus to it.
+   React.useEffect(() => {
+     if (!doneAt || !ref.current) return
+-    ref.current.scrollIntoView({ block: 'start', behavior: 'smooth' })
+-    ref.current.focus({ preventScroll: true })
++    const el = ref.current
++    const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
++    el.scrollIntoView({ block: 'start', behavior: calm ? 'auto' : 'smooth' })
++    el.focus({ preventScroll: true })
++    // programmatic focus: keep a visible ring until the card loses focus
++    el.setAttribute('data-landed', '')
++    const clear = () => el.removeAttribute('data-landed')
++    el.addEventListener('blur', clear, { once: true })
++    return () => el.removeEventListener('blur', clear)
+   }, [doneAt])
+   const base = res ? `api/evidence-packs/${res.pack_id}` : ''
+   return (
+diff --git a/frontend/src/components/agentui.jsx b/frontend/src/components/agentui.jsx
+index c2a0852..b15ca91 100644
+--- a/frontend/src/components/agentui.jsx
++++ b/frontend/src/components/agentui.jsx
+@@ -45,18 +45,18 @@ export function CopyButton({ value, label, className = '' }) {
+           <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M10.5 3.5v-.2A1.3 1.3 0 0 0 9.2 2H3.8A1.3 1.3 0 0 0 2.5 3.3v5.4A1.3 1.3 0 0 0 3.8 10h.2" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+         )}
+       </button>
+-      <span className={copied === 'fail' ? 'ag-copy-fail' : 'ds-sr'} role="status">{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Copy failed' : ''}</span>
++      <span className={copied === 'fail' ? 'ag-copy-fail' : 'ds-sr'} role="status" aria-live="polite" aria-atomic="true">{copied === 'ok' ? 'Copied' : copied === 'fail' ? 'Copy failed' : ''}</span>
+     </>
+   )
+ }
+ 
+ // Long id / ARN: one line, ellipsis, full value in the title and a copy button.
+-export function IdValue({ value, label = 'value', testid = 'id-value' }) {
++export function IdValue({ value, label = 'value', testid = 'id-value', plain = false }) {
+   const v = value == null || value === '' ? null : String(value)
+   if (!v) return <span className="ag-none">—</span>
+   return (
+     <span className="ag-idv">
+-      <span className="ds-trunc ag-idv-text" data-testid={testid} title={v}>{v}</span>
++      <span className={`ds-trunc ag-idv-text${plain ? ' ag-idv-plain' : ''}`} data-testid={testid} title={v}>{v}</span>
+       <CopyButton value={v} label={label} />
+     </span>
+   )
+@@ -74,10 +74,10 @@ export function Card({ title, testid, id, className = '', actions, cardRef, chil
+   )
+ }
+ 
+-export function Skel({ what, lines = 3 }) {
++export function Skel({ what, lines = 3, className = '' }) {
+   const w = ['92%', '78%', '64%', '84%']
+   return (
+-    <div className="ag-skel" role="status" aria-busy="true">
++    <div className={`ag-skel ${className}`} role="status" aria-busy="true">
+       <span className="ds-sr">Loading {what} ...</span>
+       {Array.from({ length: lines }, (_, i) => <span key={i} className="ds-skel" style={{ width: w[i % w.length] }} />)}
+     </div>
+diff --git a/frontend/src/components/ui.jsx b/frontend/src/components/ui.jsx
+index 7827021..a92c5d0 100644
+--- a/frontend/src/components/ui.jsx
++++ b/frontend/src/components/ui.jsx
+@@ -53,10 +53,7 @@ function DemoBanner({ health: h }) {
+   return (
+     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
+       <div className="ds-shell-inner demo-inner">
+-        <strong>Demo mode:</strong>
+-        <span>simulated data</span>
+-        <span className="demo-sep" aria-hidden="true">·</span>
+-        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={h.stand_ins.map((s) => `demo-chip-${s.name}`).join(" ")} onClick={() => setOpen((o) => !o)}>{n} stand-ins</button>
++        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={h.stand_ins.map((s) => `demo-chip-${s.name}`).join(" ")} onClick={() => setOpen((o) => !o)}>Demo mode: simulated data and stand-ins ({n})</button>
+         <span className="demo-sep" aria-hidden="true">·</span>
+         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
+         <span className="demo-break" hidden={!open} />
+diff --git a/frontend/src/design.css b/frontend/src/design.css
+index 5c26bcc..b729e60 100644
+--- a/frontend/src/design.css
++++ b/frontend/src/design.css
+@@ -187,7 +187,7 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ds-table th { position: sticky; top: 0; z-index: 2; text-align: left; padding: 12px var(--ds-s2); background: #f8f9fb; color: var(--ds-muted);
+   font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--ds-line); white-space: nowrap }
+ .ds-table th:first-child { border-top-left-radius: var(--ds-radius-lg) } .ds-table th:last-child { border-top-right-radius: var(--ds-radius-lg) }
+-.ds-table td { height: 56px; padding: 0 var(--ds-s2); border-bottom: 1px solid var(--ds-line); background: var(--ds-surface); vertical-align: middle; transition: background .1s }
++.ds-table td { height: 44px; padding: 0 var(--ds-s2); border-bottom: 1px solid var(--ds-line); background: var(--ds-surface); vertical-align: middle; transition: background .1s }
+ .ds-table tbody tr:last-child td { border-bottom: 0 }
+ .ds-table tbody tr:last-child td:first-child { border-bottom-left-radius: var(--ds-radius-lg) } .ds-table tbody tr:last-child td:last-child { border-bottom-right-radius: var(--ds-radius-lg) }
+ .ds-table tbody tr { cursor: pointer }
+@@ -319,8 +319,9 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ag-inline-error .ds-btn-ghost { color: #912018; height: 28px } .ag-inline-error .ds-btn-ghost:hover:not(:disabled) { background: #fee4e2 }
+ 
+ /* findings */
+-.ag-findings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px }
+-.ag-finding { display: flex; gap: var(--ds-s2); align-items: flex-start; justify-content: space-between; min-height: 48px; padding: 8px 12px; border: 1px solid var(--ds-line); border-left: 3px solid var(--ds-line-strong); border-radius: var(--ds-radius); scroll-margin-top: 80px }
++.ag-findings { list-style: none; margin: -16px; padding: 0; display: flex; flex-direction: column }
++.ag-finding { display: flex; gap: var(--ds-s2); align-items: flex-start; justify-content: space-between; min-height: 48px; padding: 10px 16px 10px 13px; border: 0; border-bottom: 1px solid var(--ds-line); border-left: 3px solid var(--ds-line-strong); border-radius: 0; scroll-margin-top: 80px }
++.ag-finding:last-child { border-bottom: 0 }
+ .ag-finding.sev-critical { border-left-color: var(--ds-danger) } .ag-finding.sev-high { border-left-color: #c4320a }
+ .ag-finding.sev-medium { border-left-color: #b54708 } .ag-finding.sev-low { border-left-color: #8a94a3 }
+ .ag-finding-main { flex: 1; min-width: 0 }
+@@ -412,9 +413,28 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ag-finding-side .ag-time { margin-left: 0; color: var(--ds-muted) }
+ .ag-finding-link { align-self: flex-end }
+ @media (max-width: 1100px) { .ag-reason { -webkit-line-clamp: 3 } .ag-finding-side { flex-direction: row; align-items: center; width: 100%; justify-content: space-between } }
+-.ag-runs col.c-rstart { width: 184px } .ag-runs col.c-rspans { width: 112px }
++.ag-runs col.c-rrun { width: 328px } .ag-runs col.c-rstart { width: 176px } .ag-runs col.c-rspans { width: auto } .ag-runs col.c-rgo { width: 44px }
+ .ag-runs th.num, .ag-runs td.num { text-align: right; padding-right: var(--ds-s3) }
+-.ag-runs td.ds-nowrap { overflow: hidden; text-overflow: ellipsis }
+ .rt-toolbar { border-bottom: 1px solid var(--ds-line); padding-bottom: var(--ds-s1) }
+ .rt-showing { white-space: nowrap }
+-.rt-flash { outline: 2px solid var(--ds-accent); outline-offset: -2px }
++.rt-landed, .rt-ev:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: -2px }
++@media (prefers-reduced-motion: reduce) { .rt-flash { background: #ece9fb } .rt-violation.rt-flash { background: #fee4e2 } }
++
++/* ===== T-19b round 2 ===== */
++.ag-card[tabindex="-1"]:focus-visible, .ag-card[data-landed] { outline: 2px solid var(--ds-accent); outline-offset: -2px }
++.ag-inline-error { align-items: center }
++.ag-inline-error .ds-alert-icon { margin-top: 0 !important }
++.ag-inline-error .ds-btn-ghost { font-weight: 500; flex: none }
++.ag-dl-tight > div { grid-template-columns: 96px minmax(0, 1fr); gap: 8px }
++.ag-idv-plain { font-family: inherit; font-size: 13px; font-weight: 500 }
++.ag-cols { align-items: stretch }
++.ag-main > :last-child, .ag-side > :last-child { flex: 1 1 auto }
++#evidence-pack-slot { display: flex; flex-direction: column } #evidence-pack-slot > .ag-card { flex: 1 1 auto }
++.ag-skel-validation { min-height: 232px } .ag-skel-dependencies { min-height: 112px }
++.ag-finding-viol { margin-top: 4px; font-size: 12px; color: var(--ds-muted) }
++.rt-nofinding { display: inline-block; margin-top: 4px; font-size: 13px; color: var(--ds-muted) }
++.rt-skel-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--ds-s2); margin: var(--ds-s2) 0 var(--ds-s3) }
++.rt-skel-row { display: grid; grid-template-columns: 72px 24px minmax(0, 1fr); column-gap: 12px; align-items: center; padding: 10px var(--ds-s2) 10px 12px; border-bottom: 1px solid var(--ds-line) }
++.rt-skel-row:last-child { border-bottom: 0 }
++.rt-skel-node { width: 20px; height: 20px; border-radius: 50% }
++.ag-card:has(> .ag-card-body > .ag-findings) { overflow: hidden }
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index 6d7c584..ae54420 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -97,7 +97,7 @@ function Dependencies({ id }) {
+   return (
+     <Card title="Dependencies" className="ag-ord-5">
+       {error && <InlineError error={error} what="dependencies" onRetry={() => setRev((r) => r + 1)} />}
+-      {loading && !data && !error && <Skel what="dependencies" />}
++      {loading && !data && !error && <Skel what="dependencies" lines={3} className="ag-skel-dependencies" />}
+       {data && !data.models.length && !data.mcp_servers.length && !data.tools.length && <p className="ag-note"><None>None declared</None></p>}
+       {data && (data.models.length > 0 || data.mcp_servers.length > 0 || data.tools.length > 0) && (
+         <Dl rows={[
+@@ -127,7 +127,7 @@ function Validation({ id }) {
+   return (
+     <Card title="Validation" testid="validation-card" className="ag-ord-5">
+       {error && <InlineError error={error} what="validation" onRetry={() => setRev((r) => r + 1)} />}
+-      {loading && !data && !error && <Skel what="validation" />}
++      {loading && !data && !error && <Skel what="validation" lines={6} className="ag-skel-validation" />}
+       {!loading && !error && !data && <Empty title="No validation record" hint="Validation scores appear here once the agent has been evaluated." />}
+       {data && (
+         <>
+@@ -198,7 +198,7 @@ function Findings({ fnd, hl, onRetry }) {
+   const { data, error, loading } = fnd
+   const findings = data || []
+   return (
+-    <Card title="Findings" className="ag-ord-2" actions={data ? <span className="ag-count">{nf(findings.length)}</span> : null}>
++    <Card title="Findings" className="ag-ord-2" actions={data ? <span className="ag-count">{nf(findings.length)}</span> : error ? <span className="ag-count" title="Count unavailable">–</span> : null}>
+       {error && !data && <InlineError error={error} what="findings" onRetry={onRetry} />}
+       {loading && !data && !error && <Skel what="findings" />}
+       {data && !findings.length && <Empty title="No findings." hint="Scope drift and policy findings for this agent appear here." />}
+@@ -206,6 +206,8 @@ function Findings({ fnd, hl, onRetry }) {
+         <ul className="ag-findings">
+           {findings.map((f) => {
+             const spanId = f.span_id || (f.detail && f.detail.violations && f.detail.violations[0] && f.detail.violations[0].span_id) || ''
++            const viol = (f.detail && f.detail.violations) || []
++            const nViol = viol.length
+             const sev = SEV.includes(f.severity) ? f.severity : 'low'
+             const src = f.explanation && (!(f.detail && f.detail.explanation_model) || f.detail.explanation_model === 'mock-llm')
+             return (
+@@ -217,6 +219,7 @@ function Findings({ fnd, hl, onRetry }) {
+                     <strong className="ag-wrap">{clean(f.tool)}</strong>
+                     <span className="pill ag-status">{fmtStatus(f.status)}</span>
+                   </div>
++                  {nViol > 1 && <div className="ag-finding-viol" data-testid="finding-violations">{nViol} violations in this run: {viol.map((v) => clean(v.tool)).filter(Boolean).join(', ')}</div>}
+                   <div className="ag-reason" data-testid="finding-reason"><Markdown text={clean(f.explanation) || 'No explanation recorded.'} /></div>
+                   {src && (
+                     <span className="ag-tag" data-testid="finding-explanation-source">
+@@ -253,7 +256,7 @@ function Runs({ runs, onRetry }) {
+       {runs.data && !list.length && <Empty title="No runs recorded." hint="Runs appear here once the agent's traces have been ingested." />}
+       {list.length > 0 && (
+         <table className="ds-table ag-table ag-runs">
+-          <colgroup><col /><col className="c-rstart" /><col className="c-rspans" /><col className="c-rgo" /></colgroup>
++          <colgroup><col className="c-rrun" /><col className="c-rstart" /><col className="c-rspans" /><col className="c-rgo" /></colgroup>
+           <thead><tr><th scope="col">Run</th><th scope="col">Started</th><th scope="col" className="num">Spans</th><th scope="col"><span className="ds-sr">Open</span></th></tr></thead>
+           <tbody>
+             {list.map((r) => (
+@@ -277,10 +280,10 @@ function Runs({ runs, onRetry }) {
+ function Overview({ a }) {
+   return (
+     <Card title="Overview" className="ag-ord-1">
+-      <Dl testid="agent-details" rows={[
++      <Dl testid="agent-details" className="ag-dl-tight" rows={[
+         ['Agent ID', <IdValue key="i" value={a.id} label="agent ID" />],
+         ['Source', sourceLabel(a.source_platform)],
+-        ['Owner', a.owner ? <span className="ds-trunc" title={clean(a.owner)}>{clean(a.owner)}</span> : <None>—</None>],
++        ['Owner', a.owner ? <IdValue key="o" value={clean(a.owner)} label="owner" testid="agent-owner" plain /> : <None>—</None>],
+         ['Origin', clean(a.origin) || <None>—</None>],
+         ['Last seen', <span className="ds-nowrap ag-ink">{fmtTs(a.last_seen)}</span>],
+       ]} />
+diff --git a/frontend/src/pages/Run.jsx b/frontend/src/pages/Run.jsx
+index ad6bfcf..2e877a7 100644
+--- a/frontend/src/pages/Run.jsx
++++ b/frontend/src/pages/Run.jsx
+@@ -112,14 +112,31 @@ function Payload({ full, testid, what }) {
+ }
+ 
+ function Loading() {
++  const w = [58, 74, 46, 82, 64, 70, 52, 78]
+   return (
+     <div className="ds-page ds-container" role="status" aria-busy="true" data-testid="timeline-loading">
+-      <span className="ds-sr">Loading timeline ...</span>
+-      <span className="ds-skel" style={{ width: 240, height: 14, marginBottom: 16 }} />
+-      <span className="ds-skel" style={{ width: 280, height: 36, marginBottom: 16 }} />
+-      <span className="ds-skel" style={{ width: '100%', maxWidth: 640, height: 40, marginBottom: 24 }} />
+-      <span className="ds-skel" style={{ width: 360, height: 32, marginBottom: 16 }} />
+-      {Array.from({ length: 8 }, (_, i) => <span key={i} className="ds-skel" style={{ height: 28, marginBottom: 12, width: `${96 - (i % 3) * 8}%` }} />)}
++      <span className="ds-sr">Loading run ...</span>
++      <span className="ds-skel" style={{ width: 220, height: 14, marginBottom: 16 }} />
++      <span className="ds-skel" style={{ width: 200, height: 32 }} />
++      <div className="rt-skel-meta">
++        {[70, 56, 84, 62].map((x, i) => (
++          <div key={i}><span className="ds-skel" style={{ width: 56, height: 10, marginBottom: 8 }} /><span className="ds-skel" style={{ width: `${x}%`, height: 16 }} /></div>
++        ))}
++      </div>
++      <div className="rt-toolbar" style={{ position: 'static' }}>
++        <div className="rt-seg" aria-hidden="true">
++          {[64, 72, 92, 88, 84].map((x, i) => <span key={i} className="ds-skel" style={{ width: x, height: 24, margin: 2 }} />)}
++        </div>
++      </div>
++      <div className="ds-card rt-list" aria-hidden="true">
++        {w.map((x, i) => (
++          <div key={i} className="rt-skel-row">
++            <span className="ds-skel" style={{ width: 52, height: 12, justifySelf: 'end' }} />
++            <span className="ds-skel rt-skel-node" />
++            <span className="ds-skel" style={{ width: `${x}%`, height: 14 }} />
++          </div>
++        ))}
++      </div>
+     </div>
+   )
+ }
+@@ -138,6 +155,7 @@ function RunView({ runId }) {
+   const agentInfo = useAsync(() => (agentId ? api.agent(agentId).catch(() => null) : Promise.resolve(null)), [agentId])
+   const [filter, setFilter] = React.useState('all')
+   const [flash, setFlash] = React.useState(null)
++  const [landed, setLanded] = React.useState(null)
+   const spanParam = params.get('span')
+   const [missingSpan, setMissingSpan] = React.useState(false)
+   const agentName = clean(agentInfo.data?.name) || 'Agent'
+@@ -150,9 +168,10 @@ function RunView({ runId }) {
+   const violations = React.useMemo(() => {
+     const m = new Map()
+     for (const f of fnd.data?.items || []) {
+-      if (f.run_id !== runId || f.status !== 'open') continue
+-      for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest', findingId: f.id })
+-      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit, observed_value: f.observed_value, findingId: f.id })
++      if (f.run_id !== runId) continue
++      // One finding per run carries every violation in detail.violations; its own span_id is the first one.
++      for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest', findingId: f.id, primary: v.span_id === f.span_id })
++      if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit, observed_value: f.observed_value, findingId: f.id, primary: true })
+     }
+     return m
+   }, [fnd.data, runId])
+@@ -162,7 +181,9 @@ function RunView({ runId }) {
+   const events = ready ? tl.data.events : []
+   const rows = React.useMemo(() => events.map((ev, i) => {
+     const v = violations.get(ev.span_id)
+-    return { ev, i, v: v && ev.kind === 'tool_call' ? v : null }
++    const body = ev.kind === 'tool_call' ? payloadText(ev.args_redacted)
++      : (ev.kind === 'input' || ev.kind === 'output') ? clean(fmtJson(content(ev))) : ''
++    return { ev, i, body, v: v && ev.kind === 'tool_call' ? v : null }
+   }), [events, violations])
+   const counts = React.useMemo(() => ({
+     all: rows.length,
+@@ -176,6 +197,7 @@ function RunView({ runId }) {
+   // Arriving with ?span= (from a finding): scroll to the event, focus it, flash it, then drop the parameter.
+   React.useEffect(() => {
+     if (!ready || !spanParam) return
++    setMissingSpan(false)
+     setFilter('all')
+     const id = requestAnimationFrame(() => {
+       const el = Array.from(document.querySelectorAll('[data-testid="timeline-event"]')).find((e) => e.getAttribute('data-span-id') === spanParam)
+@@ -183,6 +205,7 @@ function RunView({ runId }) {
+         el.scrollIntoView({ block: 'center' })
+         el.focus({ preventScroll: true })
+         setFlash(spanParam)
++        setLanded(spanParam)
+       } else setMissingSpan(true)
+       setParams((cur) => { const n = new URLSearchParams(cur); n.delete('span'); return n }, { replace: true })
+     })
+@@ -254,12 +277,11 @@ function RunView({ runId }) {
+       )}
+       {shown.length > 0 && (
+         <ol className="rt-list ds-card">
+-          {shown.map(({ ev, i, v }) => {
+-            const body = ev.kind === 'tool_call' ? payloadText(ev.args_redacted)
+-              : (ev.kind === 'input' || ev.kind === 'output') ? clean(fmtJson(content(ev))) : ''
++          {shown.map(({ ev, i, v, body }) => {
+             return (
+               <li key={`${ev.span_id || ev.kind}-${i}`} tabIndex={-1}
+-                  className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}`}
++                  className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}${landed && landed === ev.span_id ? ' rt-landed' : ''}`}
++                  onBlur={landed && landed === ev.span_id ? () => setLanded(null) : undefined}
+                   data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
+                   data-violation={v ? 'true' : 'false'}
+                   data-violation-reason={v ? clean(v.reason || 'tool_not_in_manifest') : undefined}>
+@@ -278,8 +300,9 @@ function RunView({ runId }) {
+                   )}
+                   {v && v.note && <div className="rt-note">{clean(v.note)}</div>}
+                   {v && agentId && v.findingId != null && findingIds.has(v.findingId) && (
+-                    <Link className="rt-finding-link" to={`${agentPath(agentId)}#finding-${v.findingId}`}>View finding<Arrow /></Link>
++                    <Link className="rt-finding-link" to={`${agentPath(agentId)}#finding-${v.findingId}`}>{v.primary ? 'View finding' : 'Included in finding'}<Arrow /></Link>
+                   )}
++                  {v && !(agentId && v.findingId != null && findingIds.has(v.findingId)) && <span className="rt-nofinding" data-testid="no-finding">No finding raised</span>}
+                   {body && <Payload full={body} testid={ev.kind === 'tool_call' ? 'timeline-event-args' : 'timeline-event-content'} what={ev.kind === 'tool_call' ? 'arguments' : 'content'} />}
+                   {(ev.kind === 'approval' || ev.kind === 'override') && (
+                     <div className="rt-note rt-note-plain">{clean(ev.actor)}{ev.decision ? ` · ${clean(ev.decision)}` : ''}{ev.reason ? ` · ${clean(ev.reason)}` : ''}</div>
