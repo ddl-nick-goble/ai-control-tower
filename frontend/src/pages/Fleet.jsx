@@ -154,7 +154,7 @@ export default function Fleet() {
         </div>
       )}
       {ready && rows.length > 0 && (
-        <div className="ds-card ds-table-card">
+        <div className="ds-table-wrap"><div className="ds-card ds-table-card">
           <table className="ds-table">
             <ColGroup />
             <thead><tr>{COLS.map(([c]) => <th key={c} scope="col" className={c === 'Open findings' ? 'num' : undefined}>{c}</th>)}</tr></thead>
@@ -179,7 +179,7 @@ export default function Fleet() {
               })}
             </tbody>
           </table>
-        </div>
+        </div></div>
       )}
     </div>
   )

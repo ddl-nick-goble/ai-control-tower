@@ -97,7 +97,7 @@ function Dependencies({ id }) {
   return (
     <Card title="Dependencies" className="ag-ord-5">
       {error && <InlineError error={error} what="dependencies" onRetry={() => setRev((r) => r + 1)} />}
-      {loading && !data && !error && <Skel what="dependencies" lines={3} className="ag-skel-dependencies" />}
+      {loading && !data && !error && <Skel what="dependencies" lines={1} className="ag-skel-dependencies" />}
       {data && !data.models.length && !data.mcp_servers.length && !data.tools.length && <p className="ag-note"><None>None declared</None></p>}
       {data && (data.models.length > 0 || data.mcp_servers.length > 0 || data.tools.length > 0) && (
         <Dl rows={[
@@ -127,7 +127,7 @@ function Validation({ id }) {
   return (
     <Card title="Validation" testid="validation-card" className="ag-ord-5">
       {error && <InlineError error={error} what="validation" onRetry={() => setRev((r) => r + 1)} />}
-      {loading && !data && !error && <Skel what="validation" lines={6} className="ag-skel-validation" />}
+      {loading && !data && !error && <Skel what="validation" lines={2} className="ag-skel-validation" />}
       {!loading && !error && !data && <Empty title="No validation record" hint="Validation scores appear here once the agent has been evaluated." />}
       {data && (
         <>
@@ -152,7 +152,7 @@ function Governance({ gov, error, onRetry }) {
   return (
     <Card title="Governance" className="ag-ord-5">
       {error && !gov && <InlineError error={error} what="governance" onRetry={onRetry} />}
-      {!gov && !error && <Skel what="governance" />}
+      {!gov && !error && <Skel what="governance" lines={6} />}
       {gov && (
         <>
           {sim && <p className="ag-note"><span className="ag-demo-chip" data-testid="demo-governance-label">{sim.label}</span></p>}
@@ -181,7 +181,7 @@ function Approvals({ gov, error, onRetry }) {
   return (
     <Card title="Approvals" testid="approvals-panel" className="ag-ord-5">
       {error && !gov && <InlineError error={error} what="approvals" onRetry={onRetry} />}
-      {!gov && !error && <Skel what="approvals" />}
+      {!gov && !error && <Skel what="approvals" lines={2} />}
       {gov && (gov.approvals.length ? (
         <table className="ds-table ag-table ag-table-static"><thead><tr><th scope="col">Approver</th><th scope="col">Decision</th><th scope="col">When</th><th scope="col">Expires</th></tr></thead>
           <tbody>{gov.approvals.map((a) => (
@@ -190,6 +190,12 @@ function Approvals({ gov, error, onRetry }) {
       ) : <Empty title="No approvals recorded." hint="Approval history appears here after a second person approves this agent." />)}
     </Card>
   )
+}
+
+function toolCounts(viol) {
+  const m = new Map()
+  for (const v of viol) { const t = clean(v.tool); if (t) m.set(t, (m.get(t) || 0) + 1) }
+  return [...m].map(([t, n]) => (n > 1 ? `${t} \u00d7${n}` : t)).join(', ')
 }
 
 const SEV = ['critical', 'high', 'medium', 'low']
@@ -219,7 +225,7 @@ function Findings({ fnd, hl, onRetry }) {
                     <strong className="ag-wrap">{clean(f.tool)}</strong>
                     <span className="pill ag-status">{fmtStatus(f.status)}</span>
                   </div>
-                  {nViol > 1 && <div className="ag-finding-viol" data-testid="finding-violations">{nViol} violations in this run: {viol.map((v) => clean(v.tool)).filter(Boolean).join(', ')}</div>}
+                  {nViol > 1 && <div className="ag-finding-viol" data-testid="finding-violations">{nViol} violations in this run: {toolCounts(viol)}</div>}
                   <div className="ag-reason" data-testid="finding-reason"><Markdown text={clean(f.explanation) || 'No explanation recorded.'} /></div>
                   {src && (
                     <span className="ag-tag" data-testid="finding-explanation-source">
@@ -304,8 +310,8 @@ function PageSkel() {
       <span className="ds-skel" style={{ width: 360, height: 36, marginBottom: 12 }} />
       <span className="ds-skel" style={{ width: 280, height: 20, marginBottom: 24 }} />
       <div className="ag-cols">
-        <div className="ag-main">{[0, 1].map((i) => <div key={i} className="ds-card ag-card"><div className="ag-card-body"><Skel what="" /></div></div>)}</div>
-        <div className="ag-side">{[0, 1].map((i) => <div key={i} className="ds-card ag-card"><div className="ag-card-body"><Skel what="" /></div></div>)}</div>
+        <div className="ag-main">{[157, 134, 122].map((h, i) => <div key={i} className="ds-card ag-card" style={{ minHeight: h }}><div className="ag-card-body"><Skel what="" lines={2} /></div></div>)}</div>
+        <div className="ag-side">{[258, 354].map((h, i) => <div key={i} className="ds-card ag-card" style={{ minHeight: h }}><div className="ag-card-body"><Skel what="" lines={3} /></div></div>)}</div>
       </div>
     </div>
   )

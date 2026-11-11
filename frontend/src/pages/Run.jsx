@@ -152,17 +152,17 @@ function RunView({ runId }) {
   const tl = useAsync(() => api.timeline(runId), [runId, rev])
   const agentId = tl.data?.agent_id
   const fnd = useAsync(() => (agentId ? api.findings(agentId).then((items) => ({ agentId, items })) : Promise.resolve({ agentId: null, items: [] })), [agentId])
-  const agentInfo = useAsync(() => (agentId ? api.agent(agentId).catch(() => null) : Promise.resolve(null)), [agentId])
+  const agentInfo = useAsync(() => (agentId ? api.agent(agentId).catch(() => null).then((info) => ({ agentId, info })) : Promise.resolve({ agentId: null, info: null })), [agentId])
   const [filter, setFilter] = React.useState('all')
   const [flash, setFlash] = React.useState(null)
   const [landed, setLanded] = React.useState(null)
   const spanParam = params.get('span')
   const [missingSpan, setMissingSpan] = React.useState(false)
-  const agentName = clean(agentInfo.data?.name) || 'Agent'
+  const agentName = clean(agentInfo.data?.info?.name) || String(agentId ?? '')
   const crumbs = [{ label: 'Fleet', to: '/' },
     ...(agentId ? [{ label: agentName, to: agentPath(agentId) }] : []),
     { label: `Run ${String(runId).slice(0, 8)}` }]
-  const findingsPending = tl.loading || !tl.data || (!fnd.error && (fnd.loading || fnd.data?.agentId !== (agentId ?? null)))
+  const findingsPending = tl.loading || !tl.data || agentInfo.loading || agentInfo.data?.agentId !== (agentId ?? null) || (!fnd.error && (fnd.loading || fnd.data?.agentId !== (agentId ?? null)))
   const findingsFailed = !!fnd.error
 
   const violations = React.useMemo(() => {
@@ -170,7 +170,9 @@ function RunView({ runId }) {
     for (const f of fnd.data?.items || []) {
       if (f.run_id !== runId) continue
       // One finding per run carries every violation in detail.violations; its own span_id is the first one.
-      for (const v of f.detail?.violations || []) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest', findingId: f.id, primary: v.span_id === f.span_id })
+      const vs = f.detail?.violations || []
+      const primarySpan = f.span_id || vs[0]?.span_id
+      for (const v of vs) if (v.span_id) m.set(v.span_id, { ...v, reason: v.reason || f.reason || 'tool_not_in_manifest', findingId: f.id, primary: v.span_id === primarySpan })
       if (f.span_id && !m.has(f.span_id)) m.set(f.span_id, { reason: f.reason || 'tool_not_in_manifest', tool: f.tool, limit: f.limit, observed_value: f.observed_value, findingId: f.id, primary: true })
     }
     return m
@@ -281,7 +283,7 @@ function RunView({ runId }) {
             return (
               <li key={`${ev.span_id || ev.kind}-${i}`} tabIndex={-1}
                   className={`rt-ev rt-${ev.kind}${v ? ' rt-violation' : ''}${flash && flash === ev.span_id ? ' rt-flash' : ''}${landed && landed === ev.span_id ? ' rt-landed' : ''}`}
-                  onBlur={landed && landed === ev.span_id ? () => setLanded(null) : undefined}
+                  onBlur={landed && landed === ev.span_id ? (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setLanded(null) } : undefined}
                   data-testid="timeline-event" data-kind={ev.kind} data-span-id={ev.span_id ?? ''}
                   data-violation={v ? 'true' : 'false'}
                   data-violation-reason={v ? clean(v.reason || 'tool_not_in_manifest') : undefined}>

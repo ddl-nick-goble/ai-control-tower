@@ -58,7 +58,7 @@ function DemoBanner({ health: h }) {
   return (
     <div className="demo-banner" data-testid="demo-banner" role="region" aria-label="Demo mode">
       <div className="ds-shell-inner demo-inner">
-        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={h.stand_ins.map((s) => `demo-chip-${s.name}`).join(" ")} onClick={() => setOpen((o) => !o)}>Demo mode: simulated data and stand-ins ({n})</button>
+        <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={h.stand_ins.map((s) => `demo-chip-${s.name}`).join(" ")} onClick={() => setOpen((o) => !o)}><strong>Demo mode:</strong> simulated data and stand-ins ({n})</button>
         <span className="demo-sep" aria-hidden="true">·</span>
         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
         <span className="demo-break" hidden={!open} />
