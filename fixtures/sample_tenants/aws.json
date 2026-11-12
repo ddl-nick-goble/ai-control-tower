@@ -1,0 +1,73 @@
+{
+ "label": "Sample AWS organization (Example Bank)",
+ "identity": "arn:aws:iam::123456789012:role/ACT-ReadOnly",
+ "permissions": [
+  {
+   "name": "Signed in to AWS",
+   "detail": "sts:AssumeRoleWithWebIdentity",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read AgentCore runtimes and harnesses",
+   "detail": "bedrock-agentcore:ListAgentRuntimes, ListHarnesses",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read classic Bedrock agents",
+   "detail": "bedrock:ListAgents, GetAgent",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read the Agent Registry",
+   "detail": "agent-registry-control:ListRegistries",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read IAM policies on agent roles",
+   "detail": "iam:GetRole, ListAttachedRolePolicies",
+   "required": false,
+   "missing_first": true,
+   "fix": "The ACT role is missing iam:ListAttachedRolePolicies. Your stack uses template v1. Update the stack to v2 in AWS (one click, about a minute), then check again."
+  }
+ ],
+ "tree": [
+  {
+   "id": "aws:acct:1234-5678-9012",
+   "label": "Treasury account (1234 5678 9012)",
+   "children": [
+    {
+     "id": "aws:acct:1234-5678-9012:us-east-1",
+     "label": "us-east-1",
+     "children": [],
+     "agents": 4
+    },
+    {
+     "id": "aws:acct:1234-5678-9012:eu-west-1",
+     "label": "eu-west-1",
+     "children": [],
+     "agents": 2
+    }
+   ]
+  },
+  {
+   "id": "aws:acct:2100-4400-7788",
+   "label": "Payments account (2100 4400 7788)",
+   "children": [
+    {
+     "id": "aws:acct:2100-4400-7788:us-east-1",
+     "label": "us-east-1",
+     "children": [],
+     "agents": 3
+    }
+   ]
+  }
+ ]
+}

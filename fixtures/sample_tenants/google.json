@@ -1,0 +1,61 @@
+{
+ "label": "Sample Google Cloud organization (example-bank.com)",
+ "identity": "act-reader@act-demo-project-482311.iam.gserviceaccount.com",
+ "permissions": [
+  {
+   "name": "Google accepted ACT's sign-in",
+   "detail": "sts.googleapis.com token exchange",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read Agent Runtime",
+   "detail": "aiplatform.reasoningEngines.list",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read the Agent Registry",
+   "detail": "agentregistry.agents.list",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read Gemini Enterprise",
+   "detail": "discoveryengine.agents.list",
+   "required": false,
+   "missing_first": true,
+   "fix": "ACT can't read Gemini Enterprise in act-demo-project-482311. Add the role roles/discoveryengine.viewer; run: gcloud projects add-iam-policy-binding act-demo-project-482311 --member=serviceAccount:act-reader@act-demo-project-482311.iam.gserviceaccount.com --role=roles/discoveryengine.viewer"
+  },
+  {
+   "name": "Read audit logs",
+   "detail": "logging.logEntries.list",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  }
+ ],
+ "tree": [
+  {
+   "id": "gcp:org:example-bank",
+   "label": "example-bank.com",
+   "children": [
+    {
+     "id": "gcp:proj:act-demo-project-482311",
+     "label": "act-demo-project-482311 (us-central1)",
+     "children": [],
+     "agents": 5
+    },
+    {
+     "id": "gcp:proj:trading-ml-prod",
+     "label": "trading-ml-prod (europe-west4)",
+     "children": [],
+     "agents": 2
+    }
+   ]
+  }
+ ]
+}

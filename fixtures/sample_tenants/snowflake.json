@@ -1,0 +1,73 @@
+{
+ "label": "Sample Snowflake account (EXAMPLEBANK-PROD)",
+ "identity": "ACT_SVC (role ACT_READER)",
+ "permissions": [
+  {
+   "name": "Signed in as ACT_SVC",
+   "detail": "WORKLOAD_IDENTITY_FEDERATION bearer",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Role ACT_READER",
+   "detail": "SELECT CURRENT_ROLE()",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Agents visible",
+   "detail": "SHOW AGENTS IN ACCOUNT",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Usage history",
+   "detail": "SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Grants view",
+   "detail": "SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES",
+   "required": false,
+   "missing_first": true,
+   "fix": "ACT can't read grants yet. Run: GRANT DATABASE ROLE SNOWFLAKE.SECURITY_VIEWER TO ROLE ACT_READER;"
+  }
+ ],
+ "tree": [
+  {
+   "id": "sf:db:ANALYTICS",
+   "label": "ANALYTICS (database)",
+   "children": [
+    {
+     "id": "sf:db:ANALYTICS:AGENTS",
+     "label": "ANALYTICS.AGENTS",
+     "children": [],
+     "agents": 3
+    },
+    {
+     "id": "sf:db:ANALYTICS:SANDBOX",
+     "label": "ANALYTICS.SANDBOX",
+     "children": [],
+     "agents": 1
+    }
+   ]
+  },
+  {
+   "id": "sf:db:CUSTOMER360",
+   "label": "CUSTOMER360 (database)",
+   "children": [
+    {
+     "id": "sf:db:CUSTOMER360:SERVICE",
+     "label": "CUSTOMER360.SERVICE",
+     "children": [],
+     "agents": 2
+    }
+   ]
+  }
+ ]
+}
