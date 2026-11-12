@@ -1,6 +1,6 @@
 # ACT build status
 
-Updated: 2026-11-12 (session resume 5). Integration branch: `main` @ a35afbc. Build spend about $132 of $1,900 (see cost log).
+Updated: 2026-11-12 (session resume 5, later). Integration branch: `main` @ a35afbc. Build spend about $132 of $1,900 (see cost log).
 
 ## Why the workspace kept crashing (fixed 2026-11-12)
 The workspace is on hardware tier **Small: 1 core, 4 GiB**. Each resume started three browser-test runs at once (T-19b full suite + T-47 parallel `-n auto` with 8 Chromium workers + T-47 two-suites-at-once), which used up the 4 GiB and killed the workspace. The single core is also why every build and test run is slow. Fixed: preflight now reads the real limits; the plan allows only one heavy run at a time on Small; T-47 H-3/H-4 are parked until a bigger tier.
@@ -10,7 +10,7 @@ The workspace is on hardware tier **Small: 1 core, 4 GiB**. Each resume started 
 - T-39 Settings page: MERGED (311c986), post-merge 634 pass / 3 skip. Follow-ups queued as T-39f.
 - T-19b Agent + Run pages: MERGED 0027b4f (Nick chose to merge; the "40 spans" overlap at 1024 and 5 design follow-ups moved to T-19f).
 - T-47 parallel e2e harness: H-1/H-2/H-5 done; H-3/H-4 PARKED until the workspace is on Medium/Large (they caused the crashes on Small).
-- T-48 Settings reachable: code tests partly written (uncommitted in .worktrees/T-48), interrupted by the crash.
+- T-48 Settings reachable: MERGED d3ebe91. Settings is in the nav for everyone; in the workspace you are the owner/admin. Live preview (main, real DB): https://se-demo.domino.tech/nick_goble/ai-control-tower/notebookSession/6af513c4b6f82078180d5f25/proxy/9100/ (port 9100; 9888 is the test port).
 - Next: W3 T-20 (navigation + routes for the Superblocks screens).
 
 Standing rule from Nick: a design agent (visual-reviewer) produces a design brief before and a review after every frontend build.
