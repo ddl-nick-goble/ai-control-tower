@@ -278,7 +278,7 @@ def test_st7_plain_field_saved_confirmation_and_persists(page, shot, owner):
 
 def test_st7_loading_state(page, shot, owner):
     held = []  # hold the settings response until the loading state has been asserted
-    page.route(re.compile(r"/api/settings$"), held.append)
+    page.route(re.compile(r"/api/settings$"), lambda r: held.append(r))
     page.goto("./#/settings")
     expect(page.get_by_role("status").filter(has_text=re.compile("loading", re.I)).first).to_be_visible()
     shot("then")

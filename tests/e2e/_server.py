@@ -33,9 +33,9 @@ def free_port():
     raise RuntimeError("no free port")
 
 
-def _health(url):
+def _health(url, timeout=10):
     try:
-        return urllib.request.urlopen(url + "api/health", timeout=10).status == 200
+        return urllib.request.urlopen(url + "api/health", timeout=timeout).status == 200
     except Exception:
         return False
 
@@ -136,18 +136,15 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
             if port is None and "in use" in last.lower():
                 continue
             raise AssertionError(f"no APP_URL:\n{last}")
-        # Prefer the printed APP_URL (Domino proxy prefix); fall back to localhost if the proxy does not serve it.
+        # Wait on localhost (fast, always reachable), then prefer the printed APP_URL (Domino proxy prefix) if the proxy
+        # serves it right now; one probe, so a proxy that is not reachable from here costs nothing.
         local = f"http://localhost:{p}/"
-        for _ in range(30):
-            if _health(url):
-                break
-            time.sleep(1)
-        else:
-            app.url = url = local
-            for _ in range(60):
-                if _health(local):
-                    break
-                time.sleep(1)
+        try:
+            wait_until(lambda: _health(local) or proc.poll() is not None, 120, 0.3, f"{local} healthy")
+        except AssertionError:
+            app.stop()
+            raise
+        url = url if (proc.poll() is None and _health(url, timeout=3)) else local
         if proc.poll() is not None:
             app.stop()
             if port is None:

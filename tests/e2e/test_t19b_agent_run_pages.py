@@ -357,7 +357,7 @@ def test_s5_ui_never_mentions_claude(page, shot, seeded, which):
 
 def test_s5_loading_state_agent(page, shot, seeded):
     held = []  # hold the agent response until the loading state has been asserted
-    page.route(re.compile(r"/api/agents/[^/]+$"), held.append)
+    page.route(re.compile(r"/api/agents/[^/]+$"), lambda r: held.append(r))
     page.goto(f"./#/agents/{seeded['recon_id']}")
     st = page.get_by_role("status").filter(has_text=re.compile("loading", re.I))
     expect(st.first).to_be_visible()
