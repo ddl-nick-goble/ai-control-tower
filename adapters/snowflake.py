@@ -27,12 +27,20 @@ ADMIN_FIX = ("Run this as ACCOUNTADMIN (first line USE ROLE ACCOUNTADMIN), or as
              "(use Send to admin).")
 
 
-class Dep(str):
-    """A dependency name that also answers .get("name") (backend.normalize.apply_record reads dependency items as
-    dicts; the adapter contract lists plain names)."""
+class Dep(dict):
+    """A dependency record ({"name": ...}) as backend.normalize expects. It also equals its plain name, so the
+    adapter contract's `"model-id" in agent.dependencies["models"]` holds."""
 
-    def get(self, key, default=None):
-        return str(self) if key == "name" else default
+    def __init__(self, name):
+        super().__init__(name=str(name))
+
+    def __eq__(self, other):
+        return self["name"] == other if isinstance(other, str) else dict.__eq__(self, other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = None
 
 
 # ------------------------------------------------------------------ transport

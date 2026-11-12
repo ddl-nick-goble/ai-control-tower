@@ -30,12 +30,20 @@ TEMPLATE_FIX = "Click Update stack in AWS (CloudFormation, about a minute) to re
 PROVIDER = "AWS Bedrock AgentCore"
 
 
-class Dep(str):
-    """A dependency name that also answers .get("name"): backend.normalize.apply_record reads dependency items as
-    dicts, while the adapter contract (and the PO-3 tests) list plain names."""
+class Dep(dict):
+    """A dependency record ({"name": ...}) as backend.normalize expects. It also equals its plain name, so the
+    adapter contract's `"model-id" in agent.dependencies["models"]` holds."""
 
-    def get(self, key, default=None):
-        return str(self) if key == "name" else default
+    def __init__(self, name):
+        super().__init__(name=str(name))
+
+    def __eq__(self, other):
+        return self["name"] == other if isinstance(other, str) else dict.__eq__(self, other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    __hash__ = None
 
 
 # ------------------------------------------------------------------ transport
