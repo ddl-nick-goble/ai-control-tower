@@ -7,6 +7,15 @@ REPO_URL="https://github.com/dominodatalab/domino-ai-plugin"
 PLUGIN="dominodatalab@domino-marketplace"
 QA_ROOT="$(python3 -c 'import json;p=json.load(open("/mnt/code/build/budget.json"))["cost_log"];import os;print(os.path.dirname(p))' 2>/dev/null)"
 
+# 0. Real container limits (free/nproc show the host, not the workspace)
+cpu_q=$(awk '{if($1=="max")print 0; else printf "%d", $1/$2}' /sys/fs/cgroup/cpu.max 2>/dev/null)
+mem_b=$(cat /sys/fs/cgroup/memory.max 2>/dev/null)
+case "$mem_b" in ""|max) mem_g=0 ;; *) mem_g=$((mem_b/1024/1024/1024)) ;; esac
+echo "INFO workspace limits: ${cpu_q:-?} cores, ${mem_g} GiB (browser suites at once: $([ "${mem_g:-0}" -ge 15 ] && echo 2 || echo 1); xdist workers: -n $([ "${cpu_q:-1}" -ge 4 ] && echo $((cpu_q-1)) || echo 0))"
+if [ "${mem_g:-0}" -gt 0 ] && [ "$mem_g" -lt 8 ]; then
+  echo "WARN workspace has ${mem_g} GiB / ${cpu_q} core(s): run ONE browser suite at a time, never pytest -n auto, at most 2 subagents. Restart the workspace on Large (6 cores, 22 GiB) for parallel runs."
+fi
+
 # 1. Domino plugin at the newest release
 latest=$(git ls-remote --tags "$REPO_URL" 'release-*' 2>/dev/null \
   | sed -n 's#.*refs/tags/release-\([0-9.]*\)$#\1#p' | sort -V | tail -1)

@@ -1,11 +1,16 @@
 # ACT build status
 
-Updated: 2026-11-12 (session resume 4). Integration branch: `main` @ a35afbc. Build spend about $132 of $1,900 (see cost log).
+Updated: 2026-11-12 (session resume 5). Integration branch: `main` @ a35afbc. Build spend about $132 of $1,900 (see cost log).
+
+## Why the workspace kept crashing (fixed 2026-11-12)
+The workspace is on hardware tier **Small: 1 core, 4 GiB**. Each resume started three browser-test runs at once (T-19b full suite + T-47 parallel `-n auto` with 8 Chromium workers + T-47 two-suites-at-once), which used up the 4 GiB and killed the workspace. The single core is also why every build and test run is slow. Fixed: preflight now reads the real limits; the plan allows only one heavy run at a time on Small; T-47 H-3/H-4 are parked until a bigger tier.
+**Recommended:** restart the workspace on **Large (6 cores, 22 GiB)**, or Medium (4 cores, 15 GiB). Same environment; worktrees under /mnt/code/.worktrees survive.
 
 ## Wave W2 in progress (see build/plan.md "Combined schedule")
 - T-39 Settings page: MERGED (311c986), post-merge 634 pass / 3 skip. Follow-ups queued as T-39f.
 - T-19b Agent + Run pages: final code review approved with follow-ups (T-19f). UI run 4 restarted 2026-11-12 (previous run interrupted), then design review r4, then merge.
-- T-47 parallel e2e harness: H-1/H-2/H-5 done; H-3 (xdist) and H-4 (two suites at once) restarted 2026-11-12.
+- T-47 parallel e2e harness: H-1/H-2/H-5 done; H-3/H-4 PARKED until the workspace is on Medium/Large (they caused the crashes on Small).
+- T-48 Settings reachable: code tests partly written (uncommitted in .worktrees/T-48), interrupted by the crash.
 - Next: W3 T-20 (navigation + routes for the Superblocks screens).
 
 Standing rule from Nick: a design agent (visual-reviewer) produces a design brief before and a review after every frontend build.
