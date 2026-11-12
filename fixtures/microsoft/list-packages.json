@@ -1,137 +1,68 @@
 {
-  "@odata.context": "https://graph.microsoft.com/beta/$metadata#copilot/admin/catalog/packages",
-  "@odata.count": 3,
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#copilot/admin/catalog/packages",
   "value": [
     {
-      "id": "a1f3c9d2-4b7e-4e1a-9c55-0d2e6f8a1b01",
-      "displayName": "Relationship Manager Copilot",
-      "agentName": "relationship-manager-copilot",
-      "version": "1.2.0",
-      "type": "agent",
-      "publisher": "Example Bank IT",
-      "lastModifiedDateTime": "2026-10-30T11:20:44Z",
-      "createdDateTime": "2026-09-29T10:00:00Z",
-      "isBlocked": false,
-      "supportedHosts": [
-        "Copilot"
-      ],
+      "id": "P_a1f3c9d24b7e",
+      "displayName": "relationship-manager-copilot",
+      "type": "custom",
       "shortDescription": "Summarises client meetings and drafts follow-ups.",
-      "identity": {
-        "type": "managed_identity",
-        "clientId": "0c7d1e34-5a2b-4c88-b1f0-7e9a3d4c5b02",
-        "principalId": "20b5c4d3-a9e7-4f1b-88c4-b2a543e1d7c0",
-        "distinct": true
-      },
-      "customMetadata": {
-        "owner": "wealth-advisory@example-bank.com",
-        "tools": [
-          "get_portfolio",
-          "summarize_meeting",
-          "draft_email"
-        ],
-        "data_scopes": [
-          "wealth.portfolios",
-          "customer.profile"
-        ],
-        "systems": [
-          "WealthCRM",
-          "Outlook"
-        ],
-        "criteria": {
-          "autonomy": "assistive",
-          "consequence": "internal_draft",
-          "human_in_loop": true
-        }
-      },
-      "owner": {
-        "userPrincipalName": "wealth-advisory@example-bank.com"
-      }
-    },
-    {
-      "id": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
-      "displayName": "Credit Memo Drafter",
-      "agentName": "credit-memo-drafter",
-      "version": "1.2.0",
-      "type": "agent",
-      "publisher": "Example Bank IT",
-      "lastModifiedDateTime": "2026-11-04T15:03:18Z",
-      "createdDateTime": "2026-09-29T10:00:00Z",
       "isBlocked": false,
       "supportedHosts": [
         "Copilot"
       ],
+      "publisher": "Example Bank IT",
+      "version": "1.2.0",
+      "platform": "Copilot",
+      "elementTypes": [
+        "DeclarativeAgent"
+      ],
+      "manifestId": "a1f3c9d2-4b7e-4e1a-9c55-0d2e6f8a1b01",
+      "agentIdentityId": "a1f3c9d2-4b7e-4e1a-9c55-0d2e6f8a1b01",
+      "governanceMetadata": "PromptAgent",
+      "createdDateTime": "2026-09-29T10:00:00Z",
+      "lastModifiedDateTime": "2026-10-30T11:20:44Z"
+    },
+    {
+      "id": "P_b2e4d0a35c8f",
+      "displayName": "credit-memo-drafter",
+      "type": "custom",
       "shortDescription": "Drafts corporate credit memos from financials and ratings.",
-      "identity": {
-        "type": "managed_identity",
-        "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
-        "principalId": "31c6d5e4-baf8-4a2a-99d4-c3b654f2e8d1",
-        "distinct": true
-      },
-      "customMetadata": {
-        "owner": "corporate-credit@example-bank.com",
-        "tools": [
-          "get_financials",
-          "get_rating",
-          "draft_memo"
-        ],
-        "data_scopes": [
-          "credit.financials",
-          "credit.ratings"
-        ],
-        "systems": [
-          "CreditSuite",
-          "SharePoint"
-        ],
-        "criteria": {
-          "autonomy": "assistive",
-          "consequence": "internal_draft",
-          "human_in_loop": true
-        }
-      },
-      "owner": {
-        "userPrincipalName": "corporate-credit@example-bank.com"
-      }
-    },
-    {
-      "id": "c3f5e1b4-6d90-4a3c-9e77-2f4a8bac3d21",
-      "displayName": "Branch Ops Assistant",
-      "agentName": "branch-ops-assistant",
-      "version": "1.2.0",
-      "type": "agent",
-      "publisher": "Example Bank IT",
-      "lastModifiedDateTime": "2026-10-19T08:41:02Z",
-      "createdDateTime": "2026-09-29T10:00:00Z",
       "isBlocked": false,
       "supportedHosts": [
         "Copilot"
       ],
+      "publisher": "Example Bank IT",
+      "version": "1.2.0",
+      "platform": "Copilot",
+      "elementTypes": [
+        "DeclarativeAgent"
+      ],
+      "manifestId": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
+      "agentIdentityId": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
+      "governanceMetadata": "PromptAgent",
+      "createdDateTime": "2026-09-29T10:00:00Z",
+      "lastModifiedDateTime": "2026-11-04T15:03:18Z"
+    },
+    {
+      "id": "P_c3f5e1b46d90",
+      "displayName": "branch-ops-assistant",
+      "type": "custom",
       "shortDescription": "Answers branch procedure questions and creates tasks.",
-      "identity": {
-        "type": "none",
-        "note": "uses the shared Copilot Studio connection identity"
-      },
-      "customMetadata": {
-        "owner": "branch-operations@example-bank.com",
-        "tools": [
-          "search_procedures",
-          "create_task"
-        ],
-        "data_scopes": [
-          "ops.procedures"
-        ],
-        "systems": [
-          "Intranet",
-          "TaskHub"
-        ],
-        "criteria": {
-          "autonomy": "assistive",
-          "consequence": "operational",
-          "human_in_loop": true
-        }
-      },
-      "owner": {
-        "userPrincipalName": "branch-operations@example-bank.com"
-      }
+      "isBlocked": false,
+      "supportedHosts": [
+        "Copilot"
+      ],
+      "publisher": "Example Bank IT",
+      "version": "1.2.0",
+      "platform": "Copilot",
+      "elementTypes": [
+        "DeclarativeAgent"
+      ],
+      "manifestId": "c3f5e1b4-6d90-4a3c-9e77-2f4a8bac3d21",
+      "agentIdentityId": null,
+      "governanceMetadata": "PromptAgent",
+      "createdDateTime": "2026-09-29T10:00:00Z",
+      "lastModifiedDateTime": "2026-10-19T08:41:02Z"
     }
   ]
 }

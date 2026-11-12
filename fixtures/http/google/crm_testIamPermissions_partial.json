@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://cloudresourcemanager.googleapis.com/v3/projects/bank-ai-prod:testIamPermissions",
+    "json": {
+      "permissions": [
+        "resourcemanager.projects.get",
+        "serviceusage.services.list",
+        "aiplatform.reasoningEngines.list",
+        "aiplatform.reasoningEngines.get",
+        "aiplatform.reasoningEngines.getIamPolicy",
+        "agentregistry.agents.list",
+        "agentregistry.agents.get",
+        "agentregistry.bindings.list",
+        "discoveryengine.agents.list",
+        "discoveryengine.engines.list",
+        "cloudasset.assets.searchAllResources",
+        "cloudasset.assets.searchAllIamPolicies",
+        "logging.logEntries.list",
+        "cloudtrace.traces.list"
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "permissions": [
+        "resourcemanager.projects.get",
+        "serviceusage.services.list",
+        "aiplatform.reasoningEngines.list",
+        "aiplatform.reasoningEngines.get",
+        "aiplatform.reasoningEngines.getIamPolicy",
+        "agentregistry.agents.list",
+        "agentregistry.agents.get",
+        "agentregistry.bindings.list"
+      ]
+    }
+  }
+}

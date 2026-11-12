@@ -1,0 +1,146 @@
+{
+  "agents": [
+    {
+      "name": "projects/bank-ai-prod/locations/us-central1/agents/payments-fraud-screener",
+      "agentId": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:122077102645",
+      "location": "us-central1",
+      "displayName": "payments-fraud-screener",
+      "description": "Scores real-time payments and holds suspicious ones.",
+      "version": "1",
+      "protocols": [
+        {
+          "type": "A2A_AGENT",
+          "protocolVersion": "1.0",
+          "interfaces": [
+            {
+              "protocolBinding": "JSONRPC",
+              "url": "https://payments-fraud-screener-abc123-uc.a.run.app"
+            }
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "id": "score_payment",
+          "name": "Score payment"
+        },
+        {
+          "id": "get_customer_profile",
+          "name": "Get customer profile"
+        },
+        {
+          "id": "hold_payment",
+          "name": "Hold payment"
+        },
+        {
+          "id": "release_payment",
+          "name": "Release payment"
+        }
+      ],
+      "attributes": {
+        "agentregistry.googleapis.com/system/Framework": {
+          "framework": "google-adk"
+        },
+        "agentregistry.googleapis.com/system/RuntimeReference": {
+          "uri": "//aiplatform.googleapis.com/projects/bank-ai-prod/locations/us-central1/reasoningEngines/122077102645"
+        },
+        "agentregistry.googleapis.com/system/RuntimeIdentity": {
+          "principal": "sa-fraud-screener@bank-ai-prod.iam.gserviceaccount.com"
+        }
+      },
+      "createTime": "2026-10-02T09:00:00Z",
+      "updateTime": "2026-11-01T08:12:09.331Z"
+    },
+    {
+      "name": "projects/bank-ai-prod/locations/us-central1/agents/collections-outreach-agent",
+      "agentId": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:401391792873",
+      "location": "us-central1",
+      "displayName": "collections-outreach-agent",
+      "description": "Drafts and sends delinquency outreach to retail customers.",
+      "version": "1",
+      "protocols": [
+        {
+          "type": "A2A_AGENT",
+          "protocolVersion": "1.0",
+          "interfaces": [
+            {
+              "protocolBinding": "JSONRPC",
+              "url": "https://collections-outreach-agent-abc123-uc.a.run.app"
+            }
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "id": "get_delinquency",
+          "name": "Get delinquency"
+        },
+        {
+          "id": "draft_message",
+          "name": "Draft message"
+        },
+        {
+          "id": "send_sms",
+          "name": "Send sms"
+        }
+      ],
+      "attributes": {
+        "agentregistry.googleapis.com/system/Framework": {
+          "framework": "google-adk"
+        },
+        "agentregistry.googleapis.com/system/RuntimeReference": {
+          "uri": "//aiplatform.googleapis.com/projects/bank-ai-prod/locations/us-central1/reasoningEngines/401391792873"
+        },
+        "agentregistry.googleapis.com/system/RuntimeIdentity": {
+          "principal": "sa-collections-outreach@bank-ai-prod.iam.gserviceaccount.com"
+        }
+      },
+      "createTime": "2026-10-02T09:00:00Z",
+      "updateTime": "2026-10-22T13:47:55.120Z"
+    },
+    {
+      "name": "projects/bank-ai-prod/locations/us-central1/agents/regulatory-report-drafter",
+      "agentId": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:548145599405",
+      "location": "us-central1",
+      "displayName": "regulatory-report-drafter",
+      "description": "Drafts sections of regulatory reports from the general ledger.",
+      "version": "1",
+      "protocols": [
+        {
+          "type": "A2A_AGENT",
+          "protocolVersion": "1.0",
+          "interfaces": [
+            {
+              "protocolBinding": "JSONRPC",
+              "url": "https://regulatory-report-drafter-abc123-uc.a.run.app"
+            }
+          ]
+        }
+      ],
+      "skills": [
+        {
+          "id": "query_gl",
+          "name": "Query gl"
+        },
+        {
+          "id": "draft_section",
+          "name": "Draft section"
+        },
+        {
+          "id": "validate_xbrl",
+          "name": "Validate xbrl"
+        }
+      ],
+      "attributes": {
+        "agentregistry.googleapis.com/system/Framework": {
+          "framework": "google-adk"
+        },
+        "agentregistry.googleapis.com/system/RuntimeReference": {
+          "uri": "//aiplatform.googleapis.com/projects/bank-ai-prod/locations/us-central1/reasoningEngines/548145599405"
+        }
+      },
+      "createTime": "2026-10-02T09:00:00Z",
+      "updateTime": "2026-11-06T10:30:02.774Z"
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://us-central1-aiplatform.googleapis.com/v1/projects/bank-ai-prod/locations/us-central1/reasoningEngines",
+    "query": {
+      "pageSize": 100
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "reasoningEngines": [
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/1220771026",
+          "displayName": "payments-fraud-screener",
+          "description": "payments-fraud-screener description",
+          "createTime": "2026-10-02T09:00:00Z",
+          "updateTime": "2026-11-01T08:12:09Z",
+          "etag": "AMEw9y",
+          "spec": {
+            "agentFramework": "google-adk",
+            "identityType": "SERVICE_ACCOUNT",
+            "serviceAccount": "sa-fraud@bank-ai-prod.iam.gserviceaccount.com",
+            "effectiveIdentity": "sa-fraud@bank-ai-prod.iam.gserviceaccount.com",
+            "deploymentSpec": {
+              "env": [
+                {
+                  "name": "MODEL",
+                  "value": "gemini-3.1-pro"
+                },
+                {
+                  "name": "DB_PASSWORD",
+                  "value": "s3cr3t-hunter2"
+                }
+              ],
+              "secretEnv": [
+                {
+                  "env": "API_KEY",
+                  "secret": "projects/4417/secrets/k"
+                }
+              ]
+            },
+            "agentCard": {
+              "name": "payments-fraud-screener",
+              "skills": [
+                {
+                  "id": "score",
+                  "name": "Score payment"
+                }
+              ]
+            }
+          },
+          "labels": {
+            "owner": "fraud-analytics",
+            "env": "prod"
+          }
+        }
+      ],
+      "nextPageToken": "re2"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://agentregistry.googleapis.com/v1/projects/bank-ai-prod/locations/us-central1/agents",
+    "query": {
+      "pageSize": 100,
+      "pageToken": "ar2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "agents": [
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/agents/agt-kyc",
+          "agentId": "urn:agent:projects-4417:projects:4417:locations:us-central1:run:services:kyc-helper",
+          "displayName": "kyc-helper-agent",
+          "description": "KYC helper on Cloud Run",
+          "version": "0.9.0",
+          "updateTime": "2026-10-20T00:00:00Z",
+          "createTime": "2026-10-01T00:00:00Z",
+          "skills": [
+            {
+              "id": "kyc",
+              "name": "Refresh KYC"
+            }
+          ],
+          "attributes": {
+            "agentregistry.googleapis.com/system/RuntimeIdentity": {
+              "principal": "sa-kyc@bank-ai-prod.iam.gserviceaccount.com"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

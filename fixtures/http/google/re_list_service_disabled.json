@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://europe-west1-aiplatform.googleapis.com/v1/projects/bank-ai-prod/locations/europe-west1/reasoningEngines",
+    "query": {
+      "pageSize": 100
+    }
+  },
+  "response": {
+    "status": 403,
+    "headers": {},
+    "body": {
+      "error": {
+        "code": 403,
+        "status": "PERMISSION_DENIED",
+        "message": "PERMISSION_DENIED SERVICE_DISABLED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "SERVICE_DISABLED",
+            "metadata": {
+              "service": "aiplatform.googleapis.com",
+              "activationUrl": "https://console.developers.google.com/apis/api/aiplatform.googleapis.com/overview?project=bank-ai-prod"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

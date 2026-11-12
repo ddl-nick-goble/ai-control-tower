@@ -1,0 +1,34 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://graph.microsoft.com/v1.0/copilot/admin/catalog/packages",
+    "query": {
+      "$top": 100
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "value": [
+        {
+          "id": "P_1",
+          "displayName": "Credit Memo Drafter",
+          "type": "custom",
+          "shortDescription": "Drafts memos",
+          "isBlocked": false,
+          "publisher": "Example Bank",
+          "version": "1.2.0",
+          "agentIdentityId": "1b7313c4-0000-0000-0000-00000000aaaa",
+          "supportedHosts": [
+            "Copilot"
+          ],
+          "governanceMetadata": "PromptAgent",
+          "createdDateTime": "2026-09-02T00:00:00Z",
+          "lastModifiedDateTime": "2026-11-01T00:00:00Z"
+        }
+      ],
+      "@odata.nextLink": "https://graph.microsoft.com/v1.0/copilot/admin/catalog/packages?$skiptoken=k2"
+    }
+  }
+}

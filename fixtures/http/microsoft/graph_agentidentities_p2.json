@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentity?$top=100&$skiptoken=g2"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "value": [
+        {
+          "id": "1b7313c4-0000-0000-0000-00000000cccc",
+          "displayName": "treasury-sweeper",
+          "accountEnabled": false,
+          "createdDateTime": "2026-10-05T00:00:00Z",
+          "servicePrincipalType": "ServiceIdentity",
+          "agentIdentityBlueprintId": "bp-2",
+          "createdByAppId": "other-app"
+        }
+      ]
+    }
+  }
+}

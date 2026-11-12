@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/bank-ai-prod/locations/us-central1/reasoningEngines/1220771026/runtimeRevisions"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "runtimeRevisions": [
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/1220771026/runtimeRevisions/rev-2",
+          "state": "ACTIVE",
+          "createTime": "2026-10-20T00:00:00Z"
+        },
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/1220771026/runtimeRevisions/rev-1",
+          "state": "ARCHIVED",
+          "createTime": "2026-10-02T09:00:00Z"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://discoveryengine.googleapis.com/v1alpha/projects/bank-ai-prod/locations/global/collections/default_collection/engines/ge-bank/assistants/default_assistant/agents",
+    "query": {
+      "pageSize": 100,
+      "pageToken": "ge2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "agents": [
+        {
+          "name": "projects/4417/locations/global/collections/default_collection/engines/ge-bank/assistants/default_assistant/agents/1784402",
+          "displayName": "hr-faq-workflow",
+          "description": "HR FAQ",
+          "state": "SUSPENDED",
+          "suspensionReason": "policy",
+          "sharingConfig": {
+            "scope": "ALL_USERS"
+          },
+          "createTime": "2026-09-11T00:00:00Z",
+          "updateTime": "2026-11-03T00:00:00Z"
+        }
+      ]
+    }
+  }
+}

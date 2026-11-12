@@ -1,0 +1,32 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://us-central1-aiplatform.googleapis.com/v1/projects/bank-ai-prod/locations/us-central1/reasoningEngines",
+    "query": {
+      "pageSize": 100,
+      "pageToken": "re2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "reasoningEngines": [
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/401391792873",
+          "displayName": "collections-letters",
+          "description": "collections-letters description",
+          "createTime": "2026-10-02T09:00:00Z",
+          "updateTime": "2026-11-01T08:12:09Z",
+          "etag": "AMEw9y",
+          "spec": {
+            "agentFramework": "langgraph",
+            "identityType": "IDENTITY_TYPE_UNSPECIFIED",
+            "effectiveIdentity": "service-4417@gcp-sa-aiplatform-re.iam.gserviceaccount.com",
+            "deploymentSpec": {}
+          }
+        }
+      ]
+    }
+  }
+}

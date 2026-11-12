@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources",
+    "query": {
+      "api-version": "2024-04-01"
+    },
+    "json": {
+      "query": "resources | where type =~ 'microsoft.cognitiveservices/accounts' and kind =~ 'AIServices'",
+      "options": {
+        "$top": 1000,
+        "resultFormat": "objectArray",
+        "$skipToken": "arg2"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "totalRecords": 2,
+      "count": 1,
+      "data": [
+        {
+          "id": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-priv/providers/Microsoft.CognitiveServices/accounts/bank-foundry-private",
+          "name": "bank-foundry-private",
+          "kind": "AIServices",
+          "location": "westeurope",
+          "subscriptionId": "22222222-2222-2222-2222-222222222222",
+          "resourceGroup": "rg-priv",
+          "tenantId": "aaaa1111-0000-0000-0000-000000000001",
+          "properties": {
+            "customSubDomainName": "bank-foundry-private",
+            "allowProjectManagement": true,
+            "publicNetworkAccess": "Disabled"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,43 +1,55 @@
 {
-  "bindingsByService": {
-    "projects/bank-ai-prod/locations/us-central1/services/payments-fraud-screener": [
-      {
-        "name": "projects/bank-ai-prod/locations/us-central1/services/payments-fraud-screener/bindings/payments-fraud-screener-endpoint",
-        "displayName": "payments-fraud-screener endpoint",
-        "createTime": "2026-10-02T09:05:00Z",
-        "target": {
-          "agentEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/122077102645"
-        },
-        "authProviderBinding": {
-          "serviceAccount": "sa-fraud-screener@bank-ai-prod.iam.gserviceaccount.com"
-        }
-      }
-    ],
-    "projects/bank-ai-prod/locations/us-central1/services/collections-outreach-agent": [
-      {
-        "name": "projects/bank-ai-prod/locations/us-central1/services/collections-outreach-agent/bindings/collections-outreach-agent-endpoint",
-        "displayName": "collections-outreach-agent endpoint",
-        "createTime": "2026-10-02T09:05:00Z",
-        "target": {
-          "agentEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/401391792873"
-        },
-        "authProviderBinding": {
-          "serviceAccount": "sa-collections-outreach@bank-ai-prod.iam.gserviceaccount.com"
-        }
-      }
-    ],
-    "projects/bank-ai-prod/locations/us-central1/services/regulatory-report-drafter": [
-      {
-        "name": "projects/bank-ai-prod/locations/us-central1/services/regulatory-report-drafter/bindings/regulatory-report-drafter-endpoint",
-        "displayName": "regulatory-report-drafter endpoint",
-        "createTime": "2026-10-02T09:05:00Z",
-        "target": {
-          "agentEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/548145599405"
-        },
-        "authProviderBinding": {
-          "serviceAccount": "default-compute"
-        }
-      }
-    ]
-  }
+  "bindings": [
+    {
+      "name": "projects/bank-ai-prod/locations/us-central1/bindings/payments-fraud-screener-to-payments-hub",
+      "source": {
+        "identifier": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:122077102645"
+      },
+      "target": {
+        "identifier": "urn:mcp:projects-4417:payments-hub"
+      },
+      "authProviderBinding": {
+        "authProvider": "projects/bank-ai-prod/locations/us-central1/authProviders/payments-hub-oauth",
+        "scopes": [
+          "https://www.googleapis.com/auth/cloud-platform"
+        ]
+      },
+      "createTime": "2026-10-02T09:05:00Z",
+      "updateTime": "2026-10-02T09:05:00Z"
+    },
+    {
+      "name": "projects/bank-ai-prod/locations/us-central1/bindings/collections-outreach-agent-to-collections-crm",
+      "source": {
+        "identifier": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:401391792873"
+      },
+      "target": {
+        "identifier": "urn:mcp:projects-4417:collections-crm"
+      },
+      "authProviderBinding": {
+        "authProvider": "projects/bank-ai-prod/locations/us-central1/authProviders/collections-crm-oauth",
+        "scopes": [
+          "https://www.googleapis.com/auth/cloud-platform"
+        ]
+      },
+      "createTime": "2026-10-02T09:05:00Z",
+      "updateTime": "2026-10-02T09:05:00Z"
+    },
+    {
+      "name": "projects/bank-ai-prod/locations/us-central1/bindings/regulatory-report-drafter-to-gl-reporting",
+      "source": {
+        "identifier": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:548145599405"
+      },
+      "target": {
+        "identifier": "urn:mcp:projects-4417:gl-reporting"
+      },
+      "authProviderBinding": {
+        "authProvider": "projects/bank-ai-prod/locations/us-central1/authProviders/gl-reporting-oauth",
+        "scopes": [
+          "https://www.googleapis.com/auth/cloud-platform"
+        ]
+      },
+      "createTime": "2026-10-02T09:05:00Z",
+      "updateTime": "2026-10-02T09:05:00Z"
+    }
+  ]
 }

@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://cloudasset.googleapis.com/v1/organizations/123456:searchAllResources",
+    "query": {
+      "assetTypes": "aiplatform.googleapis.com/ReasoningEngine",
+      "pageToken": "cai2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "results": [
+        {
+          "name": "//aiplatform.googleapis.com/projects/trading-ml-prod/locations/europe-west4/reasoningEngines/77",
+          "assetType": "aiplatform.googleapis.com/ReasoningEngine",
+          "project": "projects/5528",
+          "location": "europe-west4",
+          "displayName": "trading-signal"
+        }
+      ]
+    }
+  }
+}

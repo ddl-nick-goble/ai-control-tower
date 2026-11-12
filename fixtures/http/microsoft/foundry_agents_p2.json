@@ -1,0 +1,60 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://bank-foundry.services.ai.azure.com/api/projects/credit-ops/agents",
+    "query": {
+      "api-version": "v1",
+      "limit": 100,
+      "after": "credit-memo-drafter"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "data": [
+        {
+          "object": "agent",
+          "id": "kyc-refresher",
+          "name": "kyc-refresher",
+          "state": "enabled",
+          "instance_identity": {
+            "principal_id": "1b7313c4-0000-0000-0000-00000000bbbb",
+            "client_id": "kyc-client",
+            "status": "active"
+          },
+          "versions": {
+            "latest": {
+              "object": "agent.version",
+              "name": "kyc-refresher",
+              "version": "1",
+              "status": "active",
+              "description": "Refreshes KYC",
+              "created_at": 1762400000,
+              "metadata": {},
+              "definition": {
+                "kind": "hosted",
+                "environment_variables": {
+                  "AZURE_OPENAI_KEY": "sk-live-ABC123SECRET"
+                },
+                "tools": [
+                  {
+                    "type": "mcp",
+                    "server_label": "kyc-hub",
+                    "server_url": "https://kyc.bank.internal/",
+                    "headers": {
+                      "authorization": "Bearer topsecrettoken"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "first_id": "kyc-refresher",
+      "last_id": "kyc-refresher",
+      "has_more": false
+    }
+  }
+}

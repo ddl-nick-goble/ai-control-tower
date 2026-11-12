@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://graph.microsoft.com/v1.0/copilot/admin/catalog/packages?$skiptoken=k2"
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "value": [
+        {
+          "id": "P_2",
+          "displayName": "Branch Ops Assistant",
+          "type": "external",
+          "shortDescription": "Branch ops",
+          "isBlocked": true,
+          "publisher": "Contoso",
+          "version": "2.0.0",
+          "agentIdentityId": null,
+          "supportedHosts": [
+            "Teams"
+          ],
+          "createdDateTime": "2026-08-01T00:00:00Z",
+          "lastModifiedDateTime": "2026-10-30T00:00:00Z"
+        }
+      ]
+    }
+  }
+}

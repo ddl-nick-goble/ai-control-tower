@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://management.azure.com/subscriptions",
+    "query": {
+      "api-version": "2022-12-01"
+    }
+  },
+  "response": {
+    "status": 403,
+    "headers": {},
+    "body": {
+      "error": {
+        "code": "AuthorizationFailed",
+        "message": "The client does not have authorization to perform action 'Microsoft.Resources/subscriptions/read' over scope '/subscriptions/11111111-1111-1111-1111-111111111111'"
+      }
+    }
+  }
+}

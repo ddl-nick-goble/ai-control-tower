@@ -1,0 +1,27 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentity",
+    "query": {
+      "$top": 100
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "value": [
+        {
+          "id": "1b7313c4-0000-0000-0000-00000000aaaa",
+          "displayName": "credit-memo-drafter",
+          "accountEnabled": true,
+          "createdDateTime": "2026-09-01T00:00:00Z",
+          "servicePrincipalType": "ServiceIdentity",
+          "agentIdentityBlueprintId": "bp-1",
+          "createdByAppId": "0736f41a-0425-4b46-bdb5-1563eff02385"
+        }
+      ],
+      "@odata.nextLink": "https://graph.microsoft.com/v1.0/servicePrincipals/microsoft.graph.agentIdentity?$top=100&$skiptoken=g2"
+    }
+  }
+}

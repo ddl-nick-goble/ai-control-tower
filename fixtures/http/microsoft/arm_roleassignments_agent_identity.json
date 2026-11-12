@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://management.azure.com/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Authorization/roleAssignments",
+    "query": {
+      "api-version": "2022-04-01",
+      "$filter": "assignedTo('1b7313c4-0000-0000-0000-00000000aaaa')"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "value": [
+        {
+          "properties": {
+            "principalId": "1b7313c4-0000-0000-0000-00000000aaaa",
+            "roleDefinitionId": "/providers/Microsoft.Authorization/roleDefinitions/2a2b9908-6ea1-4ae2-8e65-a410df84e7d1",
+            "scope": "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-kyc/providers/Microsoft.Storage/storageAccounts/sa-kyc"
+          }
+        }
+      ]
+    }
+  }
+}
