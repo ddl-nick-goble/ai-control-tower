@@ -1,6 +1,6 @@
 # Plan: Connect a provider, then intake agents
 
-Status: PROPOSED 2026-11-12. Waiting for Nick's decisions in section 6.
+Status: APPROVED 2026-11-12 (Nick: "get going"). Demo grade: sample tenants first, no security hardening. Decisions taken: D-1 act-svc service account created; D-2 no test accounts (sample + mocked HTTP); D-3 one Google Cloud card; D-4 sync default Daily 02:00; D-5 sample agents importable into Fleet with the "Sample data" badge; D-6 this plan runs before the remaining Superblocks tasks.
 Supersedes the import-wizard plan (build/import-wizard-plan.md, T-40..T-46) and Superblocks T-27/T-31. Its adapter contract and "crawl as a Domino Job" survive.
 Inputs:
 - research: build/research/providers/{aws-agentcore, google-vertex, google-agents, azure-foundry, databricks, snowflake, domino-token}.md
@@ -64,33 +64,35 @@ The remaining Superblocks tasks (T-21..T-26, T-28..T-30, T-32/T-33) follow after
 
 ## 4. Acceptance criteria
 
-**PO-1 Connections core**
-- PO-1.1 POST /api/connections {provider} creates a draft with a one-time state nonce: 15-minute expiry, bound to the caller. It returns the provider's setup artifact, pre-filled with issuer, pinned subject, audience, nonce and return URL:
-  - AWS: quick-create URL + template
-  - Google and Microsoft: a Cloud Shell command
-  - Databricks: a CLI script
-  - Snowflake: a SQL worksheet
-  No artifact contains a secret.
-- PO-1.2 The state machine runs draft → waiting → trusted → verified | partial → connected | needs_attention | failed. GET /api/connections/{id} reports the state, and an illegal transition returns 409.
-- PO-1.3 Callback (GET /api/connections/callback?state=…) moves the matching draft to trusted:
-  - An unknown, expired, reused or other-user state is rejected with a plain-language error.
-  - The callback never trusts a URL or host from the query beyond values the provider artifact defined.
-- PO-1.4 Paste-anything parser: POST /api/connections/{id}/paste classifies the input and is unit-tested on real-looking samples:
-  - AWS role ARN
-  - GCP project/number or WIF provider path
-  - Azure subscription/tenant/MI client id
-  - Databricks account id, connection code or any Databricks URL
-  - Snowflake Snowsight URL or account identifier
-  - A2A card URL → "use Other"
-  - Anything else → "not recognised", with examples
-- PO-1.5 Federation: one function per provider exchanges a fresh Domino token for a provider credential (AWS STS AssumeRoleWithWebIdentity, Google STS + SA impersonation, Entra client assertion, Databricks /oidc/v1/token, Snowflake WIF bearer). Each is tested against recorded HTTP. Tokens are cached for less than their lifetime and never written to the DB or logs.
-- PO-1.6 Secrets:
-  - Fallback credentials (OAuth refresh tokens, keys) are stored encrypted with ACT_SECRET_KEY.
-  - No API response, log line or plaintext DB column contains a secret or token.
-  - A test greps the DB file and captured logs for planted secret values.
-- PO-1.7 Redaction: redact() masks env-var values, connection keys and anything matching secret patterns in raw provider payloads before storage, with tests per provider sample.
-- PO-1.8 A sample-tenant connection works with no credentials. It carries sample=true everywhere it appears in the API.
-- PO-1.9 Every write route requires sign-in. Connect, disconnect and import write audit events naming the user.
+**PO-1 Connections core (demo grade)**
+- PO-1.1 POST /api/connections {provider, sample?} creates a connection in state draft with a one-time state token, and returns the provider's setup artifact pre-filled with the Domino issuer (https://se-demo.domino.tech/auth/realms/DominoRealm), the act-svc subject, audience "domino-platform", the state token and the App's return URL:
+  - aws: a CloudFormation quick-create URL plus the template body (a read-only role trusting the issuer)
+  - google: a Cloud Shell command
+  - microsoft: a Cloud Shell (az) command
+  - databricks: a CLI script that prints a connection code
+  - snowflake: a SQL worksheet whose last SELECT builds the "Finish in ACT" link
+  Artifacts are text generated from templates in templates/provisioning/. They only need to look right and be copy-pasteable, not be validated against a live cloud.
+- PO-1.2 States: draft → waiting → trusted → verified | partial → connected, plus needs_attention | failed. GET /api/connections lists them and GET /api/connections/{id} returns one, with state, provider, sample flag, scopes, last check, last scan and agent count. DELETE disconnects: the connection is marked disconnected and its agents are kept.
+- PO-1.3 Callback GET /api/connections/callback?state=… moves the matching connection to trusted. An unknown or already-used state returns a plain-language error, not a status code.
+- PO-1.4 Paste-anything: POST /api/connections/{id}/paste {text} classifies the input. It recognises:
+  - an AWS role ARN
+  - a GCP project id or number, or a WIF provider path
+  - an Azure subscription, tenant or client id (GUIDs)
+  - a Databricks account id, connection code or Databricks URL
+  - a Snowflake Snowsight URL or account identifier
+  - an A2A agent-card URL, answered with "use Other"
+  - anything else, answered with "not recognised" plus examples
+  A recognised value moves the connection to trusted. Unit-tested with realistic samples.
+- PO-1.5 Sample mode (the demo path). A connection created with sample=true:
+  - walks the whole flow with no cloud: draft → waiting, then trusted automatically after about 3 s, detected by GET polling (no user action)
+  - check-access returns a realistic permission checklist with one "missing" item and its plain-language fix, which "Re-check" then turns green
+  - scopes come from the sample tenant
+  - it is flagged sample=true in every response
+  Sample tenants are seeded for all five clouds from fixtures.
+- PO-1.6 POST /api/connections/{id}/check returns the per-permission ok/missing list (from the adapter's test_connection, or the sample data) and moves the state to verified or partial. GET /api/connections/{id}/scopes returns the scope tree, all selected by default. PUT /api/connections/{id}/scopes saves the selection.
+- PO-1.7 Federation helper: backend/connections/federation.py has one function per provider that turns a fresh Domino token (localhost:8899/access-token) into a provider credential (AWS STS AssumeRoleWithWebIdentity, Google STS + SA impersonation, Entra client assertion, Databricks /oidc/v1/token, Snowflake WIF bearer). Each is unit-tested with mocked HTTP. Live use is out of scope until there is a test account.
+- PO-1.8 Connect, disconnect and paste write audit events with the Domino user, reusing the existing audit/event helpers.
+Dropped for the demo (Nick 2026-11-12): encryption extras, secret-scan tests, per-provider redaction tests, user-bound state tokens, trust-pinning checks.
 
 **PO-2 Suggested scores** (was IW-5)
 - All seven scores are pre-filled, each with a one-line reason citing the tool, scope or setting that drove it.
