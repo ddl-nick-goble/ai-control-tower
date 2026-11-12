@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": [
+    {
+      "workspace_id": 1111111111111111,
+      "workspace_name": "payments-prod",
+      "deployment_name": "dbc-a1b2c3d4-e5f6",
+      "aws_region": "us-east-1",
+      "cloud": "aws",
+      "workspace_status": "RUNNING",
+      "pricing_tier": "ENTERPRISE",
+      "creation_time": 1740000000000,
+      "account_id": "a1b2c3d4-0000-4000-8000-0123456789ab"
+    }
+  ]
+}

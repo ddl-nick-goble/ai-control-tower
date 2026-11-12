@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "supervisor_agents": [
+      {
+        "name": "supervisor-agents/3f2a7c10-8b9d-4e61-a2c3-5d4e6f708192",
+        "supervisor_agent_id": "3f2a7c10-8b9d-4e61-a2c3-5d4e6f708192",
+        "display_name": "payments-ops-supervisor",
+        "description": "Routes payment exception questions to the right tool.",
+        "instructions": "Route, never approve.",
+        "creator": "payments-ops@example-bank.com",
+        "create_time": "2026-07-01T09:00:00Z",
+        "endpoint_name": "mas-3f2a7c10-endpoint",
+        "experiment_id": "4120398798765432"
+      }
+    ],
+    "next_page_token": ""
+  }
+}

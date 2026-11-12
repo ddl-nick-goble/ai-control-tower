@@ -1,0 +1,137 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "endpoints": [
+      {
+        "name": "agents_bank_prod-agents-payments_exception",
+        "id": "7d1c9e0a4b2f4d6e8a1b3c5d7e9f0a12",
+        "creator": "ops-platform@example-bank.com",
+        "creation_timestamp": 1759395600000,
+        "last_updated_timestamp": 1793603733000,
+        "task": "agent/v1/responses",
+        "state": {
+          "ready": "READY",
+          "config_update": "NOT_UPDATING"
+        },
+        "tags": [
+          {
+            "key": "owner",
+            "value": "payments-ops@example-bank.com"
+          }
+        ],
+        "config": {
+          "served_entities": [
+            {
+              "name": "payments_exception-3",
+              "entity_name": "payments_exception",
+              "entity_version": "3",
+              "workload_size": "Small",
+              "scale_to_zero_enabled": true,
+              "state": {
+                "deployment": "DEPLOYMENT_READY"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "agents_bank_prod-agents-collections_notes",
+        "id": "2b8e5f1c9a3d4e7b8c0d1f2a3b4c5d6e",
+        "creator": "collections-dev@example-bank.com",
+        "creation_timestamp": 1760000000000,
+        "last_updated_timestamp": 1793500000000,
+        "state": {
+          "ready": "READY",
+          "config_update": "UPDATE_FAILED"
+        },
+        "tags": [],
+        "config": {
+          "served_entities": [
+            {
+              "name": "collections_notes-1",
+              "entity_name": "collections_notes",
+              "entity_version": "1",
+              "workload_size": "Small",
+              "scale_to_zero_enabled": true,
+              "state": {
+                "deployment": "DEPLOYMENT_READY"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "databricks-claude-sonnet",
+        "id": "c0ffee00112233445566778899aabbcc",
+        "creator": "system",
+        "creation_timestamp": 1750000000000,
+        "last_updated_timestamp": 1750000000000,
+        "task": "llm/v1/chat",
+        "endpoint_type": "FOUNDATION_MODEL_API",
+        "state": {
+          "ready": "READY",
+          "config_update": "NOT_UPDATING"
+        },
+        "config": {
+          "served_entities": [
+            {
+              "name": "claude-sonnet",
+              "foundation_model": {
+                "name": "claude-sonnet",
+                "display_name": "Claude Sonnet"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "openai-chat-proxy",
+        "id": "d1ce0b1a2c3d4e5f60718293a4b5c6d7",
+        "creator": "ml-platform@example-bank.com",
+        "creation_timestamp": 1755000000000,
+        "last_updated_timestamp": 1755000000000,
+        "task": "llm/v1/chat",
+        "state": {
+          "ready": "READY",
+          "config_update": "NOT_UPDATING"
+        },
+        "config": {
+          "served_entities": [
+            {
+              "name": "gpt",
+              "external_model": {
+                "provider": "openai",
+                "name": "gpt-4o",
+                "task": "llm/v1/chat"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "ka-3c9d1f20-endpoint",
+        "id": "e5f4a3b2c1d0948372615049382716aa",
+        "creator": "hr-ops@example-bank.com",
+        "creation_timestamp": 1756000000000,
+        "last_updated_timestamp": 1792000000000,
+        "state": {
+          "ready": "READY",
+          "config_update": "NOT_UPDATING"
+        },
+        "tags": [],
+        "config": {
+          "served_entities": [
+            {
+              "name": "ka",
+              "workload_size": "Small",
+              "scale_to_zero_enabled": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

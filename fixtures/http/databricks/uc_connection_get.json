@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "name": "bank_prod.agents.vendor_risk_conn",
+    "connection_type": "HTTP",
+    "owner": "vendor-risk@example-bank.com",
+    "full_name": "bank_prod.agents.vendor_risk_conn",
+    "options": {
+      "host": "https://vendor-risk.internal.example-bank.com",
+      "base_path": "/v1",
+      "bearer_token": "[REDACTED]"
+    }
+  }
+}

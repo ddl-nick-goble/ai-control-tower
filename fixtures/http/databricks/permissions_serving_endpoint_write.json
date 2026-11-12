@@ -1,0 +1,30 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "object_id": "/serving-endpoints/7d1c9e0a4b2f4d6e8a1b3c5d7e9f0a12",
+    "object_type": "serving-endpoint",
+    "access_control_list": [
+      {
+        "user_name": "ops-platform@example-bank.com",
+        "all_permissions": [
+          {
+            "permission_level": "CAN_MANAGE",
+            "inherited": false
+          }
+        ]
+      },
+      {
+        "group_name": "act-readers",
+        "all_permissions": [
+          {
+            "permission_level": "CAN_MANAGE",
+            "inherited": false
+          }
+        ]
+      }
+    ]
+  }
+}

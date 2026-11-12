@@ -1,0 +1,13 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "metastore_id": "5f0c3a7e-8d21-4b6a-9c14-2e7f1a3b5d90",
+    "name": "bank-prod-metastore",
+    "cloud": "aws",
+    "region": "us-east-1",
+    "owner": "uc-admins"
+  }
+}

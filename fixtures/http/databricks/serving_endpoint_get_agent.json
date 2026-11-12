@@ -1,0 +1,70 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "name": "agents_bank_prod-agents-payments_exception",
+    "id": "7d1c9e0a4b2f4d6e8a1b3c5d7e9f0a12",
+    "creator": "ops-platform@example-bank.com",
+    "creation_timestamp": 1759395600000,
+    "last_updated_timestamp": 1793603733000,
+    "task": "agent/v1/responses",
+    "description": "Looks up payment exceptions and proposes a resolution.",
+    "state": {
+      "ready": "READY",
+      "config_update": "NOT_UPDATING"
+    },
+    "tags": [
+      {
+        "key": "owner",
+        "value": "payments-ops@example-bank.com"
+      }
+    ],
+    "endpoint_url": "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com/serving-endpoints/agents_bank_prod-agents-payments_exception/invocations",
+    "permission_level": "CAN_VIEW",
+    "config": {
+      "config_version": 4,
+      "traffic_config": {
+        "routes": [
+          {
+            "served_model_name": "payments_exception-3",
+            "traffic_percentage": 100
+          }
+        ]
+      },
+      "served_entities": [
+        {
+          "name": "payments_exception-3",
+          "entity_name": "bank_prod.agents.payments_exception",
+          "entity_version": "3",
+          "environment_vars": {
+            "OPENAI_API_KEY": "{{secrets/payments/openai_key}}"
+          },
+          "workload_size": "Small",
+          "scale_to_zero_enabled": true,
+          "state": {
+            "deployment": "DEPLOYMENT_READY"
+          },
+          "creator": "ops-platform@example-bank.com",
+          "creation_timestamp": 1759395600000
+        }
+      ]
+    },
+    "ai_gateway": {
+      "inference_table_config": {
+        "catalog_name": "bank_prod",
+        "schema_name": "agents",
+        "table_name_prefix": "payments_exception",
+        "enabled": true
+      },
+      "rate_limits": [
+        {
+          "calls": 100,
+          "renewal_period": "minute",
+          "key": "endpoint"
+        }
+      ]
+    }
+  }
+}

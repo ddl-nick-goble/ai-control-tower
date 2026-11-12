@@ -1,0 +1,88 @@
+{
+  "agent_context": [
+    {
+      "full_name": "bank_prod.agents.liquidity-forecast-agent",
+      "agent_service_id": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51",
+      "created_at": 1759395600000,
+      "updated_at": 1793603733000,
+      "endpoint_name": "agents_liquidity_forecast_agent",
+      "identity": {
+        "type": "service_principal",
+        "principal": "sp-liquidity-forecast",
+        "application_id": "15d4c3b2-a1f0-4e9c-86a4-f5b34c2d1e7a",
+        "distinct": true
+      },
+      "tags": [
+        {
+          "key": "owner",
+          "value": "treasury-analytics@example-bank.com"
+        },
+        {
+          "key": "criteria_autonomy",
+          "value": "autonomous"
+        }
+      ],
+      "properties": {
+        "owner": "treasury-analytics@example-bank.com",
+        "tools": [
+          "query_cash_flows",
+          "run_forecast_model",
+          "publish_forecast"
+        ],
+        "data_scopes": [
+          "treasury.cash_flows",
+          "market.rates"
+        ],
+        "systems": [
+          "Databricks-lakehouse",
+          "TMS"
+        ],
+        "criteria": {
+          "autonomy": "autonomous",
+          "consequence": "internal_report",
+          "human_in_loop": false
+        }
+      }
+    },
+    {
+      "full_name": "bank_prod.agents.model-risk-doc-agent",
+      "agent_service_id": "b8f2e3d5-4c60-4b7e-9daf-1a2b3c4d5e62",
+      "created_at": 1759395600000,
+      "updated_at": 1793102991000,
+      "endpoint_name": "agents_model_risk_doc_agent",
+      "identity": {
+        "type": "none",
+        "note": "runs as the creating user's identity"
+      },
+      "tags": [
+        {
+          "key": "owner",
+          "value": "model-risk-mgmt@example-bank.com"
+        },
+        {
+          "key": "criteria_autonomy",
+          "value": "assistive"
+        }
+      ],
+      "properties": {
+        "owner": "model-risk-mgmt@example-bank.com",
+        "tools": [
+          "fetch_model_inventory",
+          "draft_validation_doc"
+        ],
+        "data_scopes": [
+          "mrm.inventory"
+        ],
+        "systems": [
+          "MRM-system"
+        ],
+        "criteria": {
+          "autonomy": "assistive",
+          "consequence": "internal_draft",
+          "human_in_loop": true
+        }
+      }
+    },
+    "Demo replay only. What ACT assembles for each agent service from its tags, grants, backing model dependencies and run history; the Beta list API itself returns none of this. Keyed by full name."
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "agent_services": [
+      {
+        "name": "agent-services/bank_prod.agents.vendor_risk_agent",
+        "agent_service_type": "AGENT_SERVICE_TYPE_EXTERNAL",
+        "comment": "Vendor risk screening agent hosted by the vendor risk team.",
+        "created_by": "vendor-risk@example-bank.com",
+        "config": {
+          "source_connection": {
+            "name": "connections/bank_prod.agents.vendor_risk_conn"
+          },
+          "base_path": "/v1/chat",
+          "system_prompt": "You screen vendors against the third-party risk policy."
+        }
+      }
+    ],
+    "next_page_token": ""
+  }
+}

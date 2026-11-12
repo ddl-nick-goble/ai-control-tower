@@ -1,0 +1,26 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "app_deployments": [
+      {
+        "deployment_id": "01f0b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
+        "create_time": "2026-10-28T16:40:00Z",
+        "update_time": "2026-10-28T16:42:10Z",
+        "status": {
+          "state": "SUCCEEDED"
+        }
+      },
+      {
+        "deployment_id": "01f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4",
+        "create_time": "2026-09-12T09:00:00Z",
+        "update_time": "2026-09-12T09:02:00Z",
+        "status": {
+          "state": "SUCCEEDED"
+        }
+      }
+    ]
+  }
+}
