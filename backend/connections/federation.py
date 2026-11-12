@@ -22,6 +22,9 @@ def _form(d: dict) -> str:
     return urlencode(d)
 
 
+MS_AUDIENCES = {"arm_token": "https://management.azure.com/.default",
+                "foundry_token": "https://ai.azure.com/.default",
+                "graph_token": "https://graph.microsoft.com/.default"}
 FORM = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
 
 
@@ -97,6 +100,13 @@ def exchange(provider: str, cfg: dict, send=None, token_getter=None) -> dict:
     tok = (token_getter or domino_token)()
     if provider == "snowflake":
         return {"token": f"WIF.OIDC.{tok}", "expires_in": 300}
+    if provider == "microsoft":
+        # One token per audience: ARM, Foundry and Graph each need their own.
+        out = {}
+        for key, scope in MS_AUDIENCES.items():
+            got = parse_exchange_response(provider, send(*build_exchange_request(provider, tok, {**cfg, "scope": scope})))
+            out[key] = got["token"]
+        return {"token": out["arm_token"], "expires_in": got["expires_in"], **out}
     out = parse_exchange_response(provider, send(*build_exchange_request(provider, tok, cfg)))
     if provider == "google" and cfg.get("service_account"):
         out = parse_exchange_response(provider, send(*build_impersonation_request(out["token"], cfg["service_account"])))

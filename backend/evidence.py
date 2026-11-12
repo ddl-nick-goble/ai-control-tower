@@ -30,6 +30,10 @@ class AgentNotFound(Exception):
     pass
 
 
+class SampleAgent(Exception):
+    """Sample (demo) agents are excluded from evidence packs."""
+
+
 def clean(v):
     """Never emit vendor model ids; collapse newlines so values stay on one Markdown line."""
     if v is None:
@@ -398,6 +402,8 @@ def _dataset_location(folder_name: str) -> str:
 
 def generate(agent_id: str, user_id: str, username: str) -> dict:
     d = _load(agent_id)  # 404 early
+    if (d["agent"].record or {}).get("sample"):
+        raise SampleAgent(agent_id)
     bundle_id = d["agent"].bundle_id or None
     now = datetime.now(timezone.utc)
     folder = evidence_dir() / safe_id(agent_id)

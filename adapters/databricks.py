@@ -119,6 +119,9 @@ class DatabricksAdapter(AdapterBase):
 
     def _workspace_hosts(self, cfg, creds):
         hosts = {str(w["id"]): w.get("host") for w in (cfg.get("workspaces") or []) if w.get("id") and w.get("host")}
+        single = cfg.get("host") or cfg.get("databricks_url")
+        if not hosts and single:
+            hosts = {"default": str(single).rstrip("/")}
         return hosts
 
     def _account_workspaces(self, cfg, creds):
