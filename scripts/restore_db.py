@@ -63,8 +63,8 @@ def _is_sqlite(p: Path) -> bool:
 def dest_in_use(dest: Path):
     """Return (kind, message): kind is "" (free), "busy" (another process holds a lock; --force cannot
     override), or "unopenable" (corrupt, or a hot -journal; --force may move it aside).
-    Never mutates the dest: lock checks first, then a read-only open (no exclusive transaction, which could
-    checkpoint or remove -wal/-shm)."""
+    Never mutates the dest: lock checks first, then header bytes read directly, then an immutable read-only open
+    (no exclusive transaction, never touches -wal/-shm)."""
     for suffix in SIBLINGS:
         p = str(dest) + suffix
         if os.path.exists(p) and _locked(p):
@@ -76,11 +76,13 @@ def dest_in_use(dest: Path):
     if _is_sqlite(dest) and jr.exists() and jr.stat().st_size > 0:
         # Probing would roll the hot journal back, so do not open the DB at all.
         return "unopenable", f"{jr} is a non-empty rollback journal (hot journal left by a stopped app). {hint}"
-    if dest.exists() and dest.stat().st_size >= 100:  # shorter than a SQLite header: nothing to protect
+    if dest.exists() and dest.stat().st_size > 0:  # absent or zero-length dest: nothing to protect
         if not _is_sqlite(dest):
             return "unopenable", f"{dest} is not a readable SQLite database. {hint}"
         try:
-            c = sqlite3.connect(f"file:{dest}?mode=ro", uri=True, timeout=0.5)
+            # immutable=1: no locking, never reads or rewrites -wal/-shm (mode=ro alone can rewrite a stale -shm).
+            # Busy was already decided by the lock checks above; this only validates the main file.
+            c = sqlite3.connect(f"file:{dest}?mode=ro&immutable=1", uri=True, timeout=0.5)
             try:
                 c.execute("SELECT count(*) FROM sqlite_master").fetchall()
             finally:
