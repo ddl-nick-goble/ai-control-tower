@@ -1,11 +1,11 @@
 # ACT build status
 
-Updated: 2026-11-11 (session resume 3). Integration branch: `main` @ e76611a. Build spend about $112+ of $1,900 (see cost log).
+Updated: 2026-11-12 (session resume 4). Integration branch: `main` @ a35afbc. Build spend about $132 of $1,900 (see cost log).
 
 ## Wave W2 in progress (see build/plan.md "Combined schedule")
 - T-39 Settings page: MERGED (311c986), post-merge 634 pass / 3 skip. Follow-ups queued as T-39f.
-- T-19b Agent + Run pages: rebased onto main (64dfc8d), final code review approved with follow-ups (T-19f). UI run 4 (pre-merge, full suite) running, then design review r4, then merge.
-- T-47 parallel e2e harness: H-1/H-2/H-5 done; H-3 (xdist) and H-4 (two suites at once) runs going.
+- T-19b Agent + Run pages: final code review approved with follow-ups (T-19f). UI run 4 restarted 2026-11-12 (previous run interrupted), then design review r4, then merge.
+- T-47 parallel e2e harness: H-1/H-2/H-5 done; H-3 (xdist) and H-4 (two suites at once) restarted 2026-11-12.
 - Next: W3 T-20 (navigation + routes for the Superblocks screens).
 
 Standing rule from Nick: a design agent (visual-reviewer) produces a design brief before and a review after every frontend build.
