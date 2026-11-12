@@ -113,11 +113,11 @@ def start_scan(cid, user):
     return {"scan_id": sid, "sample": False, "job_id": job["job_id"], "job_url": job["job_url"]}
 
 
-def run_sync(connection_id):
-    """The scheduled-sync entry point: run a scan, never import. -> the scan id."""
+def run_sync(connection_id, manual=True):
+    """Run a sync: a scan that never imports. manual=False is the saved schedule's run. -> the scan id."""
     with db.engine.connect() as cx:
         row = cx.execute(select(db.connections).where(db.connections.c.id == connection_id)).first()
-    sid = create_scan(connection_id, None, "sync", bool(row and row.sample))
+    sid = create_scan(connection_id, None, "manual_sync" if manual else "sync", bool(row and row.sample))
     run_scan(sid)
     return sid
 
@@ -169,6 +169,11 @@ def _run_scan(sid, eng):
     progress = [{"scope": s or "all", "found": 0, "errors": [], "state": "queued"} for s in scopes]
     set_scan(sid, eng, progress=copy.deepcopy(progress))
     found = {}  # native_id -> SourceAgent
+    hidden = set()  # sample fleet fixtures not yet in the fleet: never shown as New
+    if fleet:
+        with eng.connect() as cx:
+            have = {r.native_id for r in cx.execute(select(db.agents.c.native_id))}
+        hidden = fleet - have
     for p, scope in zip(progress, scopes):
         p["state"] = "running"
         set_scan(sid, eng, progress=copy.deepcopy(progress))
@@ -181,20 +186,24 @@ def _run_scan(sid, eng):
                 set_scan(sid, eng, progress=copy.deepcopy(progress))
         try:
             agents = adapter.discover(cfg, creds, [scope] if scope else [], progress=tick)
-            p["found"] = len(agents)
+            # An agent counts once, under the first scope that returns it, so scope counts add up to the total found.
+            if conn.sample and len(scopes) > 1:
+                # The sample adapter returns the whole tenant for any scope; give each agent one scope, spread evenly.
+                shown = sorted((a for a in agents if a.native_id not in hidden), key=lambda a: a.native_id)
+                agents = [a for j, a in enumerate(shown) if j % len(scopes) == scopes.index(scope)]
+            fresh = {}
             for sa in agents:
-                found.setdefault(sa.native_id, sa)
+                if sa.native_id not in found and sa.native_id not in hidden:
+                    fresh.setdefault(sa.native_id, sa)
+            found.update(fresh)
+            p["found"] = len(fresh)
             p["state"] = "done"
         except Exception as e:  # noqa: BLE001
             p["errors"].append(str(e)[:300])
             p["state"] = "failed"
         set_scan(sid, eng, progress=copy.deepcopy(progress))
-    if fleet:
-        with eng.connect() as cx:
-            have = {r.native_id for r in cx.execute(select(db.agents.c.native_id))}
-        found = {k: v for k, v in found.items() if k not in fleet or k in have}
     failed = sum(1 for p in progress if p["errors"])
-    counts = stage(sid, scan.connection_id, found, bool(conn.sample), scan.kind == "sync", complete=not failed, eng=eng)
+    counts = stage(sid, scan.connection_id, found, bool(conn.sample), scan.kind in ("sync", "manual_sync"), complete=not failed, eng=eng)
     state = "failed" if failed == len(progress) else "partial" if failed else "done"
     ts = now_iso()
     with eng.begin() as cx:
@@ -296,16 +305,25 @@ def _finding(cx, agent_id, kind, message, detail):
 
 # ------------------------------------------------------------------ staged rows: view, edit, import
 def effective(row) -> dict:
-    """The stored PO-2 suggestion with the user's overrides applied; the tier is recomputed."""
+    """The stored PO-2 suggestion with the user's overrides applied; the tier is recomputed. An override keyed "tier"
+    ({score: 1-4, reason}) sets the tier itself (the Change tier control); suggested_tier is what ACT proposed."""
     sug = copy.deepcopy(row.suggestion or {})
     if not sug:
         return {}
-    for crit, o in (row.overrides or {}).items():
+    ovr = dict(row.overrides or {})
+    tier_ovr = ovr.pop("tier", None)
+    for crit, o in ovr.items():
         before = sug["suggestions"][crit]["score"]
         sug["suggestions"][crit] = {"score": o["score"], "evidence": "override",
                                     "reason": f"Override: {o['reason']} (suggested {before})"}
     r = score_tier({k: v["score"] for k, v in sug["suggestions"].items()})
-    return {"suggestions": sug["suggestions"], "tier": r.tier, "weighted": r.score, "reasoning": r.reasoning}
+    base_tier = score_tier({k: v["score"] for k, v in (row.suggestion or {})["suggestions"].items()}).tier
+    tier, reasoning = r.tier, r.reasoning
+    if tier_ovr:
+        tier = int(tier_ovr["score"])
+        reasoning = f"Tier {tier} set by the reviewer: {tier_ovr['reason']} ACT computed {r.reasoning}"
+    return {"suggestions": sug["suggestions"], "tier": tier, "weighted": r.score, "reasoning": reasoning,
+            "suggested_tier": base_tier}
 
 
 def row_view(r) -> dict:
@@ -317,6 +335,34 @@ def row_view(r) -> dict:
             "imported_agent_id": r.imported_agent_id,
             "summary": {"tools": man.get("tools", []), "data_scopes": man.get("data_scopes", []),
                         "identity": rec.get("identity"), "description": rec.get("description")}}
+
+
+def with_current_tier(rows) -> list:
+    """Row views for staged rows, plus current_tier (the tier in ACT today) for Changed and Unchanged rows."""
+    views = [row_view(r) for r in rows]
+    ids = {r.id: (r.record or {}).get("id") for r in rows if r._mapping["class"] in ("changed", "unchanged")}
+    if ids:
+        with db.engine.connect() as cx:
+            tiers = {a.id: a.tier for a in cx.execute(select(db.agents.c.id, db.agents.c.tier).where(
+                db.agents.c.id.in_([i for i in ids.values() if i])))}
+        for v in views:
+            t = tiers.get(ids.get(v["id"]))
+            if t is not None and str(t).isdigit():
+                v["current_tier"] = int(t)
+    return views
+
+
+def dismiss_staged(rid, reason, user):
+    """Take an awaiting row out of the queue. -> row view, None when missing. The reason is audited."""
+    with db.engine.begin() as cx:
+        r = cx.execute(select(db.staged_agents).where(db.staged_agents.c.id == rid)).first()
+        if r is None:
+            return None
+        cx.execute(update(db.staged_agents).where(db.staged_agents.c.id == rid).values(awaiting=False))
+        _audit(cx, "staged_dismissed", act_id(r.platform, r.native_id),
+               {"staged_id": rid, "scan_id": r.scan_id, "connection_id": r.connection_id, "reason": reason},
+               actor=(user.user_id, user.username))
+        return row_view(cx.execute(select(db.staged_agents).where(db.staged_agents.c.id == rid)).first())
 
 
 def _stale(updated_at, secs=300) -> bool:
@@ -348,11 +394,12 @@ def update_staged(rid, owner, overrides, user):
     """-> row view, None when missing. Raises ValueError (message for a 422) on bad input."""
     crit_names = set(load_config()["criteria"])
     for crit, o in (overrides or {}).items():
-        if crit not in crit_names:
+        if crit not in crit_names and crit != "tier":
             raise ValueError(f"Unknown criterion: {crit}")
         sc = (o or {}).get("score")
-        if isinstance(sc, bool) or not isinstance(sc, int) or not 1 <= sc <= 5:
-            raise ValueError(f"The score for {crit} must be a whole number from 1 to 5.")
+        top = 4 if crit == "tier" else 5
+        if isinstance(sc, bool) or not isinstance(sc, int) or not 1 <= sc <= top:
+            raise ValueError(f"The score for {crit} must be a whole number from 1 to {top}.")
         if not str((o or {}).get("reason") or "").strip():
             raise ValueError(f"An override needs a reason ({crit}).")
     with db.engine.begin() as cx:
@@ -366,8 +413,10 @@ def update_staged(rid, owner, overrides, user):
             merged = dict(r.overrides or {})
             for crit, o in overrides.items():
                 before = ((r.suggestion or {}).get("suggestions") or {}).get(crit, {}).get("score")
+                if crit == "tier":
+                    before = effective(r).get("suggested_tier")
                 merged[crit] = {"score": o["score"], "reason": o["reason"].strip()}
-                _audit(cx, "criteria_override", act_id(r.platform, r.native_id),
+                _audit(cx, "tier_override" if crit == "tier" else "criteria_override", act_id(r.platform, r.native_id),
                        {"agent_ref": act_id(r.platform, r.native_id), "criterion": crit, "from": before,
                         "to": o["score"], "reason": o["reason"].strip(), "staged_id": rid},
                        actor=(user.user_id, user.username))

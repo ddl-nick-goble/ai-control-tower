@@ -62,7 +62,7 @@ def staged(sid: str, cls: str = Query("", alias="class"), _user: User = Depends(
         q = q.where(db.staged_agents.c["class"] == cls)
     with db.engine.connect() as cx:
         rows = cx.execute(q.order_by(db.staged_agents.c.id)).all()
-    return {"rows": [discovery.row_view(r) for r in rows]}
+    return {"rows": discovery.with_current_tier(rows)}
 
 
 @router.patch("/api/staged/{rid}")
@@ -74,6 +74,17 @@ def patch_staged(rid: int, body: dict = Body(...), user: User = Depends(require_
         row = discovery.update_staged(rid, body.get("owner"), overrides, user)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if row is None:
+        raise HTTPException(404, "ACT has no staged agent with that id.")
+    return row
+
+
+@router.post("/api/staged/{rid}/dismiss")
+def dismiss_staged(rid: int, body: dict = Body(...), user: User = Depends(require_user)):
+    reason = str(body.get("reason") or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(422, "Enter a reason of at least 10 characters.")
+    row = discovery.dismiss_staged(rid, reason, user)
     if row is None:
         raise HTTPException(404, "ACT has no staged agent with that id.")
     return row
@@ -117,16 +128,16 @@ def put_schedule(cid: str, body: dict = Body(...), _user: User = Depends(require
 def get_schedule(cid: str, _user: User = Depends(require_user)):
     row = _connection(cid)
     return {"schedule": row.schedule or "off", "time": row.schedule_time or "02:00", "job_id": row.schedule_job_id,
-            "sample": bool(row.sample)}
+            "saved": bool(row.schedule), "sample": bool(row.sample)}
 
 
 @router.post("/api/connections/{cid}/sync")
 def sync_now(cid: str, _user: User = Depends(require_user)):
     """Run a sync now (what the schedule does): stages new agents as Awaiting import, raises findings."""
-    _connection(cid)
-    if discovery.inline():
+    sample = bool(_connection(cid).sample)
+    if sample or discovery.inline():  # a sample sync is in-process and quick: it finishes before the answer, never listed as running
         return {"scan_id": discovery.run_sync(cid)}
-    sid = discovery.create_scan(cid, None, "sync", bool(_connection(cid).sample))
+    sid = discovery.create_scan(cid, None, "manual_sync", sample)
     threading.Thread(target=discovery.run_scan, args=(sid, db.engine), daemon=True).start()
     return {"scan_id": sid}
 
@@ -139,4 +150,4 @@ def awaiting(cid: str, _user: User = Depends(require_user)):
             db.staged_agents.c.connection_id == cid, db.staged_agents.c.awaiting.is_(True),
             db.staged_agents.c.imported_agent_id.is_(None)).order_by(db.staged_agents.c.id)).all()
         scan_id = rows[-1].scan_id if rows else None
-    return {"rows": [discovery.row_view(r) for r in rows], "scan_id": scan_id, "count": len(rows)}
+    return {"rows": discovery.with_current_tier(rows), "scan_id": scan_id, "count": len(rows)}

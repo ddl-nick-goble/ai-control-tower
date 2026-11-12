@@ -7,6 +7,7 @@ import Markdown from '../components/Markdown'
 import { Breadcrumb } from '../components/form'
 import EvidencePack, { useEvidencePack } from '../components/EvidencePack'
 import { StatusPill, TierBadge, useAsync, useHealth } from '../components/ui'
+import { SampleBadge } from '../components/connect/bits'
 import { Arrow, Card, ChevronRight, CopyButton, Dl, Empty, ErrorPage, IdValue, InlineError, None, Skel } from '../components/agentui'
 
 const CRITERIA = [
@@ -381,7 +382,11 @@ function AgentView({ id }) {
           <div className="ag-header-main">
             <h1 className="ds-title ag-name" title={clean(a.name)}>{clean(a.name)}</h1>
             <div className="ag-meta">
-              <span className="ds-chip-tag" data-testid="agent-source">{sourceLabel(a.source_platform)}</span>
+              {a.connection_id
+                ? <Link className="ds-chip-tag ag-source-link" data-testid="agent-source" to={`/connections/${a.connection_id}`} title="Open the connection this agent came from">{sourceLabel(a.source_platform)}<span className="ds-sr"> connection</span></Link>
+                : <span className="ds-chip-tag" data-testid="agent-source">{sourceLabel(a.source_platform)}</span>}
+              {a.sample && <SampleBadge />}
+              {a.source_disconnected && <span className="ds-chip-tag ag-gone" data-testid="agent-source-disconnected">Source disconnected</span>}
               <TierBadge tier={a.tier} />
               <StatusPill status={a.status} testid="agent-status" />
               <span className="ag-muted ag-meta-text">Owner {clean(a.owner) || '—'} · Last seen {fmtTs(a.last_seen)}</span>

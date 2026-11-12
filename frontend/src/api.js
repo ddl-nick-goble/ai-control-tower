@@ -74,6 +74,20 @@ export const connectionsApi = {
   scopes: (id) => request(`connections/${enc(id)}/scopes`),
   saveScopes: (id, selected) => request(`connections/${enc(id)}/scopes`, json('PUT', { selected })),
   // The return link lands on the SPA; its query string (state plus any role/project values) goes to the API as is.
+  scans: (id) => request(`connections/${enc(id)}/scans`),
+  startScan: (id) => post(`connections/${enc(id)}/scans`),
+  awaiting: (id) => request(`connections/${enc(id)}/awaiting`),
+  schedule: (id) => request(`connections/${enc(id)}/schedule`),
+  saveSchedule: (id, schedule, time = '02:00') => request(`connections/${enc(id)}/schedule`, json('PUT', { schedule, time })),
   callback: (search) => request('connections/callback' + (search || '')),
 }
 export const agentsApi = { list: () => request('agents') }
+
+// Scan, review and import (PO-4 API). Lists come back as {rows}.
+export const scansApi = {
+  get: (id) => request(`scans/${enc(id)}`),
+  staged: (id, cls) => request(`scans/${enc(id)}/staged${cls ? `?class=${enc(cls)}` : ''}`),
+  patch: (rowId, body) => request(`staged/${enc(rowId)}`, json('PATCH', body)),
+  dismiss: (rowId, reason) => request(`staged/${enc(rowId)}/dismiss`, json('POST', { reason })),
+  importRows: (id, ids) => request(`scans/${enc(id)}/import`, json('POST', { ids })),
+}

@@ -1,5 +1,6 @@
 // Small shared pieces for Connect a provider: icons, provider mark, status pills, sample badge, copy hook.
 import React from 'react'
+import { connectionsApi } from '../../api'
 
 const svg = (children, size = 14, vb = 16) => (props) => (
   <svg width={size} height={size} viewBox={`0 0 ${vb} ${vb}`} aria-hidden="true" focusable="false" {...props}>{children}</svg>
@@ -13,6 +14,10 @@ export const IconDash = svg(<path d="M4 8h8" {...S} strokeWidth="2" />, 12)
 export const IconExt = svg(<path d="M9 2h5v5M14 2L7 9M12 9.5V14H2V4h4.5" {...S} strokeWidth="1.5" />)
 export const IconCopy = svg(<><rect x="5" y="5" width="9" height="9" rx="1.5" {...S} strokeWidth="1.5" /><path d="M3 11V3a1 1 0 011-1h7" {...S} strokeWidth="1.5" /></>)
 export const IconChev = svg(<path d="M4 6l4 4 4-4" {...S} strokeWidth="1.8" />, 12)
+
+export const IconClock = svg(<><circle cx="8" cy="8" r="6" {...S} strokeWidth="1.5" /><path d="M8 4.6V8l2.2 1.4" {...S} strokeWidth="1.5" /></>)
+export const IconLock = svg(<><rect x="3" y="7" width="10" height="7" rx="1.5" {...S} strokeWidth="1.5" /><path d="M5.5 7V5a2.5 2.5 0 015 0v2" {...S} strokeWidth="1.5" /></>)
+export const IconUp = svg(<path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" {...S} strokeWidth="1.8" />, 12)
 
 export function ProviderMark({ id, large }) {
   // Neutral placeholder marks (monograms). Vendor artwork is added after Domino legal sign-off (design spec section 10).
@@ -30,10 +35,12 @@ export function StatusPill({ kind, children, testid }) {
 
 export function SampleBadge() { return <span className="po-sample" data-testid="sample-badge">Sample data</span> }
 
-export function SampleBanner({ provider }) {
+export function SampleBanner({ provider, review }) {
   return (
     <div className="po-banner" role="note" data-testid="sample-banner">
-      <span><strong>Sample data.</strong> This walks the setup on a fictional tenant. Nothing is read from {provider}, and nothing here touches a real account.</span>
+      {review
+        ? <span><strong>Sample data.</strong> These agents are fictional and were not read from {provider}. Imported records are marked Sample data in Fleet and are excluded from evidence packs.</span>
+        : <span><strong>Sample data.</strong> This walks the setup on a fictional tenant. Nothing is read from {provider}, and nothing here touches a real account.</span>}
     </div>
   )
 }
@@ -89,4 +96,17 @@ export function ErrorPanel({ title, children, onRetry, retryLabel = 'Try again',
       {onRetry && <button type="button" className="ds-btn" data-testid={retryTestid} onClick={onRetry}>{retryLabel}</button>}
     </div>
   )
+}
+
+// One connection, loaded once; `reload` refetches. error is true when the request failed.
+export function useConn(connId) {
+  const [state, setState] = React.useState({ conn: null, error: false })
+  const [rev, setRev] = React.useState(0)
+  React.useEffect(() => {
+    let live = true
+    setState((s) => ({ conn: rev ? s.conn : null, error: false }))
+    connectionsApi.get(connId).then((conn) => live && setState({ conn, error: false }), () => live && setState({ conn: null, error: true }))
+    return () => { live = false }
+  }, [connId, rev])
+  return { ...state, reload: () => setRev((r) => r + 1) }
 }

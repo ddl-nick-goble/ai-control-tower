@@ -1,9 +1,11 @@
 import React from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, connectionsApi } from '../api'
 import { agentPath, clean, fmtTs, relTime, sourceLabel } from '../format'
 import { StatusPill, TierBadge, useAsync } from '../components/ui'
 import { Button, PageHeader } from '../components/form'
+import { IconInfo, SampleBadge } from '../components/connect/bits'
+import { PROVIDERS } from '../components/connect/providers'
 
 const COLS = [['Source', 'c-source'], ['Name', 'c-name'], ['Owner', 'c-owner'], ['Tier', 'c-tier'], ['Status', 'c-status'], ['Open findings', 'c-findings'], ['Last seen', 'c-seen']]
 
@@ -51,6 +53,22 @@ function rowClick(e, go) {
   go()
 }
 
+// Agents that scheduled syncs found but nobody imported yet. Never blocks the Fleet: a failure just hides the banner.
+function useAwaiting(rev) {
+  const [state, setState] = React.useState({ total: 0, items: [] })
+  React.useEffect(() => {
+    let live = true
+    connectionsApi.list().then(async (r) => {
+      const conns = (r.connections || []).filter((c) => c.state !== 'disconnected' && c.state !== 'draft' && c.state !== 'waiting')
+      const got = await Promise.all(conns.map((c) => connectionsApi.awaiting(c.id).then((a) => ({ c, count: a.count || 0 }), () => ({ c, count: 0 }))))
+      const items = got.filter((x) => x.count > 0)
+      if (live) setState({ total: items.reduce((n, x) => n + x.count, 0), items })
+    }, () => {})
+    return () => { live = false }
+  }, [rev])
+  return state
+}
+
 export default function Fleet() {
   const nav = useNavigate()
   const [rev, setRev] = React.useState(0)
@@ -59,6 +77,7 @@ export default function Fleet() {
   const tier = params.get('tier') || ''
   const q = params.get('q') || ''
   const quick = ['findings', 'pending'].includes(params.get('tile')) ? params.get('tile') : ''
+  const connection = params.get('connection') || ''
   const setP = (patch) => setParams((cur) => {
     const next = new URLSearchParams(cur)
     Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k)))
@@ -66,6 +85,7 @@ export default function Fleet() {
   }, { replace: true })
   const all = useAsync(() => api.agents(), [rev])
   const data = all.data
+  const awaiting = useAwaiting(rev)
   const sources = React.useMemo(() => [...new Set((data || []).map((a) => a.source_platform))].sort(), [data])
   const stats = React.useMemo(() => {
     const l = data || []
@@ -79,11 +99,11 @@ export default function Fleet() {
 
   const needle = q.trim().toLowerCase()
   const byFacets = (data || []).filter((a) =>
-    (!source || a.source_platform === source) && (!tier || String(a.tier) === tier) &&
+    (!source || a.source_platform === source) && (!connection || a.connection_id === connection) && (!tier || String(a.tier) === tier) &&
     (!quick || (quick === 'findings' ? a.open_findings > 0 : a.status === 'pending_review')))
   const rows = needle ? byFacets.filter((a) => has(a.name, needle) || has(a.owner, needle)) : byFacets
-  const filtered = !!(source || tier || needle || quick)
-  const clear = () => setP({ source: '', tier: '', q: '', tile: '' })
+  const filtered = !!(source || tier || needle || quick || connection)
+  const clear = () => setP({ source: '', tier: '', q: '', tile: '', connection: '' })
   const toggleTier = () => setP({ tier: tier === '1' ? '' : '1' })
   const toggleQuick = (k) => setP({ tile: quick === k ? '' : k })
   const ready = !!data
@@ -93,7 +113,29 @@ export default function Fleet() {
     <div className="ds-page ds-container" data-testid="fleet-page">
       <PageHeader title="Fleet" description="Every AI agent across your estate, with its tier, owner and open findings."
                   descriptionTestId="fleet-description"
-                  actions={<Button variant="primary" data-testid="register-external-button" onClick={() => nav('/register')}>Register external agent</Button>} />
+                  actions={(
+                    <div className="fl-actions">
+                      <span className="fl-action" data-testid="fleet-add-by-url"><Button data-testid="register-external-button" onClick={() => nav('/connections/add-by-url')}>Add by URL</Button></span>
+                      <Button variant="primary" data-testid="fleet-add-agents" onClick={() => nav('/connections')}>Add agents</Button>
+                    </div>
+                  )} />
+
+      {awaiting.total > 0 && (
+        <div className="ds-alert ds-alert-info fl-awaiting" role="status" data-testid="fleet-awaiting-banner">
+          <IconInfo />
+          <div className="fl-awaiting-text">
+            <strong>{awaiting.total} {awaiting.total === 1 ? 'agent is' : 'agents are'} awaiting import.</strong>{' '}
+            {awaiting.items.map((x) => `${x.count} found by ${(PROVIDERS[x.c.provider] || {}).name || x.c.provider} sync`).join(', ')}. They aren't in Fleet until someone reviews them.
+          </div>
+          <Button className="ds-btn-sm" onClick={() => nav(awaiting.items.length === 1 ? `/connections/${awaiting.items[0].c.id}` : '/connections')}>Review</Button>
+        </div>
+      )}
+      {connection && (
+        <div className="fl-scope" data-testid="fleet-connection-filter">
+          <span>Showing agents imported from one connection.</span>
+          <Button variant="ghost" className="ds-btn-sm" onClick={() => setP({ connection: '' })}>Show all agents</Button>
+        </div>
+      )}
 
       <div className="ds-tiles" role="group" aria-label="Fleet summary. Tiles are filters and combine with Source, Tier and search.">
         <Tile id="total" number={n(stats.total)} label="Total agents" hint="Whole fleet" active={false} onClick={clear} />
@@ -142,8 +184,8 @@ export default function Fleet() {
       {ready && rows.length === 0 && !filtered && (
         <div className="ds-card ds-empty" data-testid="fleet-empty">
           <h2 className="ds-empty-title">No agents yet</h2>
-          <p className="ds-helper">Register an external agent to start tracking its tier, owner and findings.</p>
-          <Button variant="primary" onClick={() => nav('/register')}>Register external agent</Button>
+          <p className="ds-helper">Connect a platform to find your agents, or add one by its URL, to start tracking its tier, owner and findings.</p>
+          <Button variant="primary" onClick={() => nav('/connections')}>Add agents</Button>
         </div>
       )}
       {ready && rows.length === 0 && filtered && (
@@ -168,7 +210,7 @@ export default function Fleet() {
                       onClick={(e) => rowClick(e, go)}
                       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) go() }}>
                     <td data-testid="fleet-source" data-source={a.source_platform}><span className="ds-chip-tag">{sourceLabel(a.source_platform)}</span></td>
-                    <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
+                    <td data-testid="fleet-name" className="ds-trunc" title={name}><span className="po-aname-row fl-nm"><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.sample && <SampleBadge />}</span>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}{a.source_disconnected && <span className="host"><span className="fl-gone">Source disconnected</span></span>}</td>
                     <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text">{owner}</span></td>
                     <td><TierBadge tier={a.tier} /></td>
                     <td data-testid="fleet-status"><StatusPill status={a.status} /></td>

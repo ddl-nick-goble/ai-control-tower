@@ -72,7 +72,7 @@ function ProviderCard({ id, model, onChange }) {
   } else { // verified | partial | connected
     status = <StatusPill kind="ok" testid={`provider-card-${id}-status`}>Connected · {agents} {agents === 1 ? 'agent' : 'agents'}</StatusPill>
     meta = [['Last scan', conn.last_scan ? relTime(conn.last_scan) : 'Not scanned yet'], ['Access', conn.last_check ? `${kind === 'partial' ? 'Optional checks missing · ' : 'Checked '}${relTime(conn.last_check)}` : 'Not checked yet']]
-    primary = { label: 'Open connection', to: `/connect/${id}/${conn.id}/scope` }
+    primary = { label: 'Open connection', to: `/connections/${conn.id}` }
   }
   return (
     <article className="ds-card po-card" data-testid={`provider-card-${id}`} aria-labelledby={`pc-${id}`}>

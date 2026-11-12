@@ -156,7 +156,7 @@ def test_fleet_columns_filters_and_register_button(page, shot, seeded):
                 "fleet-last-seen"):
         expect(first.get_by_test_id(tid)).to_be_visible()
     expect(_fleet_row(page, "recon-agent")).to_have_count(1)
-    expect(page.get_by_role("button", name="Register external agent")).to_be_visible()
+    expect(page.get_by_role("button", name=re.compile("Add by URL|Register external agent"))).to_be_visible()  # PO-6.4 relabel
     expect(page.get_by_test_id("register-external-button")).to_be_visible()
 
     page.get_by_test_id("source-filter").select_option("aws")
