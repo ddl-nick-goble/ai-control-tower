@@ -340,3 +340,10 @@ After merge (with Nick's OK given): run restore_db.py --from /mnt/data/ai-contro
 - 2026-11-12: T-47 follow-ups e9b069d: demo apps snapshotted per module, proxy fallback logged + E2E_REQUIRE_PROXY=1, failure shots by item.name, t18 r7 stays_true >= 500 ms window, xdist README note, tokenize guard (+1 guard test). Full 178 pass in 127 s; smoke 15 in 16.4 s. MERGED into main caa86b6. Post-merge backend + full e2e on main running (doubles as the W2 end-of-wave browser run).
 - From now on (tiered runs, plan A): build rounds run task e2e file + `-m smoke`; pre-merge `pytest -p no:xdist tests/e2e/` (~2 min); design captures via `-m capture` or tests/e2e/capture.py.
 - 2026-11-12: T-47 post-merge on main caa86b6: backend 706 pass / 3 skip (5:48); e2e 178 pass (2:05). Tree clean. Worktree removed. W2 end-of-wave browser run = this run (green). W2 DONE (T-19b, T-39, T-47) plus T-48 and T-50. Next: W3 (T-20, T-19f; T-48f/T-50f optional); SR-6 waits on Nick.
+
+## 2026-11-12: Provider onboarding (Nick): supersedes the import-wizard UX (T-40..T-46)
+Nick: "register agent" becomes a gallery of provider cards. Each card opens an onboarding wizard with modern auth (never type a URL if avoidable, ideally no pasted secrets), then auto-discovery, then frictionless intake of agents from that provider. Providers: Vertex AI, Google's enterprise agent product, AWS AgentCore, Azure AI Foundry, Databricks, Snowflake Cortex Agents (plus Domino native and A2A card URL as today). One research agent per provider, plus one design agent; "sexy and savvy, kill in 2027".
+- Research files: build/research/providers/{aws-agentcore,google-vertex,google-agents,azure-foundry,databricks,snowflake}.md
+- Design spec: build/design/provider-onboarding.md (+ static prototype)
+- Then: rewrite build/import-wizard-plan.md into the provider-onboarding plan (tasks, ACs, waves), keeping its adapter contract (auth_methods, test_connection, list_scopes, discover) and Domino Jobs for crawls.
+- Concurrency: session cap is 3 subagents; research runs in two batches (AWS, Vertex, Google agents; then Azure, Databricks, Snowflake), design after.
