@@ -1,0 +1,2105 @@
+diff --git a/backend/discovery.py b/backend/discovery.py
+index 7c7d240..40ce95d 100644
+--- a/backend/discovery.py
++++ b/backend/discovery.py
+@@ -296,16 +296,25 @@ def _finding(cx, agent_id, kind, message, detail):
+ 
+ # ------------------------------------------------------------------ staged rows: view, edit, import
+ def effective(row) -> dict:
+-    """The stored PO-2 suggestion with the user's overrides applied; the tier is recomputed."""
++    """The stored PO-2 suggestion with the user's overrides applied; the tier is recomputed. An override keyed "tier"
++    ({score: 1-4, reason}) sets the tier itself (the Change tier control); suggested_tier is what ACT proposed."""
+     sug = copy.deepcopy(row.suggestion or {})
+     if not sug:
+         return {}
+-    for crit, o in (row.overrides or {}).items():
++    ovr = dict(row.overrides or {})
++    tier_ovr = ovr.pop("tier", None)
++    for crit, o in ovr.items():
+         before = sug["suggestions"][crit]["score"]
+         sug["suggestions"][crit] = {"score": o["score"], "evidence": "override",
+                                     "reason": f"Override: {o['reason']} (suggested {before})"}
+     r = score_tier({k: v["score"] for k, v in sug["suggestions"].items()})
+-    return {"suggestions": sug["suggestions"], "tier": r.tier, "weighted": r.score, "reasoning": r.reasoning}
++    base_tier = score_tier({k: v["score"] for k, v in (row.suggestion or {})["suggestions"].items()}).tier
++    tier, reasoning = r.tier, r.reasoning
++    if tier_ovr:
++        tier = int(tier_ovr["score"])
++        reasoning = f"Tier {tier} set by the reviewer: {tier_ovr['reason']} ACT computed {r.reasoning}"
++    return {"suggestions": sug["suggestions"], "tier": tier, "weighted": r.score, "reasoning": reasoning,
++            "suggested_tier": base_tier}
+ 
+ 
+ def row_view(r) -> dict:
+@@ -319,6 +328,34 @@ def row_view(r) -> dict:
+                         "identity": rec.get("identity"), "description": rec.get("description")}}
+ 
+ 
++def with_current_tier(rows) -> list:
++    """Row views for staged rows, plus current_tier (the tier in ACT today) for Changed and Unchanged rows."""
++    views = [row_view(r) for r in rows]
++    ids = {r.id: (r.record or {}).get("id") for r in rows if r._mapping["class"] in ("changed", "unchanged")}
++    if ids:
++        with db.engine.connect() as cx:
++            tiers = {a.id: a.tier for a in cx.execute(select(db.agents.c.id, db.agents.c.tier).where(
++                db.agents.c.id.in_([i for i in ids.values() if i])))}
++        for v in views:
++            t = tiers.get(ids.get(v["id"]))
++            if t is not None and str(t).isdigit():
++                v["current_tier"] = int(t)
++    return views
++
++
++def dismiss_staged(rid, reason, user):
++    """Take an awaiting row out of the queue. -> row view, None when missing. The reason is audited."""
++    with db.engine.begin() as cx:
++        r = cx.execute(select(db.staged_agents).where(db.staged_agents.c.id == rid)).first()
++        if r is None:
++            return None
++        cx.execute(update(db.staged_agents).where(db.staged_agents.c.id == rid).values(awaiting=False))
++        _audit(cx, "staged_dismissed", act_id(r.platform, r.native_id),
++               {"staged_id": rid, "scan_id": r.scan_id, "connection_id": r.connection_id, "reason": reason},
++               actor=(user.user_id, user.username))
++        return row_view(cx.execute(select(db.staged_agents).where(db.staged_agents.c.id == rid)).first())
++
++
+ def _stale(updated_at, secs=300) -> bool:
+     from datetime import datetime, timezone
+     try:
+@@ -348,11 +385,12 @@ def update_staged(rid, owner, overrides, user):
+     """-> row view, None when missing. Raises ValueError (message for a 422) on bad input."""
+     crit_names = set(load_config()["criteria"])
+     for crit, o in (overrides or {}).items():
+-        if crit not in crit_names:
++        if crit not in crit_names and crit != "tier":
+             raise ValueError(f"Unknown criterion: {crit}")
+         sc = (o or {}).get("score")
+-        if isinstance(sc, bool) or not isinstance(sc, int) or not 1 <= sc <= 5:
+-            raise ValueError(f"The score for {crit} must be a whole number from 1 to 5.")
++        top = 4 if crit == "tier" else 5
++        if isinstance(sc, bool) or not isinstance(sc, int) or not 1 <= sc <= top:
++            raise ValueError(f"The score for {crit} must be a whole number from 1 to {top}.")
+         if not str((o or {}).get("reason") or "").strip():
+             raise ValueError(f"An override needs a reason ({crit}).")
+     with db.engine.begin() as cx:
+@@ -366,8 +404,10 @@ def update_staged(rid, owner, overrides, user):
+             merged = dict(r.overrides or {})
+             for crit, o in overrides.items():
+                 before = ((r.suggestion or {}).get("suggestions") or {}).get(crit, {}).get("score")
++                if crit == "tier":
++                    before = effective(r).get("suggested_tier")
+                 merged[crit] = {"score": o["score"], "reason": o["reason"].strip()}
+-                _audit(cx, "criteria_override", act_id(r.platform, r.native_id),
++                _audit(cx, "tier_override" if crit == "tier" else "criteria_override", act_id(r.platform, r.native_id),
+                        {"agent_ref": act_id(r.platform, r.native_id), "criterion": crit, "from": before,
+                         "to": o["score"], "reason": o["reason"].strip(), "staged_id": rid},
+                        actor=(user.user_id, user.username))
+diff --git a/backend/routes/agents.py b/backend/routes/agents.py
+index 5307585..42320da 100644
+--- a/backend/routes/agents.py
++++ b/backend/routes/agents.py
+@@ -19,6 +19,11 @@ def _tier(v):
+         return None
+ 
+ 
++def _disconnected_ids(cx):
++    """Ids of connections the user disconnected: their agents stay and read "Source disconnected" (PO-6.3)."""
++    return {r.id for r in cx.execute(select(db.connections.c.id).where(db.connections.c.state == "disconnected"))}
++
++
+ def _card_host(record):
+     """Host[:port] of an external agent's card URL, so duplicate names can be told apart; None otherwise."""
+     url = (record or {}).get("card_url")
+@@ -43,21 +48,27 @@ def list_agents(source: str | None = None, tier: int | None = None, include_shad
+         rows = cx.execute(q.order_by(db.agents.c.source_platform, db.agents.c.name)).all()
+         open_f = dict(cx.execute(select(db.findings.c.agent_id, func.count()).where(db.findings.c.status == "open")
+                                  .group_by(db.findings.c.agent_id)).all())
++        gone = _disconnected_ids(cx)
+     return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
+              "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
+              "open_findings": int(open_f.get(r.id, 0)),
+-             "origin": (r.record or {}).get("origin", "internal"), "card_host": _card_host(r.record)} for r in rows]
++             "origin": (r.record or {}).get("origin", "internal"), "card_host": _card_host(r.record),
++             "connection_id": r.connection_id, "sample": bool((r.record or {}).get("sample")),
++             "source_disconnected": r.connection_id in gone} for r in rows]
+ 
+ 
+ @router.get("/api/agents/{agent_id}")
+ def get_agent(agent_id: str):
+     with db.engine.connect() as cx:
+         r = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
++        gone = _disconnected_ids(cx)
+     if r is None or not r.record:
+         raise HTTPException(404, "agent not found")
+     rec = dict(r.record)
+     rec.update(id=r.id, name=r.name, owner=r.owner or rec.get("owner"), status=r.status, last_seen=r.last_seen,
+-               tier=_tier(r.tier), tier_reasoning=r.tier_reasoning, criteria=r.criteria or rec.get("criteria"))
++               tier=_tier(r.tier), tier_reasoning=r.tier_reasoning, criteria=r.criteria or rec.get("criteria"),
++               connection_id=r.connection_id, sample=bool(rec.get("sample")),
++               source_disconnected=r.connection_id in gone)
+     return rec
+ 
+ 
+diff --git a/backend/routes/discovery.py b/backend/routes/discovery.py
+index 1ba375d..8150741 100644
+--- a/backend/routes/discovery.py
++++ b/backend/routes/discovery.py
+@@ -62,7 +62,7 @@ def staged(sid: str, cls: str = Query("", alias="class"), _user: User = Depends(
+         q = q.where(db.staged_agents.c["class"] == cls)
+     with db.engine.connect() as cx:
+         rows = cx.execute(q.order_by(db.staged_agents.c.id)).all()
+-    return {"rows": [discovery.row_view(r) for r in rows]}
++    return {"rows": discovery.with_current_tier(rows)}
+ 
+ 
+ @router.patch("/api/staged/{rid}")
+@@ -79,6 +79,17 @@ def patch_staged(rid: int, body: dict = Body(...), user: User = Depends(require_
+     return row
+ 
+ 
++@router.post("/api/staged/{rid}/dismiss")
++def dismiss_staged(rid: int, body: dict = Body(...), user: User = Depends(require_user)):
++    reason = str(body.get("reason") or "").strip()
++    if len(reason) < 10:
++        raise HTTPException(422, "Enter a reason of at least 10 characters.")
++    row = discovery.dismiss_staged(rid, reason, user)
++    if row is None:
++        raise HTTPException(404, "ACT has no staged agent with that id.")
++    return row
++
++
+ @router.post("/api/scans/{sid}/import")
+ def import_scan(sid: str, body: dict = Body(...), user: User = Depends(require_user)):
+     ids = body.get("ids")
+@@ -117,7 +128,7 @@ def put_schedule(cid: str, body: dict = Body(...), _user: User = Depends(require
+ def get_schedule(cid: str, _user: User = Depends(require_user)):
+     row = _connection(cid)
+     return {"schedule": row.schedule or "off", "time": row.schedule_time or "02:00", "job_id": row.schedule_job_id,
+-            "sample": bool(row.sample)}
++            "saved": bool(row.schedule), "sample": bool(row.sample)}
+ 
+ 
+ @router.post("/api/connections/{cid}/sync")
+@@ -139,4 +150,4 @@ def awaiting(cid: str, _user: User = Depends(require_user)):
+             db.staged_agents.c.connection_id == cid, db.staged_agents.c.awaiting.is_(True),
+             db.staged_agents.c.imported_agent_id.is_(None)).order_by(db.staged_agents.c.id)).all()
+         scan_id = rows[-1].scan_id if rows else None
+-    return {"rows": [discovery.row_view(r) for r in rows], "scan_id": scan_id, "count": len(rows)}
++    return {"rows": discovery.with_current_tier(rows), "scan_id": scan_id, "count": len(rows)}
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index ea29e0b..883d1a5 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -74,6 +74,20 @@ export const connectionsApi = {
+   scopes: (id) => request(`connections/${enc(id)}/scopes`),
+   saveScopes: (id, selected) => request(`connections/${enc(id)}/scopes`, json('PUT', { selected })),
+   // The return link lands on the SPA; its query string (state plus any role/project values) goes to the API as is.
++  scans: (id) => request(`connections/${enc(id)}/scans`),
++  startScan: (id) => post(`connections/${enc(id)}/scans`),
++  awaiting: (id) => request(`connections/${enc(id)}/awaiting`),
++  schedule: (id) => request(`connections/${enc(id)}/schedule`),
++  saveSchedule: (id, schedule, time = '02:00') => request(`connections/${enc(id)}/schedule`, json('PUT', { schedule, time })),
+   callback: (search) => request('connections/callback' + (search || '')),
+ }
+ export const agentsApi = { list: () => request('agents') }
++
++// Scan, review and import (PO-4 API). Lists come back as {rows}.
++export const scansApi = {
++  get: (id) => request(`scans/${enc(id)}`),
++  staged: (id, cls) => request(`scans/${enc(id)}/staged${cls ? `?class=${enc(cls)}` : ''}`),
++  patch: (rowId, body) => request(`staged/${enc(rowId)}`, json('PATCH', body)),
++  dismiss: (rowId, reason) => request(`staged/${enc(rowId)}/dismiss`, json('POST', { reason })),
++  importRows: (id, ids) => request(`scans/${enc(id)}/import`, json('POST', { ids })),
++}
+diff --git a/frontend/src/components/connect/ScheduleCard.jsx b/frontend/src/components/connect/ScheduleCard.jsx
+new file mode 100644
+index 0000000..82acff1
+--- /dev/null
++++ b/frontend/src/components/connect/ScheduleCard.jsx
+@@ -0,0 +1,72 @@
++// "Keep {provider} in sync": Off or Daily at 02:00. The server stores "off" until a schedule is saved, so an unsaved
++// connection shows Daily preselected (decision D-4); nothing runs until Save.
++import React from 'react'
++import { connectionsApi } from '../../api'
++
++export const SCHEDULE_TIME = '02:00'
++
++export function useSchedule(connId) {
++  const [s, setS] = React.useState({ loading: true, error: false, schedule: 'off', saved: false, time: SCHEDULE_TIME })
++  React.useEffect(() => {
++    let live = true
++    connectionsApi.schedule(connId).then(
++      (r) => live && setS({ loading: false, error: false, schedule: r.schedule || 'off', saved: !!r.saved, time: r.time || SCHEDULE_TIME }),
++      () => live && setS((x) => ({ ...x, loading: false, error: true })))
++    return () => { live = false }
++  }, [connId])
++  return [s, setS]
++}
++
++export function scheduleText(s) {
++  if (!s || s.loading) return '…'
++  if (s.saved && s.schedule === 'daily') return `Daily at ${s.time}`
++  if (s.saved) return 'Off'
++  return `Not scheduled. Suggested: daily at ${SCHEDULE_TIME}`
++}
++
++export default function ScheduleCard({ connId, provider, sample, state, onSaved, titleId = 'sy-h', className = '' }) {
++  const [s, setS] = state
++  const [pick, setPick] = React.useState(null)
++  const [busy, setBusy] = React.useState(false)
++  const [note, setNote] = React.useState('')
++  const [err, setErr] = React.useState('')
++  const value = pick || (s.saved ? s.schedule : 'daily')
++  const save = async () => {
++    setBusy(true); setErr(''); setNote('')
++    try {
++      const r = await connectionsApi.saveSchedule(connId, value, s.time || SCHEDULE_TIME)
++      setS({ ...s, schedule: r.schedule, saved: true, time: r.time, error: false })
++      setPick(null)
++      setNote(r.schedule === 'daily' ? `Saved. Next scan tomorrow at ${r.time}.` : 'Saved. Sync is off; scan whenever you like.')
++      onSaved && onSaved(r)
++    } catch (e) { setErr(e.message || "ACT couldn't save the schedule.") } finally { setBusy(false) }
++  }
++  return (
++    <section className={`ds-card ${className}`} aria-labelledby={titleId}>
++      <div className="po-panel-head"><h2 id={titleId}>Keep {provider} in sync</h2></div>
++      <div className="po-panel-body">
++        <fieldset className="po-fs" disabled={s.loading}>
++          <legend className="ds-label">Scan for changes</legend>
++          <div className="po-radios">
++            {[['off', 'Off'], ['daily', `Daily at ${s.time || SCHEDULE_TIME}`]].map(([k, name]) => (
++              <label key={k}>
++                <input type="radio" name={`sync-${connId}`} value={k} checked={value === k} data-testid={`sync-schedule-${k}`}
++                       onChange={() => { setPick(k); setNote('') }} />{name}
++              </label>
++            ))}
++          </div>
++        </fieldset>
++        <p className="ds-helper po-sync-note">
++          Runs as a scheduled Domino Job. New agents wait in <strong>Awaiting import</strong>; ACT never imports them on its own. Changes and disappearances become findings.
++          {sample && ' This is sample data, so ACT stores your choice but no Job is created.'}
++        </p>
++        {s.error && <p className="po-fielderr" role="alert">ACT couldn't read the saved schedule. You can still save a new one.</p>}
++        {err && <p className="po-fielderr" role="alert">{err}</p>}
++        <div className="po-sync-row">
++          <button type="button" className="ds-btn" data-testid="sync-save" disabled={busy || s.loading} aria-busy={busy ? 'true' : undefined} onClick={save}>Save schedule</button>
++          <span className="ds-helper po-flat" role="status" aria-live="polite">{note}</span>
++        </div>
++      </div>
++    </section>
++  )
++}
+diff --git a/frontend/src/components/connect/WizardFrame.jsx b/frontend/src/components/connect/WizardFrame.jsx
+index 490e629..42d6e98 100644
+--- a/frontend/src/components/connect/WizardFrame.jsx
++++ b/frontend/src/components/connect/WizardFrame.jsx
+@@ -5,8 +5,8 @@ import { Breadcrumb } from '../form'
+ import { IconCheck, IconX } from './bits'
+ import { PROVIDERS, STEPS } from './providers'
+ 
+-export function StepRail({ provider, connId, step }) {
+-  const hrefFor = { 3: connId && `/connect/${provider}/${connId}/scope` }
++export function StepRail({ provider, connId, step, hrefs }) {
++  const hrefFor = { 3: connId && `/connect/${provider}/${connId}/scope`, ...hrefs }
+   return (
+     <ol className="po-rail" aria-label="Setup steps" data-testid="step-rail">
+       {STEPS.map((label, i) => {
+@@ -53,7 +53,7 @@ export function TrustAside({ provider }) {
+   )
+ }
+ 
+-export default function WizardFrame({ provider, connId, step, title, description, actions, children, hideAside }) {
++export default function WizardFrame({ provider, connId, step, title, description, actions, children, hideAside, crumbs, hrefs }) {
+   const p = PROVIDERS[provider]
+   const h1 = React.useRef(null)
+   // Focus the step heading on every step change (each step mounts its own frame) and start at the top.
+@@ -64,7 +64,7 @@ export default function WizardFrame({ provider, connId, step, title, description
+   return (
+     <div className="ds-page ds-container po-page" data-testid={`wizard-${provider}`}>
+       <header className="ds-page-header">
+-        <Breadcrumb items={[{ label: 'Connections', to: '/connections' }, { label: `Connect ${p.name}` }]} />
++        <Breadcrumb items={crumbs || [{ label: 'Connections', to: '/connections' }, { label: `Connect ${p.name}` }]} />
+         <div className="ds-page-header-row">
+           <div className="po-head-text">
+             <h1 className="ds-title po-title" ref={h1} tabIndex={-1} data-testid="step-heading">{title}</h1>
+@@ -73,7 +73,7 @@ export default function WizardFrame({ provider, connId, step, title, description
+           {actions}
+         </div>
+       </header>
+-      <StepRail provider={provider} connId={connId} step={step} />
++      <StepRail provider={provider} connId={connId} step={step} hrefs={hrefs} />
+       <div className={hideAside ? 'po-wiz po-wiz-solo' : 'po-wiz'}>
+         <div className="po-main">{children}</div>
+         {!hideAside && <TrustAside provider={provider} />}
+diff --git a/frontend/src/components/connect/bits.jsx b/frontend/src/components/connect/bits.jsx
+index d0a5b27..a3696ee 100644
+--- a/frontend/src/components/connect/bits.jsx
++++ b/frontend/src/components/connect/bits.jsx
+@@ -1,5 +1,6 @@
+ // Small shared pieces for Connect a provider: icons, provider mark, status pills, sample badge, copy hook.
+ import React from 'react'
++import { connectionsApi } from '../../api'
+ 
+ const svg = (children, size = 14, vb = 16) => (props) => (
+   <svg width={size} height={size} viewBox={`0 0 ${vb} ${vb}`} aria-hidden="true" focusable="false" {...props}>{children}</svg>
+@@ -14,6 +15,10 @@ export const IconExt = svg(<path d="M9 2h5v5M14 2L7 9M12 9.5V14H2V4h4.5" {...S}
+ export const IconCopy = svg(<><rect x="5" y="5" width="9" height="9" rx="1.5" {...S} strokeWidth="1.5" /><path d="M3 11V3a1 1 0 011-1h7" {...S} strokeWidth="1.5" /></>)
+ export const IconChev = svg(<path d="M4 6l4 4 4-4" {...S} strokeWidth="1.8" />, 12)
+ 
++export const IconClock = svg(<><circle cx="8" cy="8" r="6" {...S} strokeWidth="1.5" /><path d="M8 4.6V8l2.2 1.4" {...S} strokeWidth="1.5" /></>)
++export const IconLock = svg(<><rect x="3" y="7" width="10" height="7" rx="1.5" {...S} strokeWidth="1.5" /><path d="M5.5 7V5a2.5 2.5 0 015 0v2" {...S} strokeWidth="1.5" /></>)
++export const IconUp = svg(<path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" {...S} strokeWidth="1.8" />, 12)
++
+ export function ProviderMark({ id, large }) {
+   // Neutral placeholder marks (monograms). Vendor artwork is added after Domino legal sign-off (design spec section 10).
+   const mono = { aws: 'AWS', google: 'GC', microsoft: 'MS', databricks: 'DB', snowflake: 'SF', domino: 'DOM', other: 'A2A' }[id] || '?'
+@@ -30,10 +35,12 @@ export function StatusPill({ kind, children, testid }) {
+ 
+ export function SampleBadge() { return <span className="po-sample" data-testid="sample-badge">Sample data</span> }
+ 
+-export function SampleBanner({ provider }) {
++export function SampleBanner({ provider, review }) {
+   return (
+     <div className="po-banner" role="note" data-testid="sample-banner">
+-      <span><strong>Sample data.</strong> This walks the setup on a fictional tenant. Nothing is read from {provider}, and nothing here touches a real account.</span>
++      {review
++        ? <span><strong>Sample data.</strong> These agents are fictional and were not read from {provider}. Imported records are marked Sample data in Fleet and are excluded from evidence packs.</span>
++        : <span><strong>Sample data.</strong> This walks the setup on a fictional tenant. Nothing is read from {provider}, and nothing here touches a real account.</span>}
+     </div>
+   )
+ }
+@@ -90,3 +97,16 @@ export function ErrorPanel({ title, children, onRetry, retryLabel = 'Try again',
+     </div>
+   )
+ }
++
++// One connection, loaded once; `reload` refetches. error is true when the request failed.
++export function useConn(connId) {
++  const [state, setState] = React.useState({ conn: null, error: false })
++  const [rev, setRev] = React.useState(0)
++  React.useEffect(() => {
++    let live = true
++    setState((s) => ({ conn: rev ? s.conn : null, error: false }))
++    connectionsApi.get(connId).then((conn) => live && setState({ conn, error: false }), () => live && setState({ conn: null, error: true }))
++    return () => { live = false }
++  }, [connId, rev])
++  return { ...state, reload: () => setRev((r) => r + 1) }
++}
+diff --git a/frontend/src/components/connect/intake.jsx b/frontend/src/components/connect/intake.jsx
+new file mode 100644
+index 0000000..9bf3608
+--- /dev/null
++++ b/frontend/src/components/connect/intake.jsx
+@@ -0,0 +1,195 @@
++// Pieces shared by the review table and the single-agent intake page: criteria with their "why", the tier override,
++// risk flags, the field diff and the owner select.
++import React from 'react'
++import { scansApi } from '../../api'
++import { TierBadge } from '../ui'
++import { IconUp } from './bits'
++
++export const CRITERIA = [
++  ['decision_impact', 'Decision impact'], ['financial_exposure', 'Financial exposure'], ['customer_impact', 'Customer impact'],
++  ['autonomy', 'Autonomy'], ['data_sensitivity', 'Data sensitivity'], ['reversibility', 'Reversibility'],
++  ['regulatory_exposure', 'Regulatory exposure'],
++]
++
++export const tierOf = (row) => row?.suggestion?.tier ?? null
++export const isSelectable = (row) => row.class === 'new' || row.class === 'changed'
++export const wentUp = (row) => row.current_tier != null && tierOf(row) != null && tierOf(row) < row.current_tier
++export const tierSet = (row) => row.overrides?.tier || null
++
++// ---- risk flags: a fixed vocabulary. The server sends codes (tier_1) or labels; tier and owner are derived live
++// so a changed tier or owner updates the chips at once.
++const norm = (f) => String(f).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
++const LABEL = {
++  no_owner: 'No owner', risk_went_up: 'Risk went up', tier_1: 'Tier 1', no_distinct_identity: 'No distinct identity',
++  write_scopes: 'Write scopes', redacted_secrets_found: 'Redacted secrets found', redacted_secrets: 'Redacted secrets found',
++}
++const HIGH = new Set(['no_owner', 'risk_went_up', 'tier_1', 'no_distinct_identity', 'write_scopes'])
++const ORDER = ['no_owner', 'risk_went_up', 'tier_1', 'no_distinct_identity', 'write_scopes', 'redacted_secrets_found']
++
++export function rowFlags(row) {
++  const keys = new Set((row.flags || []).map(norm).map((k) => (k === 'redacted_secrets' ? 'redacted_secrets_found' : k)))
++  keys.delete('tier_1'); keys.delete('no_owner')
++  if (tierOf(row) === 1) keys.add('tier_1')
++  if (!row.owner && row.class !== 'missing') keys.add('no_owner')
++  if (wentUp(row)) keys.add('risk_went_up')
++  const list = [...keys].sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99))
++  return list.map((k) => ({ key: k, label: LABEL[k] || String(k).replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()), high: HIGH.has(k) }))
++}
++export const isRisky = (row) => rowFlags(row).some((f) => ['tier_1', 'no_owner', 'no_distinct_identity'].includes(f.key))
++
++// ---- diff lines for a Changed row. The server sends {field: {before, after}}; a list of {field, op, before, after} also works.
++const val = (v) => {
++  if (v == null) return 'none'
++  if (Array.isArray(v)) return v.map(val).join(', ') || 'none'
++  if (typeof v === 'object') return v.name || v.id || JSON.stringify(v)
++  return String(v)
++}
++export function diffLines(diff) {
++  if (!diff) return []
++  if (Array.isArray(diff)) {
++    return diff.map((d) => (d.op === 'add' ? { type: 'add', text: `+ ${d.field} ${val(d.after)}` }
++      : d.op === 'remove' ? { type: 'del', text: `− ${d.field} ${val(d.before)}` }
++      : { type: 'mod', text: `~ ${d.field}: ${val(d.before)} → ${val(d.after)}` }))
++  }
++  const out = []
++  Object.entries(diff).forEach(([field, d]) => {
++    const { before, after } = d || {}
++    if (Array.isArray(before) && Array.isArray(after)) {
++      const b = before.map(val), a = after.map(val)
++      a.filter((x) => !b.includes(x)).forEach((x) => out.push({ type: 'add', text: `+ ${field} ${x}` }))
++      b.filter((x) => !a.includes(x)).forEach((x) => out.push({ type: 'del', text: `− ${field} ${x}` }))
++    } else out.push({ type: 'mod', text: `~ ${field}: ${val(before)} → ${val(after)}` })
++  })
++  return out
++}
++export function DiffList({ row, testid }) {
++  const lines = diffLines(row.diff)
++  if (!lines.length) return null
++  return (
++    <>
++      <h4>What changed since the last scan</h4>
++      <ul className="po-diff" data-testid={testid}>{lines.map((l, i) => <li key={i} className={l.type}>{l.text}</li>)}</ul>
++      {wentUp(row) && <p className="ds-helper">Risk went up, so this agent goes back to Pending review on import.</p>}
++    </>
++  )
++}
++
++// ---- the seven criteria with a score and one evidence line each
++export function CriteriaList({ row }) {
++  const sug = row.suggestion?.suggestions || {}
++  return (
++    <ul className="po-crit">
++      {CRITERIA.filter(([k]) => sug[k]).map(([k, name]) => (
++        <li key={k} data-testid={`intake-criterion-${k}`}>
++          <span className="k">{name}</span>
++          <span className={`v${sug[k].score >= 4 ? ' hi' : ''}`}>{sug[k].score}</span>
++          <span className="why">{sug[k].reason}</span>
++        </li>
++      ))}
++    </ul>
++  )
++}
++
++// ---- tier with an override that needs a reason
++export function TierBlock({ row, canEdit, onUpdated }) {
++  const tier = tierOf(row)
++  const set = tierSet(row)
++  const [open, setOpen] = React.useState(false)
++  const [pick, setPick] = React.useState(tier || 3)
++  const [reason, setReason] = React.useState('')
++  const [err, setErr] = React.useState(false)
++  const [busy, setBusy] = React.useState(false)
++  const [saveErr, setSaveErr] = React.useState('')
++  const openBtn = React.useRef(null)
++  const radios = React.useRef({})
++  const errId = `rsn-err-${row.id}`
++
++  React.useEffect(() => { if (open) radios.current[pick]?.focus() }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
++  const close = () => { setOpen(false); setErr(false); setSaveErr(''); requestAnimationFrame(() => openBtn.current?.focus()) }
++  const arrow = (e) => {
++    const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]
++    if (!d) return
++    e.preventDefault()
++    const n = ((pick - 1 + d + 4) % 4) + 1
++    setPick(n); requestAnimationFrame(() => radios.current[n]?.focus())
++  }
++  const save = async () => {
++    if (reason.trim().length < 10) { setErr(true); return }
++    setBusy(true); setErr(false); setSaveErr('')
++    try {
++      const r = await scansApi.patch(row.id, { overrides: { tier: { score: pick, reason: reason.trim() } } })
++      onUpdated(r); setReason(''); close()
++    } catch (e) { setSaveErr(e.message || "ACT couldn't save the tier.") } finally { setBusy(false) }
++  }
++  return (
++    <>
++      <h4>Tier</h4>
++      {!open && (
++        <p className="po-tier-line">
++          <TierBadge tier={tier} />
++          <span className="ds-helper po-flat">{set ? `Set by you: "${set.reason}"` : 'Suggested by ACT'}</span>
++        </p>
++      )}
++      {!open && canEdit && (
++        <button type="button" className="ds-btn ds-btn-sm" ref={openBtn} data-testid="intake-override-open" aria-expanded="false"
++                onClick={() => { setPick(tier || 3); setOpen(true) }}>Change tier</button>
++      )}
++      {open && (
++        <div className="po-ovr" role="group" aria-labelledby={`tp-l-${row.id}`} data-testid="intake-override">
++          <span className="ds-label" id={`tp-l-${row.id}`}>Set tier</span>
++          <div className="po-tierpick" role="radiogroup" aria-labelledby={`tp-l-${row.id}`} onKeyDown={arrow}>
++            {[1, 2, 3, 4].map((n) => (
++              <button type="button" key={n} role="radio" aria-checked={pick === n} tabIndex={pick === n ? 0 : -1}
++                      ref={(el) => { radios.current[n] = el }} data-testid={`intake-override-tier-${n}`} onClick={() => setPick(n)}>Tier {n}</button>
++            ))}
++          </div>
++          {tier != null && pick > tier && <p className="ds-helper po-flat">Lowering below the suggestion is flagged to the reviewer.</p>}
++          <label className="ds-label" htmlFor={`rsn-${row.id}`}>Reason <span className="po-opt">(required, shown to the reviewer)</span></label>
++          <input className="ds-input" id={`rsn-${row.id}`} data-testid="intake-override-reason" value={reason} autoComplete="off"
++                 placeholder="For example: payments tool is disabled in production" aria-invalid={err ? 'true' : undefined}
++                 aria-describedby={errId} onChange={(e) => { setReason(e.target.value); if (err) setErr(false) }}
++                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }} />
++          <p className="po-fielderr" id={errId} role={err ? 'alert' : undefined}>{err ? 'Enter a reason of at least 10 characters. Reviewers see it with the tier.' : ''}</p>
++          {saveErr && <p className="po-fielderr" role="alert">{saveErr}</p>}
++          <div className="po-ovr-actions">
++            <button type="button" className="ds-btn ds-btn-primary ds-btn-sm" data-testid="intake-save" disabled={busy} aria-busy={busy ? 'true' : undefined} onClick={save}>Save tier</button>
++            <button type="button" className="ds-btn ds-btn-sm" onClick={close}>Cancel</button>
++          </div>
++        </div>
++      )}
++    </>
++  )
++}
++
++// ---- tier cell text: badge, delta, and where the tier came from
++export function TierCell({ row }) {
++  const t = tierOf(row)
++  const set = tierSet(row)
++  const live = row.class === 'new' || row.class === 'changed'
++  return (
++    <>
++      <div className="po-tiercell">
++        {t == null ? <span className="ds-helper po-flat">Not scored</span> : <TierBadge tier={t} />}
++        {wentUp(row) && !set && <span className="po-tierdelta up"><IconUp /> from Tier {row.current_tier}</span>}
++      </div>
++      <span className="po-tiernote">
++        {set ? `Set by you · suggested Tier ${row.suggestion.suggested_tier ?? t}` : live ? 'Suggested' : 'Current tier'}
++      </span>
++    </>
++  )
++}
++
++// ---- owner select. options: names of people already owning agents in ACT.
++export function OwnerSelect({ row, owners, onChange, label, disabled, setByYou }) {
++  const list = React.useMemo(() => [...new Set([...(owners || []), ...(row.owner ? [row.owner] : [])])].sort((a, b) => a.localeCompare(b)), [owners, row.owner])
++  return (
++    <>
++      <select className={`po-own${row.owner ? '' : ' is-none'}`} aria-label={label} value={row.owner || ''} disabled={disabled}
++              onChange={(e) => onChange(e.target.value)}>
++        <option value="">No owner</option>
++        {list.map((o) => <option key={o} value={o}>{o}</option>)}
++      </select>
++      <span className="po-own-src">{!row.owner ? 'Imports as Needs owner' : setByYou ? 'Set by you' : 'Found at the source'}</span>
++    </>
++  )
++}
+diff --git a/frontend/src/connect.css b/frontend/src/connect.css
+index 2e1602b..e027c12 100644
+--- a/frontend/src/connect.css
++++ b/frontend/src/connect.css
+@@ -206,6 +206,212 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
+ .po-footer-l { flex: 1 1 260px; min-width: 0; font-size: 14px }
+ .po-footer-r { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+ 
++/* ---- PO-6: scan, review, import summary, connection detail, intake ---- */
++.ds-btn-danger { background: var(--ds-danger); border-color: var(--ds-danger); color: #fff }
++.ds-btn-danger:hover:not(:disabled) { background: #912018; border-color: #912018 }
++.po-muted { color: var(--ds-muted) }
++.po-mb { margin-bottom: var(--ds-s2) }
++.po-gap { height: 12px }
++.po-opt { font-weight: 400; color: var(--ds-muted) }
++.po-fielderr { margin: 4px 0 0; min-height: 20px; font-size: 13px; line-height: 20px; color: var(--ds-danger); font-weight: 500 }
++.po-fs { border: 0; margin: 0; padding: 0; min-width: 0 }
++.po-fs legend { padding: 0 }
++.po-trunc { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-scan { display: flex; flex-direction: column; gap: var(--ds-s2); min-width: 0 }
++
++/* scan view */
++.po-page > .ds-alert { margin-bottom: var(--ds-s2) }
++.po-scan-top { padding: 16px 20px }
++.po-scan-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px }
++.po-scan-title { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--ds-ink); text-transform: none; letter-spacing: 0 }
++.po-scan-status { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ds-text); min-width: 0 }
++.po-scan-status.is-done { color: var(--ds-ok); font-weight: 600 }
++.po-scan-status svg { flex: none }
++.po-progress { height: 6px; border-radius: 3px; background: var(--ds-surface-2); overflow: hidden; margin: 14px 0 0 }
++.po-progress i { display: block; height: 100%; background: var(--ds-accent); border-radius: 3px; transition: width var(--ds-dur-3) var(--ds-ease) }
++.po-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px }
++@media (max-width: 1100px) { .po-stats { grid-template-columns: repeat(3, minmax(0, 1fr)) } }
++.po-stat { padding: 12px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 0 }
++.po-stat span { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
++.po-stat strong { font-size: 28px; line-height: 36px; font-weight: 650; color: var(--ds-ink); font-variant-numeric: tabular-nums }
++.po-scan-cols { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--ds-s2); align-items: start }
++@media (max-width: 1100px) { .po-scan-cols { grid-template-columns: minmax(0, 1fr) } }
++.po-scopes-l { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto }
++.po-scopes-l li { display: grid; grid-template-columns: 20px minmax(0, 1fr) minmax(0, auto); gap: 10px; align-items: center; padding: 10px 20px; border-top: 1px solid var(--ds-line); font-size: 13px }
++.po-scopes-l li:first-child { border-top: 0 }
++.po-sico { display: grid; place-items: center; color: var(--ds-muted) }
++.po-ok { color: var(--ds-ok); display: grid }
++.po-sname { color: var(--ds-ink); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-sstate { color: var(--ds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; font-variant-numeric: tabular-nums }
++.po-sstate.is-skip { color: var(--ds-warn) }
++.po-feed { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto }
++.po-feed li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 20px; border-top: 1px solid var(--ds-line); animation: po-in var(--ds-dur-2) var(--ds-ease) }
++.po-feed li:first-child { border-top: 0 }
++.po-feed li.po-feed-empty { display: block; animation: none; padding: 20px }
++.po-feed .po-fname { font-weight: 600; color: var(--ds-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-feed .po-fsub { font-size: 12px; color: var(--ds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-fright { display: flex; gap: 6px; align-items: center; justify-content: flex-end }
++.po-feed-empty { padding: 20px }
++.po-job { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: var(--ds-radius); background: var(--ds-surface); border: 1px solid var(--ds-line); font-size: 13px; color: var(--ds-text) }
++.po-job-text { display: flex; gap: 8px; align-items: flex-start; flex: 1 1 420px; min-width: 0; line-height: 20px }
++.po-job-text svg { flex: none; margin-top: 3px; color: var(--ds-info) }
++.po-job-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px }
++.po-job-why { font-size: 12px; color: var(--ds-muted) }
++
++/* change badges, flags, diff */
++.po-chg { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px; font-size: 12px; font-weight: 600; white-space: nowrap }
++.po-chg-new { background: var(--ds-accent-soft); color: #3b2ba8 }
++.po-chg-changed { background: #fff4d6; color: #6b4a00 }
++.po-chg-unchanged { background: var(--ds-surface-2); color: var(--ds-text) }
++.po-chg-missing { background: var(--ds-danger-bg); color: #912018 }
++.po-flags { display: flex; flex-wrap: wrap; gap: 4px }
++.po-flag { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 4px; font-size: 12px; font-weight: 500; background: #fff1e6; color: #7a2e0e; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis }
++.po-flag-high { background: var(--ds-danger-bg); color: #912018 }
++.po-flag-note { display: block; font-size: 12px; line-height: 16px; color: var(--ds-muted) }
++.po-diff { list-style: none; margin: 0; padding: 0; font: 12px/18px var(--ds-mono) }
++.po-diff li { padding: 2px 8px; border-radius: 4px; margin-top: 2px; overflow-wrap: anywhere }
++.po-diff .add { background: var(--ds-ok-bg); color: var(--ds-ok) } .po-diff .del { background: var(--ds-danger-bg); color: #912018 } .po-diff .mod { background: #fff4d6; color: #6b4a00 }
++
++/* review table */
++.po-toolbar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; justify-content: space-between }
++.po-seg { display: inline-flex; flex-wrap: wrap; padding: 2px; gap: 2px; background: var(--ds-surface-2); border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
++.po-seg button { height: 30px; padding: 0 12px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap }
++.po-seg button:hover { background: #dfe3e9 }
++.po-seg button[aria-pressed="true"] { background: var(--ds-surface); color: var(--ds-ink); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .15) }
++.po-seg b { font-weight: 600; color: var(--ds-muted); margin-left: 4px; font-variant-numeric: tabular-nums }
++.po-search { width: 288px; height: 36px; font-size: 14px }
++.po-tbl-card { overflow: hidden }
++.po-rt col.c-cb { width: 44px } .po-rt col.c-chg { width: 128px } .po-rt col.c-own { width: 168px } .po-rt col.c-tier { width: 168px } .po-rt col.c-flags { width: 25% } .po-rt col.c-why { width: 76px }
++@media (max-width: 1100px) { .po-rt col.c-own { width: 148px } .po-rt col.c-tier { width: 150px } .po-rt col.c-flags { width: 21% } }
++.po-rt th, .po-rt td { padding-left: 12px; padding-right: 12px }
++.po-rt td { height: 56px; overflow: hidden }
++.po-rt tbody tr { cursor: default }
++.po-rt tbody tr:hover td { background: #fafbff }
++.po-rt input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--ds-accent); margin: 0; vertical-align: middle }
++.po-aname-row { display: flex; align-items: center; gap: 8px; min-width: 0 }
++.po-aname-row .po-sample { flex: none }
++.po-aname { display: block; min-width: 0; font-weight: 600; color: var(--ds-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-asub { display: block; font-size: 12px; color: var(--ds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-rt tr.is-risk td:first-child { box-shadow: inset 3px 0 0 var(--ds-danger) }
++.po-rt tr.is-off td { background: #fafbfc } .po-rt tr.is-off .po-aname { color: var(--ds-muted) }
++.po-rt tr.po-detail td { height: auto; padding: 0; background: #fbfbfe; overflow: visible }
++.po-rt tr.po-detail:hover td { background: #fbfbfe }
++.po-own { width: 100%; height: 32px; font: inherit; font-size: 13px; padding: 0 28px 0 8px; border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius-sm); background: var(--ds-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23596273' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center; appearance: none; -webkit-appearance: none; color: var(--ds-ink); cursor: pointer; text-overflow: ellipsis }
++.po-own:disabled { cursor: default; opacity: .6 }
++.po-own.is-none { border-color: var(--ds-danger-line); color: #912018; background-color: var(--ds-danger-bg) }
++.po-own:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
++.po-own-src { display: block; font-size: 11px; color: var(--ds-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
++.po-own-ro { font-size: 13px; color: var(--ds-text) }
++.po-tiercell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap }
++.po-tierdelta { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--ds-muted) } .po-tierdelta.up { color: var(--ds-danger); font-weight: 600 }
++.po-tiernote { display: block; font-size: 11px; color: var(--ds-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
++.po-tier-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px }
++.po-why-btn { height: 28px; padding: 0 8px; font-size: 13px }
++.po-why-btn[aria-expanded="true"] { background: var(--ds-accent-soft) }
++.po-xp { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--ds-s3); padding: 16px 20px 20px 56px; border-bottom: 1px solid var(--ds-line) }
++@media (max-width: 1100px) { .po-xp { grid-template-columns: minmax(0, 1fr); padding-left: 20px } }
++.po-xp h4, .po-xp-solo h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted) }
++.po-xp-solo h4:not(:first-child) { margin-top: 16px }
++.po-crit { list-style: none; margin: 0; padding: 0 }
++.po-crit li { display: grid; grid-template-columns: 150px 28px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-top: 1px solid var(--ds-line); font-size: 13px; line-height: 20px; align-items: baseline }
++@media (max-width: 1100px) { .po-crit li { grid-template-columns: 130px 24px minmax(0, 1fr) } }
++.po-crit li:first-child { border-top: 0 }
++.po-crit .k { color: var(--ds-text); font-weight: 500 } .po-crit .v { font-weight: 700; color: var(--ds-ink); font-variant-numeric: tabular-nums; text-align: right } .po-crit .why { color: var(--ds-muted); overflow-wrap: anywhere }
++.po-crit .v.hi { color: var(--ds-danger) }
++.po-ovr { margin-top: 4px; padding: 12px; border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: var(--ds-surface) }
++.po-ovr .ds-input { height: 36px; font-size: 14px; margin-top: 6px }
++.po-ovr-actions { display: flex; gap: 8px }
++.po-tierpick { display: inline-grid; grid-template-columns: repeat(4, 64px); gap: 2px; padding: 2px; background: var(--ds-surface-2); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); margin: 6px 0 10px }
++.po-tierpick button { height: 28px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; color: var(--ds-text) }
++.po-tierpick button[aria-checked="true"] { background: var(--ds-accent); color: #fff; font-weight: 600 }
++.po-tierpick button:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
++.po-empty { text-align: center; padding: 40px 24px; color: var(--ds-muted) }
++.po-empty h3 { margin: 0 0 4px; font-size: 16px; color: var(--ds-ink) }
++.po-empty p { margin: 0 0 12px }
++.po-rt tr.po-empty-row td { height: auto }
++.po-footer-sticky { position: sticky; bottom: 0; z-index: 5; margin-top: var(--ds-s2); box-shadow: 0 -8px 8px -8px rgba(16, 24, 40, .12) }
++.po-footer-sticky .po-footer-l { flex: 1 1 320px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px }
++.po-footer-sticky .po-footer-l strong { color: var(--ds-ink); font-variant-numeric: tabular-nums }
++.po-footer-sticky .po-own { width: 180px; height: 36px }
++.po-footer-note { flex: 1 1 200px; min-width: 0 }
++.po-dismiss { width: 100%; max-width: 560px }
++.po-banner { margin-bottom: 0 }
++
++/* import summary */
++.po-sum-hero { display: flex; gap: 16px; align-items: flex-start; padding: var(--ds-s3) }
++.po-sum-ico { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-ok-bg); color: var(--ds-ok) }
++.po-sum-ico svg { width: 20px; height: 20px }
++.po-sum-hero h2 { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 20px; line-height: 28px; color: var(--ds-ink); text-transform: none; letter-spacing: 0 }
++.po-kv { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--ds-line) }
++.po-kv.ds-card { border-top: 1px solid var(--ds-line) }
++@media (max-width: 899px) { .po-kv { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
++.po-kv > div { padding: 16px var(--ds-s3); border-right: 1px solid var(--ds-line); min-width: 0 } .po-kv > div:last-child { border-right: 0 }
++.po-kv dt { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted) }
++.po-kv dd { margin: 2px 0 0; font-size: 24px; line-height: 32px; font-weight: 650; color: var(--ds-ink); font-variant-numeric: tabular-nums }
++.po-kv dd small { display: block; font-size: 13px; font-weight: 400; color: var(--ds-muted); line-height: 18px }
++.po-figs { margin-bottom: var(--ds-s2) }
++.po-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--ds-s2); align-items: start }
++@media (max-width: 1100px) { .po-two { grid-template-columns: minmax(0, 1fr) } }
++.po-next { display: flex; flex-direction: column; gap: 10px; align-items: flex-start }
++.po-radios { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px }
++.po-radios label { display: inline-flex; gap: 8px; align-items: center; height: 36px; padding: 0 14px; border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius); font-size: 14px; cursor: pointer; background: var(--ds-surface) }
++.po-radios label:has(input:checked) { border-color: var(--ds-accent); box-shadow: 0 0 0 1px var(--ds-accent); background: #faf9ff; color: var(--ds-ink); font-weight: 600 }
++.po-radios label:has(input:focus-visible) { outline: 2px solid var(--ds-accent); outline-offset: 2px }
++.po-radios input { accent-color: var(--ds-accent); margin: 0 }
++.po-sync-note { margin: 0 0 12px }
++.po-sync-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px }
++
++/* connection detail and intake */
++.po-detail-head { display: flex; gap: 16px; align-items: center; min-width: 0; flex: 1 1 360px }
++.po-mark-lg { width: 48px; height: 48px; font-size: 12px }
++.po-products { margin-top: 2px }
++.po-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px }
++.po-detail-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; margin-top: 12px; font-size: 13px; color: var(--ds-muted) }
++.po-meta-i { display: inline-flex; align-items: center; gap: 6px }
++.po-dl { margin: 0; font-size: 14px }
++.po-dl > div { display: grid; grid-template-columns: 124px minmax(0, 1fr); gap: 8px; padding: 8px 0; border-top: 1px solid var(--ds-line) }
++.po-dl > div:first-child { border-top: 0; padding-top: 0 }
++.po-dl dt { color: var(--ds-muted); font-size: 13px } .po-dl dd { margin: 0; color: var(--ds-ink); font-weight: 500; overflow-wrap: anywhere }
++.po-mono { font-family: var(--ds-mono); font-size: 12px }
++.po-recheck { margin-top: 12px }
++.po-tbl-wrap { overflow: hidden; border-radius: 0 0 var(--ds-radius-lg) var(--ds-radius-lg) }
++.po-qt tbody tr, .po-ht tbody tr { cursor: default }
++.po-qt tbody tr:hover td, .po-ht tbody tr:hover td { background: var(--ds-surface) }
++.po-qt col.c-where { width: 26% } .po-qt col.c-sug { width: 120px } .po-qt col.c-found { width: 120px } .po-qt col.c-act { width: 112px }
++.po-ht col.c-start { width: 18% } .po-ht col.c-n { width: 9% } .po-ht col.c-res { width: 24% }
++.po-ht td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
++.po-dz { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center }
++dialog.po-dialog { border: 0; border-radius: var(--ds-radius-lg); padding: 0; width: min(520px, calc(100vw - 32px)); box-shadow: 0 20px 48px rgba(16, 24, 40, .24); color: var(--ds-text) }
++dialog.po-dialog::backdrop { background: rgba(20, 24, 31, .45) }
++.po-dialog-body { padding: 24px }
++.po-dialog-body h2 { margin: 0 0 8px; font-size: 18px; color: var(--ds-ink); text-transform: none; letter-spacing: 0 }
++.po-dialog-body p { margin: 0 0 8px }
++.po-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--ds-line); background: #fafbfc; border-radius: 0 0 var(--ds-radius-lg) var(--ds-radius-lg) }
++.po-intake { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--ds-s2); align-items: start }
++@media (max-width: 1100px) { .po-intake { grid-template-columns: minmax(0, 1fr) } }
++.po-intake-side { display: flex; flex-direction: column; gap: var(--ds-s2); min-width: 0 }
++.po-tierrow { margin-bottom: 4px }
++
++@media (max-width: 720px) {
++  .po-search { width: 100% }
++  .po-kv > div { border-right: 0; border-bottom: 1px solid var(--ds-line) }
++}
++
++/* Fleet entry points and the agent source chip */
++.fl-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; align-items: center }
++.fl-action { display: inline-flex }
++.fl-awaiting { align-items: center; margin-bottom: var(--ds-s2) }
++.fl-awaiting svg { flex: none }
++.fl-awaiting-text { flex: 1; min-width: 0 }
++.fl-awaiting .ds-btn { flex: none }
++.fl-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: var(--ds-s2); font-size: 14px; color: var(--ds-text) }
++.fl-sample { margin-left: 8px; vertical-align: middle }
++.fl-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px }
++.fl-gone { font-size: 12px; font-weight: 600; color: var(--ds-text); background: var(--ds-surface-2); border-radius: 11px; padding: 1px 8px; white-space: nowrap }
++a.ag-source-link { text-decoration: none; color: var(--ds-text) }
++a.ag-source-link:hover { background: var(--ds-accent-soft); color: var(--ds-accent) }
++.ag-gone { background: var(--ds-surface-2); font-weight: 600 }
++
+ /* reduced motion: no looping animation, no pulse ring, no slide; state still changes and text carries the meaning */
+ @media (prefers-reduced-motion: reduce) {
+   [class*="po-"], [class*="po-"]::before, [class*="po-"]::after { animation: none !important; transition: none !important }
+diff --git a/frontend/src/main.jsx b/frontend/src/main.jsx
+index 6416362..373af13 100644
+--- a/frontend/src/main.jsx
++++ b/frontend/src/main.jsx
+@@ -20,7 +20,11 @@ import ConnectStart from './pages/ConnectStart'
+ import ConnectCallback from './pages/ConnectCallback'
+ import ConnectAccess from './pages/ConnectAccess'
+ import ConnectScope from './pages/ConnectScope'
+-import ConnectScan from './pages/ConnectScan'
++import ScanView, { ScanStart } from './pages/ConnectScan'
++import ScanReview from './pages/ScanReview'
++import ImportSummary from './pages/ImportSummary'
++import ConnectionDetail from './pages/ConnectionDetail'
++import Intake from './pages/Intake'
+ import NotFound from './pages/NotFound'
+ 
+ createRoot(document.getElementById('root')).render(
+@@ -41,7 +45,12 @@ createRoot(document.getElementById('root')).render(
+         <Route path="/connect/:provider/callback" element={<ConnectCallback />} />
+         <Route path="/connect/:provider/:connId/access" element={<ConnectAccess />} />
+         <Route path="/connect/:provider/:connId/scope" element={<ConnectScope />} />
+-        <Route path="/connect/:provider/:connId/scan" element={<ConnectScan />} />
++        <Route path="/connect/:provider/:connId/scan" element={<ScanStart />} />
++        <Route path="/connections/:connId" element={<ConnectionDetail />} />
++        <Route path="/connections/:connId/scans/:scanId" element={<ScanView />} />
++        <Route path="/connections/:connId/scans/:scanId/review" element={<ScanReview />} />
++        <Route path="/connections/:connId/scans/:scanId/summary" element={<ImportSummary />} />
++        <Route path="/connections/:connId/intake/:stagedId" element={<Intake />} />
+         <Route path="/audit" element={<Audit />} />
+         <Route path="*" element={<NotFound />} />
+       </Routes>
+diff --git a/frontend/src/pages/Agent.jsx b/frontend/src/pages/Agent.jsx
+index d504905..a7591e6 100644
+--- a/frontend/src/pages/Agent.jsx
++++ b/frontend/src/pages/Agent.jsx
+@@ -7,6 +7,7 @@ import Markdown from '../components/Markdown'
+ import { Breadcrumb } from '../components/form'
+ import EvidencePack, { useEvidencePack } from '../components/EvidencePack'
+ import { StatusPill, TierBadge, useAsync, useHealth } from '../components/ui'
++import { SampleBadge } from '../components/connect/bits'
+ import { Arrow, Card, ChevronRight, CopyButton, Dl, Empty, ErrorPage, IdValue, InlineError, None, Skel } from '../components/agentui'
+ 
+ const CRITERIA = [
+@@ -381,7 +382,11 @@ function AgentView({ id }) {
+           <div className="ag-header-main">
+             <h1 className="ds-title ag-name" title={clean(a.name)}>{clean(a.name)}</h1>
+             <div className="ag-meta">
+-              <span className="ds-chip-tag" data-testid="agent-source">{sourceLabel(a.source_platform)}</span>
++              {a.connection_id
++                ? <Link className="ds-chip-tag ag-source-link" data-testid="agent-source" to={`/connections/${a.connection_id}`} title="Open the connection this agent came from">{sourceLabel(a.source_platform)}<span className="ds-sr"> connection</span></Link>
++                : <span className="ds-chip-tag" data-testid="agent-source">{sourceLabel(a.source_platform)}</span>}
++              {a.sample && <SampleBadge />}
++              {a.source_disconnected && <span className="ds-chip-tag ag-gone" data-testid="agent-source-disconnected">Source disconnected</span>}
+               <TierBadge tier={a.tier} />
+               <StatusPill status={a.status} testid="agent-status" />
+               <span className="ag-muted ag-meta-text">Owner {clean(a.owner) || '—'} · Last seen {fmtTs(a.last_seen)}</span>
+diff --git a/frontend/src/pages/ConnectScan.jsx b/frontend/src/pages/ConnectScan.jsx
+index f84f075..927c962 100644
+--- a/frontend/src/pages/ConnectScan.jsx
++++ b/frontend/src/pages/ConnectScan.jsx
+@@ -1,25 +1,294 @@
+-// Step 4 stub: scanning arrives with PO-6. Says so plainly and keeps the way back.
++// Step 4: Scan. Live counters, scopes and the agents found, from GET /api/scans/:id polled every 2 s. The scan runs on the
++// server (a Domino Job, or in process for sample data), so closing the page never stops it and a reload restores it.
+ import React from 'react'
+-import { Navigate, useNavigate, useParams } from 'react-router-dom'
++import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
++import { connectionsApi, scansApi } from '../api'
++import { Alert } from '../components/form'
++import { TierBadge } from '../components/ui'
+ import WizardFrame from '../components/connect/WizardFrame'
++import { ErrorPanel, IconAlert, IconClock, IconDash, IconCheck, IconInfo, SampleBadge, SampleBanner, Spinner, useConn } from '../components/connect/bits'
+ import { PROVIDERS } from '../components/connect/providers'
++import { sourceLabel } from '../format'
+ 
+-export default function ConnectScan() {
++const POLL_MS = 2000
++const LIVE_MS = 5000 // the polite announcement says at most one thing every 5 s
++const TERMINAL = ['done', 'partial', 'failed']
++const reduced = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
++
++const scopeDone = (p) => ['done', 'failed', 'skipped'].includes(p.state)
++const errorsOf = (p) => (Array.isArray(p.errors) ? p.errors : p.errors ? [`${p.errors} errors`] : [])
++const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
++
++function duration(a, b) {
++  const s = Math.max(0, Math.round((new Date(b) - new Date(a)) / 1000))
++  if (!Number.isFinite(s)) return ''
++  if (s < 1) return 'under a second'
++  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
++}
++
++// Starting point of the wizard's step 3 Continue: start the scan, then land on its page (the URL a reload can restore).
++export function ScanStart() {
+   const { provider, connId } = useParams()
+-  const p = PROVIDERS[provider]
+   const nav = useNavigate()
+-  if (!p) return <Navigate to="/connections" replace />
++  const [error, setError] = React.useState('')
++  const [rev, setRev] = React.useState(0)
++  const started = React.useRef(-1)
++  React.useEffect(() => {
++    if (started.current === rev) return
++    started.current = rev
++    setError('')
++    connectionsApi.startScan(connId).then((r) => nav(`/connections/${connId}/scans/${r.scan_id}`, { replace: true }), (e) => setError(e.message || 'The scan did not start.'))
++  }, [rev, connId, nav])
++  if (!PROVIDERS[provider]) return <Navigate to="/connections" replace />
+   return (
+-    <WizardFrame provider={provider} connId={connId} step={4} title={`Scan ${p.name}`}
++    <WizardFrame provider={provider} connId={connId} step={4} title={`Scan ${PROVIDERS[provider].name}`} hideAside
+                  description="ACT reads each agent's tools, identity, data access and owner tags. Nothing is imported until you review.">
+-      <div className="ds-card ds-empty" data-testid="scan-soon">
+-        <h2 className="ds-empty-title">Scanning arrives next</h2>
+-        <p className="ds-helper">Your access check and scope are saved on this connection. The scan, the review table and the import are the next release.</p>
+-        <div className="po-empty-actions">
+-          <button type="button" className="ds-btn" onClick={() => nav(`/connect/${provider}/${connId}/scope`)}>Back to scope</button>
+-          <button type="button" className="ds-btn ds-btn-primary" onClick={() => nav('/connections')}>Back to Connections</button>
+-        </div>
++      {error
++        ? <ErrorPanel title="ACT couldn't start the scan" retryTestid="scan-retry" onRetry={() => setRev((r) => r + 1)}>{error}</ErrorPanel>
++        : <section className="ds-card po-panel" aria-busy="true"><div className="po-panel-body"><span className="ds-skel po-skel-row" /><span className="ds-skel po-skel-row" /></div></section>}
++    </WizardFrame>
++  )
++}
++
++function useScan(scanId) {
++  const [scan, setScan] = React.useState(null)
++  const [error, setError] = React.useState(false)
++  const [rev, setRev] = React.useState(0)
++  const first = React.useRef(null) // whether the first answer was already finished (a reload) or still running
++  React.useEffect(() => {
++    let live = true, timer
++    first.current = null
++    setError(false)
++    const tick = async () => {
++      try {
++        const s = await scansApi.get(scanId)
++        if (!live) return
++        if (first.current == null) first.current = TERMINAL.includes(s.state) ? 'done' : 'live'
++        setScan(s); setError(false)
++        if (!TERMINAL.includes(s.state)) timer = setTimeout(tick, POLL_MS)
++      } catch {
++        if (!live) return
++        setError(true)
++        timer = setTimeout(tick, POLL_MS * 2) // keep trying: the page recovers on its own
++      }
++    }
++    tick()
++    return () => { live = false; clearTimeout(timer) }
++  }, [scanId, rev])
++  return { scan, error, retry: () => { setScan(null); first.current = null; setRev((r) => r + 1) }, restored: first.current === 'done' }
++}
++
++// A value that moves at most once per `ms`, so a polite live region is not spoken every poll. `now` jumps straight through.
++function useThrottled(value, ms, now) {
++  const [v, setV] = React.useState(value)
++  const last = React.useRef(0)
++  const latest = React.useRef(value)
++  latest.current = value
++  React.useEffect(() => {
++    if (now) { setV(value); last.current = Date.now(); return undefined }
++    const wait = Math.max(0, ms - (Date.now() - last.current))
++    const t = setTimeout(() => { last.current = Date.now(); setV(latest.current) }, wait)
++    return () => clearTimeout(t)
++  }, [value, now, ms])
++  return v
++}
++
++function Counter({ k, label, n }) {
++  return (
++    <div className="ds-card po-stat">
++      <span>{label}</span>
++      <strong data-testid={`scan-counter-${k}`}>{n}</strong>
++    </div>
++  )
++}
++
++function ScopeRow({ p }) {
++  const errs = errorsOf(p)
++  let icon, state
++  if (p.state === 'queued') { icon = <IconClock />; state = 'Queued' }
++  else if (p.state === 'running') { icon = <Spinner />; state = p.message || 'Reading…' }
++  else if (p.state === 'done') { icon = <span className="po-ok"><IconCheck /></span>; state = `Done · ${plural(p.found || 0, 'agent', 'agents')}` }
++  else { icon = <IconDash />; state = `Skipped: ${errs[0] || 'ACT could not read this scope'}` }
++  return (
++    <li data-testid={`scan-scope-row-${p.scope}`}>
++      <span className="po-sico" aria-hidden="true">{icon}</span>
++      <span className="po-sname" title={p.scope}>{p.scope}</span>
++      <span className={`po-sstate${p.state === 'failed' || p.state === 'skipped' ? ' is-skip' : ''}`} title={state}>{state}</span>
++    </li>
++  )
++}
++
++const CHG = { new: 'New', changed: 'Changed', unchanged: 'Unchanged' }
++
++// The agents found. They come from the staged results; on a live scan they arrive one after another, newest first.
++function Feed({ scanId, state, found, animate }) {
++  const [rows, setRows] = React.useState([])
++  const [shown, setShown] = React.useState(0)
++  const seen = React.useRef(-1)
++  React.useEffect(() => {
++    if (!found || seen.current === found + state) return undefined
++    seen.current = found + state
++    let live = true
++    scansApi.staged(scanId).then((r) => { if (live) setRows((r.rows || []).filter((x) => x.class !== 'missing')) }, () => {})
++    return () => { live = false }
++  }, [scanId, found, state])
++  React.useEffect(() => {
++    if (shown >= rows.length) return undefined
++    if (!animate || reduced()) { setShown(rows.length); return undefined }
++    const t = setTimeout(() => setShown((n) => n + 1), 110)
++    return () => clearTimeout(t)
++  }, [rows, shown, animate])
++  const visible = rows.slice(0, shown).reverse()
++  return (
++    <ul className="po-feed" data-testid="scan-feed" aria-label="Agents found, newest first">
++      {visible.length === 0 && <li className="po-feed-empty"><span className="ds-helper po-flat">{TERMINAL.includes(state) ? 'This scan found no agents.' : 'Agents appear here as each scope is read.'}</span></li>}
++      {visible.map((r) => (
++        <li key={r.id} data-testid={`scan-agent-row-${r.native_id}`}>
++          <span className="po-fname" title={r.name}>{r.name}</span>
++          <span className="po-fright">{r.sample && <SampleBadge />}<span className={`po-chg po-chg-${r.class}`}>{CHG[r.class] || r.class}</span></span>
++          <span className="po-fsub" title={r.native_id}>{sourceLabel(r.platform)} · {r.native_id}</span>
++          <span className="po-fright">{r.suggestion?.tier != null && <TierBadge tier={r.suggestion.tier} />}</span>
++        </li>
++      ))}
++    </ul>
++  )
++}
++
++export default function ScanView() {
++  const { connId, scanId } = useParams()
++  const nav = useNavigate()
++  const c = useConn(connId)
++  const { scan, error, retry, restored } = useScan(scanId)
++  const [retrying, setRetrying] = React.useState(false)
++  const [retryErr, setRetryErr] = React.useState('')
++  const provider = c.conn?.provider
++  const p = PROVIDERS[provider]
++
++  const counts = scan?.counts || {}
++  const progress = scan?.progress || []
++  const state = scan?.state
++  const terminal = TERMINAL.includes(state)
++  const done = progress.filter(scopeDone).length
++  const skipped = progress.filter((x) => x.state === 'failed' || x.state === 'skipped').length
++  const sample = !!(scan?.sample ?? c.conn?.sample)
++  const found = counts.found || 0
++  const reviewable = (state === 'done' || state === 'partial' || (state === 'failed' && found > 0))
++  const total = found + (counts.missing || 0)
++
++  const sentence = React.useMemo(() => {
++    if (!scan) return 'Starting the scan…'
++    if (state === 'queued') return sample ? 'Starting the sample scan…' : 'Starting the scan job…'
++    if (state === 'running') return `Scanning · ${done} of ${progress.length || 1} ${progress.length === 1 ? 'scope' : 'scopes'} done · ${plural(found, 'agent', 'agents')} found so far.`
++    if (state === 'failed') return 'The scan stopped before it finished.'
++    const t = scan.finished_at ? `Scan complete in ${duration(scan.started_at, scan.finished_at)}.` : 'Scan complete.'
++    return `${t} ${found} found, ${counts.missing || 0} missing${skipped ? `, ${plural(skipped, 'scope', 'scopes')} skipped` : ''}.`
++  }, [scan, state, done, found, counts.missing, progress.length, skipped])
++  const live = useThrottled(sentence, LIVE_MS, terminal || !scan)
++
++  const rerun = async () => {
++    setRetrying(true); setRetryErr('')
++    try { const r = await connectionsApi.startScan(connId); nav(`/connections/${connId}/scans/${r.scan_id}`) } catch (e) { setRetryErr(e.message || 'The scan did not start.') } finally { setRetrying(false) }
++  }
++
++  if (c.error) return <div className="ds-page ds-container po-page"><ErrorPanel title="ACT couldn't load this connection" onRetry={c.reload}>Try again in a moment. Your scan keeps running on the server.</ErrorPanel></div>
++  if (!c.conn) {
++    return (
++      <div className="ds-page ds-container po-page" aria-busy="true">
++        <span className="ds-skel po-skel-title" /><span className="ds-skel po-skel-row" /><span className="ds-skel po-skel-row" />
+       </div>
++    )
++  }
++  if (!p) return <Navigate to="/connections" replace />
++
++  const noun = p.leaf === 'Region' ? 'scope' : p.leaf
++  const jobLine = sample
++    ? <>This is a sample scan (<Link to={`/connections/${connId}`} data-testid="scan-job-link">{String(scanId).slice(0, 10)}</Link>). It runs inside ACT, so there is no Domino Job. You can leave this page; the result waits on the {p.name} connection.</>
++    : <>Running as Domino Job {scan?.job_url
++        ? <a href={scan.job_url} target="_blank" rel="noreferrer" data-testid="scan-job-link">#{scan.job_id || 'open'}<span className="ds-sr"> (opens in a new tab)</span></a>
++        : <Link to={`/connections/${connId}`} data-testid="scan-job-link">#{scan?.job_id || String(scanId).slice(0, 8)}</Link>}. You can close this page; ACT keeps scanning and the result waits on the {p.name} connection.</>
++
++  return (
++    <WizardFrame provider={provider} connId={connId} step={4} title={`Scan ${p.name}`} hideAside
++                 crumbs={[{ label: 'Connections', to: '/connections' }, { label: p.name, to: `/connections/${connId}` }, { label: 'Scan' }]}
++                 hrefs={{ 3: `/connect/${provider}/${connId}/scope` }}
++                 description="ACT is reading each agent's tools, identity, data access and owner tags. Nothing is imported until you review.">
++      {sample && <SampleBanner provider={p.name} />}
++      {error && !scan && (
++        <ErrorPanel title="ACT couldn't read this scan" testid="scan-error" retryTestid="scan-retry" onRetry={retry}>
++          This is on ACT's side. The scan itself keeps running. Try again in a moment.
++        </ErrorPanel>
++      )}
++      {!error && !scan && (
++        <section className="ds-card po-panel" aria-busy="true" data-testid="scan-loading"><div className="po-panel-body"><span className="ds-skel po-skel-row" /><span className="ds-skel po-skel-row" /></div></section>
++      )}
++      {scan && (
++        <div data-testid="scan-view" className="po-scan">
++          <section className="ds-card po-scan-top" aria-labelledby="scan-h">
++            <div className="po-scan-head">
++              <h2 id="scan-h" className="po-scan-title">{p.name}{sample ? '' : ` · ${plural(progress.length, noun, `${noun}s`)}`} {sample && <SampleBadge />}</h2>
++              <span className={`po-scan-status${state === 'done' || state === 'partial' ? ' is-done' : ''}`} data-testid="scan-status" role="status" aria-live="polite" aria-atomic="true">
++                {state === 'running' || state === 'queued' ? <Spinner /> : state === 'failed' ? <IconAlert /> : <IconCheck />}
++                <span>{live}</span>
++              </span>
++            </div>
++            <div className="po-progress" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax={Math.max(progress.length, 1)} aria-valuenow={done} data-testid="scan-progress">
++              <i style={{ width: `${terminal ? 100 : progress.length ? Math.round((done / progress.length) * 100) : 4}%` }} />
++            </div>
++          </section>
++
++          {state === 'failed' && (
++            <div className="ds-alert ds-alert-error" role="alert" data-testid="scan-error">
++              <IconAlert />
++              <div>
++                <strong>The scan stopped before it finished.</strong>
++                <p>{scan.error ? `${scan.error} ` : ''}{found > 0 ? `${plural(found, 'agent', 'agents')} found so far ${found === 1 ? 'is' : 'are'} kept. ` : ''}Retry the scan; nothing was imported.</p>
++                {retryErr && <p>{retryErr}</p>}
++                <div className="ds-alert-actions">
++                  <button type="button" className="ds-btn ds-btn-sm ds-btn-primary" data-testid="scan-retry" disabled={retrying} onClick={rerun}>Retry scan</button>
++                  {scan.job_url && <a className="ds-btn ds-btn-sm" href={scan.job_url} target="_blank" rel="noreferrer">View job log<span className="ds-sr"> (opens in a new tab)</span></a>}
++                </div>
++              </div>
++            </div>
++          )}
++          {state === 'partial' && (
++            <div className="ds-alert ds-alert-warn" role="status"><IconAlert /><div><strong>{plural(skipped, 'scope was', 'scopes were')} skipped.</strong><p>The rest finished. Each skipped scope shows its reason below; retry the scan after fixing it.</p></div></div>
++          )}
++
++          <div className="po-stats">
++            <Counter k="found" label="Agents found" n={counts.found || 0} />
++            <Counter k="new" label="New" n={counts.new || 0} />
++            <Counter k="changed" label="Changed" n={counts.changed || 0} />
++            <Counter k="unchanged" label="Unchanged" n={counts.unchanged || 0} />
++            <Counter k="missing" label="Missing" n={counts.missing || 0} />
++            <Counter k="skipped" label="Skipped scopes" n={skipped} />
++          </div>
++
++          <div className="po-scan-cols">
++            <section className="ds-card" aria-labelledby="sl-h">
++              <div className="po-panel-head"><h2 id="sl-h">Scopes</h2><span className="ds-helper po-flat">{done} of {progress.length}</span></div>
++              {progress.length
++                ? <ul className="po-scopes-l">{progress.map((x) => <ScopeRow key={x.scope} p={x} />)}</ul>
++                : <p className="po-feed-empty ds-helper po-flat">Scopes appear when the scan starts reading.</p>}
++            </section>
++            <section className="ds-card" aria-labelledby="fd-h">
++              <div className="po-panel-head"><h2 id="fd-h">Agents found</h2><span className="ds-helper po-flat">Newest first</span></div>
++              <Feed scanId={scanId} state={state} found={counts.found || 0} animate={!restored} />
++            </section>
++          </div>
++
++          <div className="po-job" data-testid="scan-job">
++            <span className="po-job-text"><IconInfo /><span>{jobLine}</span></span>
++            <span className="po-job-actions">
++              <Link className="ds-btn ds-btn-sm" to={`/connections/${connId}`} data-testid="scan-leave">Leave and notify me</Link>
++              <button type="button" className="ds-btn ds-btn-primary ds-btn-sm" data-testid="scan-review" disabled={!reviewable}
++                      aria-describedby={reviewable ? undefined : 'scan-review-why'} onClick={() => nav(`/connections/${connId}/scans/${scanId}/review`)}>
++                {reviewable ? `Review ${plural(total, 'agent', 'agents')}` : 'Review agents'}
++              </button>
++              {!reviewable && <span className="po-job-why" id="scan-review-why">{state === 'failed' ? 'Nothing was found to review.' : 'Review opens when the scan finishes.'}</span>}
++            </span>
++          </div>
++        </div>
++      )}
+     </WizardFrame>
+   )
+ }
+diff --git a/frontend/src/pages/ConnectionDetail.jsx b/frontend/src/pages/ConnectionDetail.jsx
+new file mode 100644
+index 0000000..1e3c569
+--- /dev/null
++++ b/frontend/src/pages/ConnectionDetail.jsx
+@@ -0,0 +1,246 @@
++// Connection detail: status, the awaiting-import queue, access, scope, sync, scan history, and Disconnect.
++import React from 'react'
++import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
++import { connectionsApi } from '../api'
++import { Breadcrumb } from '../components/form'
++import { TierBadge } from '../components/ui'
++import ScheduleCard, { scheduleText, useSchedule } from '../components/connect/ScheduleCard'
++import { ErrorPanel, IconAlert, IconLock, ProviderMark, SampleBadge, StatusPill, useConn, useCopy } from '../components/connect/bits'
++import { PROVIDERS } from '../components/connect/providers'
++import { fmtTs, relTime, sourceLabel } from '../format'
++
++const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
++const day = (ts) => { const d = new Date(ts); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) }
++const SCANNABLE = ['trusted', 'verified', 'partial', 'connected']
++
++// The one place a connection's state becomes words. Sample connections never say "Connected".
++export function statusOf(conn) {
++  const s = conn.state
++  if (s === 'disconnected') return { kind: 'idle', text: 'Disconnected' }
++  if (s === 'needs_attention') return { kind: 'warn', text: 'Needs attention' }
++  if (s === 'failed') return { kind: 'err', text: 'Setup failed' }
++  if (s === 'draft' || s === 'waiting') return { kind: 'busy', text: 'Setup not finished' }
++  if (s === 'trusted') return { kind: 'info', text: 'Trust detected' }
++  if (s === 'partial') return { kind: 'warn', text: 'Degraded' }
++  return conn.sample ? { kind: 'ok', text: 'Ready to scan' } : { kind: 'ok', text: 'Healthy' }
++}
++
++function Fig({ label, children, sub, testid }) {
++  return <div><dt>{label}</dt><dd data-testid={testid}>{children}<small>{sub}</small></dd></div>
++}
++
++function DisconnectDialog({ dlg, name, agents, sample, onConfirm, busy, error }) {
++  return (
++    <dialog className="po-dialog" ref={dlg} data-testid="disconnect-dialog" aria-labelledby="dc-h">
++      <div className="po-dialog-body">
++        <h2 id="dc-h">Disconnect {name}?</h2>
++        <p>ACT stops reading from {name} and cancels the sync. {agents ? `The ${plural(agents, 'agent', 'agents')} already in ACT stay` : 'Agents already in ACT stay'}, with their history, and are marked <strong>Source disconnected</strong>.</p>
++        {!sample && <p className="ds-helper">The trust you created stays in your {name} account until you delete it there.</p>}
++        {error && <p className="po-fielderr" role="alert">{error}</p>}
++      </div>
++      <div className="po-dialog-foot">
++        <button type="button" className="ds-btn" data-testid="disconnect-cancel" onClick={() => dlg.current?.close()}>Keep connection</button>
++        <button type="button" className="ds-btn ds-btn-danger" data-testid="disconnect-confirm" disabled={busy} aria-busy={busy ? 'true' : undefined} onClick={onConfirm}>Disconnect {name}</button>
++      </div>
++    </dialog>
++  )
++}
++
++export default function ConnectionDetail() {
++  const { connId } = useParams()
++  const nav = useNavigate()
++  const c = useConn(connId)
++  const sched = useSchedule(connId)
++  const [scans, setScans] = React.useState(null)
++  const [aw, setAw] = React.useState({ rows: [], count: 0, scan_id: null })
++  const [busy, setBusy] = React.useState('')
++  const [err, setErr] = React.useState('')
++  const [dcErr, setDcErr] = React.useState('')
++  const [checkNote, setCheckNote] = React.useState('')
++  const dlg = React.useRef(null)
++  const disBtn = React.useRef(null)
++  const { copy, note: copyNote } = useCopy()
++  const h1 = React.useRef(null)
++
++  React.useEffect(() => {
++    let live = true
++    connectionsApi.scans(connId).then((r) => live && setScans(r.scans || []), () => live && setScans([]))
++    connectionsApi.awaiting(connId).then((r) => live && setAw(r), () => {})
++    return () => { live = false }
++  }, [connId])
++  React.useEffect(() => { window.scrollTo(0, 0); h1.current?.focus({ preventScroll: true }) }, [c.conn?.id])
++
++  const conn = c.conn
++  const p = PROVIDERS[conn?.provider]
++  if (c.error) return <div className="ds-page ds-container po-page"><ErrorPanel title="ACT couldn't load this connection" onRetry={c.reload}>This is on ACT's side. Try again in a moment.</ErrorPanel></div>
++  if (!conn) return <div className="ds-page ds-container po-page" aria-busy="true" data-testid="connection-loading"><span className="ds-skel po-skel-title" /><span className="ds-skel po-skel-row" /><span className="ds-skel po-skel-row" /></div>
++  if (!p) return <Navigate to="/connections" replace />
++
++  const st = statusOf(conn)
++  const gone = conn.state === 'disconnected'
++  const attention = conn.state === 'needs_attention'
++  const canScan = SCANNABLE.includes(conn.state)
++  const lastScan = (scans || []).find((s) => ['done', 'partial'].includes(s.state))
++  const nextScan = sched.saved && sched.schedule === 'daily' && !gone ? `${sched.time}` : gone ? 'Off' : 'Not scheduled'
++
++  const scanNow = async () => {
++    setBusy('scan'); setErr('')
++    try { const r = await connectionsApi.startScan(connId); nav(`/connections/${connId}/scans/${r.scan_id}`) } catch (e) { setErr(e.message || 'The scan did not start.'); setBusy('') }
++  }
++  const disconnect = async () => {
++    setBusy('disconnect'); setDcErr('')
++    try { await connectionsApi.remove(connId); dlg.current?.close(); c.reload(); setBusy(''); requestAnimationFrame(() => h1.current?.focus()) } catch (e) { setDcErr(e.message || "ACT couldn't disconnect."); setBusy('') }
++  }
++  const checkNow = async () => {
++    setBusy('check'); setCheckNote('')
++    try { const r = await connectionsApi.check(connId); setCheckNote(r.state === 'verified' || r.state === 'connected' ? 'Access checked: everything ACT needs is in place.' : 'Access checked: something still needs attention.'); c.reload() } catch { setCheckNote("ACT couldn't run the check. Try again in a moment.") } finally { setBusy('') }
++  }
++
++  return (
++    <div className="ds-page ds-container po-page" data-testid="connection-detail">
++      <header className="ds-page-header">
++        <Breadcrumb items={[{ label: 'Connections', to: '/connections' }, { label: p.name }]} />
++        <div className="ds-page-header-row">
++          <div className="po-detail-head">
++            <ProviderMark id={conn.provider} large />
++            <div className="po-head-text">
++              <h1 className="ds-title po-title" ref={h1} tabIndex={-1}>{p.name}{conn.sample ? ' sample tenant' : ''}</h1>
++              <p className="ds-description po-products">{p.products}</p>
++            </div>
++          </div>
++          <div className="po-head-actions">
++            <button type="button" className="ds-btn ds-btn-primary" data-testid="connection-scan-now" disabled={!canScan || !!busy} aria-describedby={canScan ? undefined : 'scan-dis'} aria-busy={busy === 'scan' ? 'true' : undefined} onClick={scanNow}>Scan now</button>
++            {!canScan && <span className="ds-sr" id="scan-dis">{gone ? 'This connection is disconnected.' : 'Scans are paused until the connection is fixed.'}</span>}
++            {!gone && <Link className="ds-btn" to={`/connect/${conn.provider}/${connId}/access`} data-testid="connection-check-access">Check access</Link>}
++            {gone && <Link className="ds-btn" to={`/connect/${conn.provider}`} data-testid="connection-reconnect">Reconnect</Link>}
++          </div>
++        </div>
++        <div className="po-detail-meta">
++          <StatusPill kind={st.kind} testid="connection-status">{st.text}</StatusPill>
++          {conn.sample && <SampleBadge />}
++          <span className="po-meta-i"><IconLock /> {conn.sample ? 'Fictional tenant: nothing is read from ' + p.name : 'No secrets stored: ' + p.name + ' trusts this Domino sign-in'}</span>
++          <span>{conn.sample ? 'Added' : 'Connected'} {day(conn.created_at)}{conn.created_by ? ` by ${conn.created_by}` : ''}</span>
++          <span>Sync: {scheduleText(sched)}</span>
++        </div>
++      </header>
++
++      {err && <div className="ds-alert ds-alert-error" role="alert"><IconAlert /><div><strong>ACT couldn't start the scan.</strong><p>{err}</p></div></div>}
++      {checkNote && <div className="ds-alert ds-alert-info" role="status"><div>{checkNote}</div></div>}
++      {attention && (
++        <div className="ds-alert ds-alert-warn" role="alert" data-testid="connection-attention">
++          <IconAlert />
++          <div>
++            <strong>{p.name} rejected ACT's sign-in or a required permission is missing, so scans are paused.</strong>
++            <p>Run the setup again to trust the current Domino identity, then check access. Agents already in ACT are not affected.</p>
++            <div className="ds-alert-actions">
++              <Link className="ds-btn ds-btn-sm ds-btn-primary" to={`/connect/${conn.provider}`} data-testid="connection-reconnect">Re-run setup</Link>
++              <button type="button" className="ds-btn ds-btn-sm" data-testid="connection-copy-error" onClick={() => copy(`${p.name} access check failed for connection ${connId} (state ${conn.state}, last check ${conn.last_check || 'never'}).`)}>Copy error details</button>
++              <span className="ds-sr" role="status">{copyNote}</span>
++            </div>
++          </div>
++        </div>
++      )}
++      {gone && <div className="ds-alert ds-alert-info" role="status"><div><strong>Disconnected.</strong> <span>ACT no longer reads from {p.name}. The agents it found stay in Fleet, marked Source disconnected. Reconnect to scan again.</span></div></div>}
++
++      <dl className="po-kv ds-card po-figs">
++        <Fig label="Agents in ACT" sub="from this connection">{conn.agent_count}</Fig>
++        <Fig label="Awaiting import" sub={aw.count ? 'found by sync' : 'none'} testid="connection-awaiting-count">{aw.count}</Fig>
++        <Fig label="Last scan" sub={lastScan ? `${plural(lastScan.counts?.found || 0, 'agent', 'agents')} found` : 'no scan yet'}>{lastScan ? relTime(lastScan.finished_at || lastScan.started_at) : 'Never'}</Fig>
++        <Fig label="Next scan" sub={sched.saved && sched.schedule === 'daily' && !gone ? 'scheduled' : 'no schedule saved'}>{nextScan}</Fig>
++      </dl>
++
++      {aw.count > 0 && (
++        <section className="ds-card po-mb" aria-labelledby="aw-h" data-testid="awaiting-import-queue">
++          <div className="po-panel-head">
++            <h2 id="aw-h">Awaiting import</h2>
++            <Link className="ds-btn ds-btn-sm" to={`/connections/${connId}/scans/${aw.scan_id}/review`} data-testid="awaiting-review-all">Review all {aw.count}</Link>
++          </div>
++          <div className="po-tbl-wrap">
++            <table className="ds-table po-qt">
++              <colgroup><col /><col className="c-where" /><col className="c-sug" /><col className="c-found" /><col className="c-act" /></colgroup>
++              <thead><tr><th scope="col">Agent</th><th scope="col">Where</th><th scope="col">Suggested</th><th scope="col">Found</th><th scope="col"><span className="ds-sr">Action</span></th></tr></thead>
++              <tbody>
++                {aw.rows.map((r, i) => {
++                  const found = (scans || []).find((s) => s.scan_id === r.scan_id)
++                  return (
++                    <tr key={r.id} data-testid={`awaiting-row-${i}`}>
++                      <td><span className="po-aname-row"><span className="po-aname" title={r.name}>{r.name}</span>{r.sample && <SampleBadge />}</span><span className="po-asub">{sourceLabel(r.platform)}</span></td>
++                      <td className="ds-trunc" title={r.native_id}>{r.native_id}</td>
++                      <td>{r.suggestion?.tier != null ? <TierBadge tier={r.suggestion.tier} /> : '—'}</td>
++                      <td className="po-muted">{found ? relTime(found.started_at) : '—'}</td>
++                      <td><Link className="ds-btn ds-btn-sm" to={`/connections/${connId}/intake/${r.id}`} data-testid={`awaiting-review-${i}`}>Review<span className="ds-sr"> {r.name}</span></Link></td>
++                    </tr>
++                  )
++                })}
++              </tbody>
++            </table>
++          </div>
++        </section>
++      )}
++
++      <div className="po-two po-mb">
++        <section className="ds-card" aria-labelledby="ac-h">
++          <div className="po-panel-head"><h2 id="ac-h">Access</h2><StatusPill kind={st.kind}>{conn.last_check ? `Checked ${relTime(conn.last_check)}` : 'Not checked yet'}</StatusPill></div>
++          <div className="po-panel-body">
++            <dl className="po-dl">
++              <div><dt>Trust</dt><dd>{conn.sample ? 'Fictional sample tenant. There is nothing to authenticate.' : `${p.name} trusts this Domino deployment's sign-in. No passwords, keys or tokens are stored.`}</dd></div>
++              {conn.found?.role && <div><dt>Role</dt><dd className="po-mono">{conn.found.role}</dd></div>}
++              {conn.found?.account && <div><dt>Account</dt><dd>{conn.found.account}</dd></div>}
++              <div><dt>Last checked</dt><dd>{conn.last_check ? fmtTs(conn.last_check) : 'Not yet'}</dd></div>
++            </dl>
++            {!gone && <button type="button" className="ds-btn ds-btn-sm po-recheck" disabled={busy === 'check'} aria-busy={busy === 'check' ? 'true' : undefined} onClick={checkNow}>Check again</button>}
++          </div>
++        </section>
++        <section className="ds-card" aria-labelledby="sp-h">
++          <div className="po-panel-head"><h2 id="sp-h">Scope</h2><Link className="ds-btn ds-btn-sm" to={`/connect/${conn.provider}/${connId}/scope`} data-testid="connection-edit-scope">Edit scope</Link></div>
++          <div className="po-panel-body">
++            <dl className="po-dl">
++              <div><dt>Selected</dt><dd>{conn.scopes.selected.length} of {conn.scopes.total} {conn.scopes.total === 1 ? 'scope' : 'scopes'}</dd></div>
++              <div><dt>Products</dt><dd>{p.products}</dd></div>
++              <div><dt>Daily sync</dt><dd>{conn.scopes.selected.length ? 'Reads the selected scopes only' : 'Select a scope to scan'}</dd></div>
++            </dl>
++          </div>
++        </section>
++      </div>
++
++      {!gone && <ScheduleCard connId={connId} provider={p.name} sample={conn.sample} state={sched} titleId="sy-h" className="po-mb" />}
++
++      <section className="ds-card po-mb" aria-labelledby="hi-h" data-testid="sync-history">
++        <div className="po-panel-head"><h2 id="hi-h">Scan history</h2></div>
++        <div className="po-tbl-wrap">
++          <table className="ds-table po-ht">
++            <colgroup><col className="c-start" /><col /><col className="c-n" /><col className="c-n" /><col className="c-n" /><col className="c-n" /><col className="c-res" /></colgroup>
++            <thead><tr><th scope="col">Started</th><th scope="col">Trigger</th><th scope="col">Found</th><th scope="col">New</th><th scope="col">Changed</th><th scope="col">Missing</th><th scope="col">Result</th></tr></thead>
++            <tbody>
++              {scans === null && <tr><td colSpan={7}><span className="ds-skel po-skel-short" /></td></tr>}
++              {scans && scans.length === 0 && <tr className="po-empty-row"><td colSpan={7} className="po-muted">No scans yet. Scan now to read this connection.</td></tr>}
++              {(scans || []).map((s) => {
++                const k = s.counts || {}
++                const res = s.state === 'done' ? { kind: 'ok', t: 'Done' } : s.state === 'partial' ? { kind: 'warn', t: 'Some scopes skipped' } : s.state === 'failed' ? { kind: 'err', t: 'Failed' } : { kind: 'busy', t: 'Running' }
++                return (
++                  <tr key={s.scan_id}>
++                    <td><Link to={`/connections/${connId}/scans/${s.scan_id}`} title={fmtTs(s.started_at)}>{relTime(s.started_at)}</Link></td>
++                    <td>{s.kind === 'sync' ? 'Scheduled sync' : 'Manual scan'}{s.sample ? ' (sample)' : ''}</td>
++                    <td>{k.found ?? '—'}</td><td>{k.new ?? '—'}</td><td>{k.changed ?? '—'}</td><td>{k.missing ?? '—'}</td>
++                    <td><StatusPill kind={res.kind}>{res.t}</StatusPill>{s.job_url && <> <a href={s.job_url} target="_blank" rel="noreferrer">Job{s.job_id ? ` #${s.job_id}` : ''}<span className="ds-sr"> (opens in a new tab)</span></a></>}</td>
++                  </tr>
++                )
++              })}
++            </tbody>
++          </table>
++        </div>
++      </section>
++
++      {!gone && (
++        <section className="ds-card" aria-labelledby="dz-h">
++          <div className="po-panel-head"><h2 id="dz-h">Disconnect</h2></div>
++          <div className="po-panel-body po-dz">
++            <p className="ds-helper po-flat">Stops all reads from {p.name}. Agents already in ACT stay, marked Source disconnected.{conn.sample ? '' : ` You remove the trust on the ${p.name} side.`}</p>
++            <button type="button" className="ds-btn ds-btn-danger" ref={disBtn} data-testid="connection-disconnect" onClick={() => { setDcErr(''); dlg.current?.showModal() }}>Disconnect {p.name}</button>
++          </div>
++        </section>
++      )}
++      <DisconnectDialog dlg={dlg} name={p.name} agents={conn.agent_count} sample={conn.sample} onConfirm={disconnect} busy={busy === 'disconnect'} error={dcErr} />
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/Connections.jsx b/frontend/src/pages/Connections.jsx
+index 0037b8a..3c87c27 100644
+--- a/frontend/src/pages/Connections.jsx
++++ b/frontend/src/pages/Connections.jsx
+@@ -72,7 +72,7 @@ function ProviderCard({ id, model, onChange }) {
+   } else { // verified | partial | connected
+     status = <StatusPill kind="ok" testid={`provider-card-${id}-status`}>Connected · {agents} {agents === 1 ? 'agent' : 'agents'}</StatusPill>
+     meta = [['Last scan', conn.last_scan ? relTime(conn.last_scan) : 'Not scanned yet'], ['Access', conn.last_check ? `${kind === 'partial' ? 'Optional checks missing · ' : 'Checked '}${relTime(conn.last_check)}` : 'Not checked yet']]
+-    primary = { label: 'Open connection', to: `/connect/${id}/${conn.id}/scope` }
++    primary = { label: 'Open connection', to: `/connections/${conn.id}` }
+   }
+   return (
+     <article className="ds-card po-card" data-testid={`provider-card-${id}`} aria-labelledby={`pc-${id}`}>
+diff --git a/frontend/src/pages/Fleet.jsx b/frontend/src/pages/Fleet.jsx
+index 52b525b..dc8b10e 100644
+--- a/frontend/src/pages/Fleet.jsx
++++ b/frontend/src/pages/Fleet.jsx
+@@ -1,9 +1,11 @@
+ import React from 'react'
+ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+-import { api } from '../api'
++import { api, connectionsApi } from '../api'
+ import { agentPath, clean, fmtTs, relTime, sourceLabel } from '../format'
+ import { StatusPill, TierBadge, useAsync } from '../components/ui'
+ import { Button, PageHeader } from '../components/form'
++import { IconInfo, SampleBadge } from '../components/connect/bits'
++import { PROVIDERS } from '../components/connect/providers'
+ 
+ const COLS = [['Source', 'c-source'], ['Name', 'c-name'], ['Owner', 'c-owner'], ['Tier', 'c-tier'], ['Status', 'c-status'], ['Open findings', 'c-findings'], ['Last seen', 'c-seen']]
+ 
+@@ -51,6 +53,22 @@ function rowClick(e, go) {
+   go()
+ }
+ 
++// Agents that scheduled syncs found but nobody imported yet. Never blocks the Fleet: a failure just hides the banner.
++function useAwaiting(rev) {
++  const [state, setState] = React.useState({ total: 0, items: [] })
++  React.useEffect(() => {
++    let live = true
++    connectionsApi.list().then(async (r) => {
++      const conns = (r.connections || []).filter((c) => c.state !== 'disconnected' && c.state !== 'draft' && c.state !== 'waiting')
++      const got = await Promise.all(conns.map((c) => connectionsApi.awaiting(c.id).then((a) => ({ c, count: a.count || 0 }), () => ({ c, count: 0 }))))
++      const items = got.filter((x) => x.count > 0)
++      if (live) setState({ total: items.reduce((n, x) => n + x.count, 0), items })
++    }, () => {})
++    return () => { live = false }
++  }, [rev])
++  return state
++}
++
+ export default function Fleet() {
+   const nav = useNavigate()
+   const [rev, setRev] = React.useState(0)
+@@ -59,6 +77,7 @@ export default function Fleet() {
+   const tier = params.get('tier') || ''
+   const q = params.get('q') || ''
+   const quick = ['findings', 'pending'].includes(params.get('tile')) ? params.get('tile') : ''
++  const connection = params.get('connection') || ''
+   const setP = (patch) => setParams((cur) => {
+     const next = new URLSearchParams(cur)
+     Object.entries(patch).forEach(([k, v]) => (v ? next.set(k, v) : next.delete(k)))
+@@ -66,6 +85,7 @@ export default function Fleet() {
+   }, { replace: true })
+   const all = useAsync(() => api.agents(), [rev])
+   const data = all.data
++  const awaiting = useAwaiting(rev)
+   const sources = React.useMemo(() => [...new Set((data || []).map((a) => a.source_platform))].sort(), [data])
+   const stats = React.useMemo(() => {
+     const l = data || []
+@@ -79,11 +99,11 @@ export default function Fleet() {
+ 
+   const needle = q.trim().toLowerCase()
+   const byFacets = (data || []).filter((a) =>
+-    (!source || a.source_platform === source) && (!tier || String(a.tier) === tier) &&
++    (!source || a.source_platform === source) && (!connection || a.connection_id === connection) && (!tier || String(a.tier) === tier) &&
+     (!quick || (quick === 'findings' ? a.open_findings > 0 : a.status === 'pending_review')))
+   const rows = needle ? byFacets.filter((a) => has(a.name, needle) || has(a.owner, needle)) : byFacets
+-  const filtered = !!(source || tier || needle || quick)
+-  const clear = () => setP({ source: '', tier: '', q: '', tile: '' })
++  const filtered = !!(source || tier || needle || quick || connection)
++  const clear = () => setP({ source: '', tier: '', q: '', tile: '', connection: '' })
+   const toggleTier = () => setP({ tier: tier === '1' ? '' : '1' })
+   const toggleQuick = (k) => setP({ tile: quick === k ? '' : k })
+   const ready = !!data
+@@ -93,7 +113,29 @@ export default function Fleet() {
+     <div className="ds-page ds-container" data-testid="fleet-page">
+       <PageHeader title="Fleet" description="Every AI agent across your estate, with its tier, owner and open findings."
+                   descriptionTestId="fleet-description"
+-                  actions={<Button variant="primary" data-testid="register-external-button" onClick={() => nav('/register')}>Register external agent</Button>} />
++                  actions={(
++                    <div className="fl-actions">
++                      <span className="fl-action" data-testid="fleet-add-by-url"><Button data-testid="register-external-button" onClick={() => nav('/connections/add-by-url')}>Add by URL</Button></span>
++                      <Button variant="primary" data-testid="fleet-add-agents" onClick={() => nav('/connections')}>Add agents</Button>
++                    </div>
++                  )} />
++
++      {awaiting.total > 0 && (
++        <div className="ds-alert ds-alert-info fl-awaiting" role="status" data-testid="fleet-awaiting-banner">
++          <IconInfo />
++          <div className="fl-awaiting-text">
++            <strong>{awaiting.total} {awaiting.total === 1 ? 'agent is' : 'agents are'} awaiting import.</strong>{' '}
++            {awaiting.items.map((x) => `${x.count} found by ${(PROVIDERS[x.c.provider] || {}).name || x.c.provider} sync`).join(', ')}. They aren't in Fleet until someone reviews them.
++          </div>
++          <Button className="ds-btn-sm" onClick={() => nav(awaiting.items.length === 1 ? `/connections/${awaiting.items[0].c.id}` : '/connections')}>Review</Button>
++        </div>
++      )}
++      {connection && (
++        <div className="fl-scope" data-testid="fleet-connection-filter">
++          <span>Showing agents imported from one connection.</span>
++          <Button variant="ghost" className="ds-btn-sm" onClick={() => setP({ connection: '' })}>Show all agents</Button>
++        </div>
++      )}
+ 
+       <div className="ds-tiles" role="group" aria-label="Fleet summary. Tiles are filters and combine with Source, Tier and search.">
+         <Tile id="total" number={n(stats.total)} label="Total agents" hint="Whole fleet" active={false} onClick={clear} />
+@@ -142,8 +184,8 @@ export default function Fleet() {
+       {ready && rows.length === 0 && !filtered && (
+         <div className="ds-card ds-empty" data-testid="fleet-empty">
+           <h2 className="ds-empty-title">No agents yet</h2>
+-          <p className="ds-helper">Register an external agent to start tracking its tier, owner and findings.</p>
+-          <Button variant="primary" onClick={() => nav('/register')}>Register external agent</Button>
++          <p className="ds-helper">Connect a platform to find your agents, or add one by its URL, to start tracking its tier, owner and findings.</p>
++          <Button variant="primary" onClick={() => nav('/connections')}>Add agents</Button>
+         </div>
+       )}
+       {ready && rows.length === 0 && filtered && (
+@@ -168,7 +210,7 @@ export default function Fleet() {
+                       onClick={(e) => rowClick(e, go)}
+                       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) go() }}>
+                     <td data-testid="fleet-source" data-source={a.source_platform}><span className="ds-chip-tag">{sourceLabel(a.source_platform)}</span></td>
+-                    <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}</td>
++                    <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}{a.sample && <span className="fl-sample"><SampleBadge /></span>}{a.source_disconnected && <span className="host"><span className="fl-gone">Source disconnected</span></span>}</td>
+                     <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text">{owner}</span></td>
+                     <td><TierBadge tier={a.tier} /></td>
+                     <td data-testid="fleet-status"><StatusPill status={a.status} /></td>
+diff --git a/frontend/src/pages/ImportSummary.jsx b/frontend/src/pages/ImportSummary.jsx
+new file mode 100644
+index 0000000..1228e87
+--- /dev/null
++++ b/frontend/src/pages/ImportSummary.jsx
+@@ -0,0 +1,94 @@
++// Step 6: Import summary. What was imported, where to find it, and the sync schedule (Daily at 02:00 by default).
++import React from 'react'
++import { Link, Navigate, useLocation, useParams } from 'react-router-dom'
++import { agentsApi, scansApi } from '../api'
++import WizardFrame from '../components/connect/WizardFrame'
++import ScheduleCard, { useSchedule } from '../components/connect/ScheduleCard'
++import { ErrorPanel, IconCheck, SampleBadge, useConn } from '../components/connect/bits'
++import { PROVIDERS } from '../components/connect/providers'
++
++const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
++
++// The import result survives a reload: router state, then session storage, then the staged rows themselves.
++function fromRows(rows) {
++  const done = rows.filter((r) => r.imported_agent_id && r.class !== 'missing')
++  return {
++    imported: done.filter((r) => r.class === 'new').length, updated: done.filter((r) => r.class === 'changed').length,
++    no_owner: done.filter((r) => r.class === 'new' && !r.owner).length, missing: rows.filter((r) => r.class === 'missing').length,
++    agent_ids: done.map((r) => r.imported_agent_id),
++  }
++}
++
++export default function ImportSummary() {
++  const { connId, scanId } = useParams()
++  const loc = useLocation()
++  const c = useConn(connId)
++  const sched = useSchedule(connId)
++  const [result, setResult] = React.useState(() => {
++    if (loc.state?.result) return loc.state.result
++    try { return JSON.parse(sessionStorage.getItem(`act-import-${scanId}`)) } catch { return null }
++  })
++  const [missing, setMissing] = React.useState(null)
++  const [error, setError] = React.useState(false)
++  const [agents, setAgents] = React.useState([])
++  const [rev, setRev] = React.useState(0)
++
++  React.useEffect(() => {
++    let live = true
++    setError(false)
++    scansApi.staged(scanId).then((r) => {
++      if (!live) return
++      const rows = r.rows || []
++      setMissing(rows.filter((x) => x.class === 'missing').length)
++      setResult((cur) => cur || fromRows(rows))
++    }, () => live && setError(true))
++    agentsApi.list().then((a) => live && setAgents(a || []), () => {})
++    return () => { live = false }
++  }, [scanId, rev])
++
++  const p = PROVIDERS[c.conn?.provider]
++  if (c.error || error) return <div className="ds-page ds-container po-page"><ErrorPanel title="ACT couldn't load the import result" onRetry={() => { c.reload(); setRev((r) => r + 1) }}>The import is saved. Try again in a moment.</ErrorPanel></div>
++  if (c.conn && !p) return <Navigate to="/connections" replace />
++  if (!c.conn || !result) return <div className="ds-page ds-container po-page" aria-busy="true"><span className="ds-skel po-skel-title" /><span className="ds-skel po-skel-row" /></div>
++
++  const sample = !!c.conn.sample
++  const total = (result.imported || 0) + (result.updated || 0)
++  const ids = new Set(result.agent_ids || [])
++  const tier1 = agents.filter((a) => ids.has(a.id) && a.tier === 1).length
++  const missingN = missing ?? result.missing ?? 0
++  const fleet = `/?connection=${encodeURIComponent(connId)}&tile=pending`
++
++  return (
++    <WizardFrame provider={c.conn.provider} connId={connId} step={6} title="Import complete" hideAside
++                 crumbs={[{ label: 'Connections', to: '/connections' }, { label: p.name, to: `/connections/${connId}` }, { label: 'Import' }]}
++                 hrefs={{ 3: `/connect/${c.conn.provider}/${connId}/scope`, 5: `/connections/${connId}/scans/${scanId}/review` }}
++                 description="Every imported agent is in Pending review with an audit event naming you, this connection and this scan.">
++      <section className="ds-card" data-testid="import-summary" aria-labelledby="sum-h">
++        <div className="po-sum-hero">
++          <span className="po-sum-ico" aria-hidden="true"><IconCheck /></span>
++          <div>
++            <h2 id="sum-h">{plural(total, 'agent', 'agents')} imported from {p.name}{sample && <> <SampleBadge /></>}</h2>
++            <p className="ds-helper po-flat">{tier1 ? `${tier1} ${tier1 === 1 ? 'is' : 'are'} Tier 1. Reviewers see ${tier1 === 1 ? 'it' : 'them'} first in Fleet.` : 'They are waiting for a reviewer in Fleet.'}{sample && ' Sample agents are marked Sample data and are excluded from evidence packs.'}</p>
++          </div>
++        </div>
++        <dl className="po-kv">
++          <div><dt>New</dt><dd data-testid="import-summary-count-new">{result.imported || 0}<small>Created in Pending review</small></dd></div>
++          <div><dt>Updated</dt><dd data-testid="import-summary-count-updated">{result.updated || 0}<small>Changed agents re-tiered; back in review if risk went up</small></dd></div>
++          <div><dt>Need an owner</dt><dd data-testid="import-summary-count-no-owner">{result.no_owner || 0}<small>{result.no_owner ? "Assign one on the agent's page before approval" : 'Every agent has an owner'}</small></dd></div>
++          <div><dt>Missing at source</dt><dd data-testid="import-summary-count-missing">{missingN}<small>{missingN ? 'Not found in this scan; the record stays' : 'Nothing disappeared'}</small></dd></div>
++        </dl>
++      </section>
++
++      <div className="po-two">
++        <section className="ds-card" aria-labelledby="nx-h">
++          <div className="po-panel-head"><h2 id="nx-h">Next</h2></div>
++          <div className="po-panel-body po-next">
++            <Link className="ds-btn ds-btn-primary" to={fleet} data-testid="summary-open-fleet">Open imported agents in Fleet</Link>
++            <Link className="ds-btn ds-btn-ghost" to={`/connections/${connId}`} data-testid="summary-open-connection">View the {p.name} connection</Link>
++          </div>
++        </section>
++        <ScheduleCard connId={connId} provider={p.name} sample={sample} state={sched} />
++      </div>
++    </WizardFrame>
++  )
++}
+diff --git a/frontend/src/pages/Intake.jsx b/frontend/src/pages/Intake.jsx
+new file mode 100644
+index 0000000..4c286b9
+--- /dev/null
++++ b/frontend/src/pages/Intake.jsx
+@@ -0,0 +1,157 @@
++// Single-agent intake: the review row's detail as a full page, for one agent waiting in Awaiting import.
++import React from 'react'
++import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
++import { agentsApi, connectionsApi, scansApi } from '../api'
++import { Breadcrumb } from '../components/form'
++import { CriteriaList, DiffList, OwnerSelect, TierBlock, rowFlags } from '../components/connect/intake'
++import { ErrorPanel, SampleBadge, SampleBanner, useConn } from '../components/connect/bits'
++import { PROVIDERS } from '../components/connect/providers'
++import { relTime, sourceLabel } from '../format'
++
++const list = (xs) => (xs || []).map((x) => (typeof x === 'string' ? x : x?.name || JSON.stringify(x)))
++
++export default function Intake() {
++  const { connId, stagedId } = useParams()
++  const nav = useNavigate()
++  const c = useConn(connId)
++  const [row, setRow] = React.useState(undefined) // undefined loading, null not in the queue
++  const [when, setWhen] = React.useState(null)
++  const [error, setError] = React.useState(false)
++  const [owners, setOwners] = React.useState([])
++  const [ownerSet, setOwnerSet] = React.useState(false)
++  const [dismissing, setDismissing] = React.useState(false)
++  const [reason, setReason] = React.useState('')
++  const [reasonErr, setReasonErr] = React.useState(false)
++  const [busy, setBusy] = React.useState('')
++  const [fail, setFail] = React.useState('')
++  const [rev, setRev] = React.useState(0)
++  const h1 = React.useRef(null)
++
++  React.useEffect(() => {
++    let live = true
++    setError(false)
++    Promise.all([connectionsApi.awaiting(connId), connectionsApi.scans(connId).catch(() => ({ scans: [] }))]).then(([aw, sc]) => {
++      if (!live) return
++      const r = (aw.rows || []).find((x) => String(x.id) === String(stagedId)) || null
++      setRow(r)
++      const s = (sc.scans || []).find((x) => r && x.scan_id === r.scan_id)
++      setWhen(s ? s.started_at : null)
++    }, () => live && setError(true))
++    agentsApi.list().then((a) => live && setOwners([...new Set((a || []).map((x) => x.owner).filter((o) => o && o !== 'unassigned'))]), () => {})
++    return () => { live = false }
++  }, [connId, stagedId, rev])
++  React.useEffect(() => { if (row) { window.scrollTo(0, 0); h1.current?.focus({ preventScroll: true }) } }, [row?.id]) // eslint-disable-line react-hooks/exhaustive-deps
++
++  const p = PROVIDERS[c.conn?.provider]
++  if (c.error || error) return <div className="ds-page ds-container po-page"><ErrorPanel title="ACT couldn't load this agent" onRetry={() => { c.reload(); setRev((r) => r + 1) }}>Try again in a moment.</ErrorPanel></div>
++  if (c.conn && !p) return <Navigate to="/connections" replace />
++  if (!c.conn || row === undefined) return <div className="ds-page ds-container po-page" aria-busy="true"><span className="ds-skel po-skel-title" /><span className="ds-skel po-skel-row" /></div>
++  if (row === null) {
++    return (
++      <div className="ds-page ds-container po-page">
++        <div className="ds-card ds-empty" data-testid="intake-gone">
++          <h1 className="ds-empty-title">This agent is no longer waiting</h1>
++          <p className="ds-helper">It was imported, dismissed or replaced by a newer scan.</p>
++          <Link className="ds-btn" to={`/connections/${connId}`}>Back to the {p.name} connection</Link>
++        </div>
++      </div>
++    )
++  }
++
++  const flags = rowFlags(row)
++  const tools = list(row.summary?.tools), data = list(row.summary?.data_scopes)
++  const ident = row.summary?.identity
++  const setOwner = async (owner) => {
++    const prev = row.owner
++    setRow({ ...row, owner: owner || null }); setOwnerSet(true)
++    try { await scansApi.patch(row.id, { owner }) } catch { setRow((r) => ({ ...r, owner: prev })); setFail("ACT couldn't save the owner. Try again.") }
++  }
++  const importIt = async () => {
++    setBusy('import'); setFail('')
++    try { const out = await scansApi.importRows(row.scan_id, [row.id]); nav(out.agent_ids?.[0] ? `/agents/${out.agent_ids[0]}` : `/connections/${connId}`) } catch (e) { setFail(e.message || "ACT couldn't import this agent."); setBusy('') }
++  }
++  const dismiss = async () => {
++    if (reason.trim().length < 10) { setReasonErr(true); return }
++    setBusy('dismiss'); setFail('')
++    try { await scansApi.dismiss(row.id, reason.trim()); nav(`/connections/${connId}`) } catch (e) { setFail(e.message || "ACT couldn't dismiss this agent."); setBusy('') }
++  }
++
++  return (
++    <div className="ds-page ds-container po-page" data-testid="intake-page">
++      <header className="ds-page-header">
++        <Breadcrumb items={[{ label: 'Connections', to: '/connections' }, { label: p.name, to: `/connections/${connId}` }, { label: row.name }]} />
++        <div className="ds-page-header-row">
++          <div className="po-head-text">
++            <h1 className="ds-title po-title" ref={h1} tabIndex={-1} title={row.name}>{row.name}</h1>
++            <div className="po-detail-meta">
++              <span className="ds-chip-tag">{sourceLabel(row.platform)}</span>
++              {row.sample && <SampleBadge />}
++              <span title={row.native_id} className="po-mono po-trunc">{row.native_id}</span>
++              <span>Found by sync {when ? relTime(when) : 'recently'}</span>
++            </div>
++          </div>
++        </div>
++      </header>
++      {row.sample && <SampleBanner provider={p.name} review />}
++      {fail && <div className="ds-alert ds-alert-error" role="alert"><div><strong>That didn't work.</strong><p>{fail}</p></div></div>}
++
++      <div className="po-intake">
++        <section className="ds-card" aria-labelledby="in-why">
++          <div className="po-panel-head"><h2 id="in-why">Why Tier {row.suggestion?.suggested_tier ?? row.suggestion?.tier} is suggested</h2></div>
++          <div className="po-panel-body">
++            <CriteriaList row={row} />
++            <p className="ds-helper">Scores run from 1 (low) to 5 (high), from the agent's tools, policies and tags. The weighted score sets the tier.</p>
++          </div>
++        </section>
++
++        <div className="po-intake-side">
++          <section className="ds-card" aria-labelledby="in-tier">
++            <div className="po-panel-head"><h2 id="in-tier">Tier and owner</h2></div>
++            <div className="po-panel-body po-xp-solo">
++              {row.class === 'changed' && row.diff && <DiffList row={row} testid="review-diff-intake" />}
++              <TierBlock row={row} canEdit onUpdated={(r) => setRow((old) => ({ ...old, ...r }))} />
++              <h4>Owner</h4>
++              <OwnerSelect row={row} owners={owners} label={`Owner for ${row.name}`} setByYou={ownerSet} onChange={setOwner} />
++            </div>
++          </section>
++          <section className="ds-card" aria-labelledby="in-facts">
++            <div className="po-panel-head"><h2 id="in-facts">What ACT found</h2></div>
++            <div className="po-panel-body">
++              <dl className="po-dl">
++                {row.summary?.description && <div><dt>Description</dt><dd>{row.summary.description}</dd></div>}
++                <div><dt>Tools</dt><dd>{tools.length ? tools.join(', ') : 'None found'}</dd></div>
++                <div><dt>Data scopes</dt><dd>{data.length ? data.join(', ') : 'None found'}</dd></div>
++                <div><dt>Identity</dt><dd>{ident ? `${ident.type || 'unknown'}${ident.distinct === false ? ' (shared)' : ''}${ident.subject ? ` · ${ident.subject}` : ''}` : 'Unknown'}</dd></div>
++                <div><dt>Risk flags</dt><dd>{flags.length ? <span className="po-flags">{flags.map((f) => <span key={f.key} className={`po-flag${f.high ? ' po-flag-high' : ''}`}>{f.label}</span>)}</span> : 'None'}</dd></div>
++              </dl>
++            </div>
++          </section>
++        </div>
++      </div>
++
++      <div className="po-footer po-footer-sticky">
++        <div className="po-footer-l">
++          {dismissing ? (
++            <div className="po-dismiss">
++              <label className="ds-label" htmlFor="dismiss-reason">Why dismiss this agent? <span className="po-opt">(required, audited)</span></label>
++              <input id="dismiss-reason" className="ds-input" data-testid="intake-dismiss-reason" value={reason} autoComplete="off" aria-invalid={reasonErr ? 'true' : undefined} aria-describedby="dismiss-err"
++                     placeholder="For example: a test agent that is not in scope" onChange={(e) => { setReason(e.target.value); setReasonErr(false) }} />
++              <p className="po-fielderr" id="dismiss-err" role={reasonErr ? 'alert' : undefined}>{reasonErr ? 'Enter a reason of at least 10 characters. ACT records it in the audit log.' : ''}</p>
++            </div>
++          ) : <span className="ds-helper po-flat">Imported agents start in Pending review. Dismissed agents leave the queue.</span>}
++        </div>
++        <div className="po-footer-r">
++          {dismissing
++            ? <>
++                <button type="button" className="ds-btn" onClick={() => { setDismissing(false); setReasonErr(false) }}>Cancel</button>
++                <button type="button" className="ds-btn ds-btn-danger" disabled={busy === 'dismiss'} onClick={dismiss}>Dismiss agent</button>
++              </>
++            : <>
++                <button type="button" className="ds-btn" data-testid="intake-dismiss" onClick={() => setDismissing(true)}>Dismiss</button>
++                <button type="button" className="ds-btn ds-btn-primary" data-testid="intake-import" disabled={busy === 'import'} aria-busy={busy === 'import' ? 'true' : undefined} onClick={importIt}>{row.sample ? 'Import agent as sample data' : 'Import agent'}</button>
++              </>}
++        </div>
++      </div>
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/ScanReview.jsx b/frontend/src/pages/ScanReview.jsx
+new file mode 100644
+index 0000000..6ad90b0
+--- /dev/null
++++ b/frontend/src/pages/ScanReview.jsx
+@@ -0,0 +1,276 @@
++// Step 5: Review. The staged rows of one scan in a table: New, Changed, Unchanged and Missing, a suggested tier with its
++// "why", owners, risk flags, and one Import button that states the count.
++import React from 'react'
++import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
++import { agentsApi, scansApi } from '../api'
++import { Alert } from '../components/form'
++import WizardFrame from '../components/connect/WizardFrame'
++import { ErrorPanel, SampleBadge, SampleBanner, useConn } from '../components/connect/bits'
++import {
++  CriteriaList, DiffList, OwnerSelect, TierBlock, TierCell, isRisky, isSelectable, rowFlags, tierOf,
++} from '../components/connect/intake'
++import { PROVIDERS } from '../components/connect/providers'
++import { sourceLabel } from '../format'
++
++const FILTERS = [['all', 'All'], ['new', 'New'], ['changed', 'Changed'], ['attention', 'Needs attention'], ['unchanged', 'Unchanged'], ['missing', 'Missing']]
++const CHG = { new: 'New', changed: 'Changed', unchanged: 'Unchanged', missing: 'Missing' }
++const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
++
++const matches = (row, f) => (f === 'all' ? true : f === 'attention' ? isSelectable(row) && rowFlags(row).length > 0 : row.class === f)
++
++function Flags({ row, provider }) {
++  if (row.class === 'missing') return <span className="po-flag-note">Not found in {provider}. Sync raises a finding; the record stays.</span>
++  const flags = rowFlags(row)
++  if (!flags.length) return <span className="ds-helper po-flat">None</span>
++  const shown = flags.slice(0, 2), rest = flags.slice(2)
++  return (
++    <div className="po-flags">
++      {shown.map((f) => <span key={f.key} className={`po-flag${f.high ? ' po-flag-high' : ''}`}>{f.label}</span>)}
++      {rest.length > 0 && <span className="po-flag" title={rest.map((f) => f.label).join(', ')}>+{rest.length}<span className="ds-sr"> more: {rest.map((f) => f.label).join(', ')}</span></span>}
++    </div>
++  )
++}
++
++function Row({ row, provider, owners, open, onToggle, selected, onSelect, onOwner, ownerSet, onUpdated }) {
++  const selectable = isSelectable(row)
++  const t = tierOf(row)
++  const sub = `${sourceLabel(row.platform)} · ${row.native_id}`
++  const diffN = row.diff ? (Array.isArray(row.diff) ? row.diff.length : Object.keys(row.diff).length) : 0
++  return (
++    <>
++      <tr data-testid={`review-row-${row.id}`} className={`${isRisky(row) && row.class !== 'missing' ? 'is-risk' : ''}${selectable ? '' : ' is-off'}`}>
++        <td>{selectable && <input type="checkbox" id={`sel-${row.id}`} checked={selected} data-testid={`review-select-${row.id}`} aria-label={`Import ${row.name}`} onChange={(e) => onSelect(e.target.checked)} />}</td>
++        <td>
++          <span className="po-aname-row"><span className="po-aname" title={row.name}>{row.name}</span>{row.sample && <SampleBadge />}</span>
++          <span className="po-asub" title={sub}>{sub}</span>
++        </td>
++        <td data-testid={`review-change-${row.id}`}>
++          <span className={`po-chg po-chg-${row.class}`}>{CHG[row.class] || row.class}</span>
++          {row.class === 'changed' && <span className="po-asub">{plural(diffN, 'field', 'fields')} changed</span>}
++        </td>
++        <td data-testid={`review-owner-${row.id}`}>
++          {selectable
++            ? <OwnerSelect row={row} owners={owners} label={`Owner for ${row.name}`} setByYou={ownerSet} onChange={onOwner} />
++            : <span className="po-own-ro">{row.owner || 'No owner'}</span>}
++        </td>
++        <td data-testid={`review-tier-${row.id}`}><TierCell row={row} /></td>
++        <td data-testid={`review-flag-${row.id}`}><Flags row={row} provider={provider} /></td>
++        <td>
++          {row.class !== 'missing' && (
++            <button type="button" className="ds-btn ds-btn-ghost po-why-btn" id={`why-${row.id}`} data-testid={`review-why-${row.id}`}
++                    aria-expanded={open ? 'true' : 'false'} aria-controls={`xp-${row.id}`} onClick={onToggle}>
++              Why<span className="ds-sr"> {row.name} got Tier {t}</span>
++            </button>
++          )}
++        </td>
++      </tr>
++      {open && (
++        <tr className="po-detail" id={`xp-${row.id}`} data-testid={`intake-panel-${row.id}`}>
++          <td colSpan={7}>
++            <div className="po-xp">
++              <div>
++                <h4>Why Tier {row.suggestion?.suggested_tier ?? t} is suggested</h4>
++                <CriteriaList row={row} />
++                <p className="ds-helper">Scores run from 1 (low) to 5 (high), from the agent's tools, policies and tags. The weighted score sets the tier.</p>
++              </div>
++              <div>
++                {row.class === 'changed' && row.diff && <><DiffList row={row} testid={`review-diff-${row.id}`} /><div className="po-gap" /></>}
++                <TierBlock row={row} canEdit={selectable} onUpdated={onUpdated} />
++              </div>
++            </div>
++          </td>
++        </tr>
++      )}
++    </>
++  )
++}
++
++export default function ScanReview() {
++  const { connId, scanId } = useParams()
++  const nav = useNavigate()
++  const c = useConn(connId)
++  const [rows, setRows] = React.useState(null)
++  const [error, setError] = React.useState(false)
++  const [rev, setRev] = React.useState(0)
++  const [owners, setOwners] = React.useState([])
++  const [filter, setFilter] = React.useState('all')
++  const [q, setQ] = React.useState('')
++  const [sel, setSel] = React.useState(() => new Set())
++  const [open, setOpen] = React.useState(null)
++  const [ownerSet, setOwnerSet] = React.useState(() => new Set())
++  const [importing, setImporting] = React.useState(false)
++  const [importErr, setImportErr] = React.useState('')
++  const [ownerErr, setOwnerErr] = React.useState('')
++  const [announce, setAnnounce] = React.useState('')
++
++  React.useEffect(() => {
++    let live = true
++    setError(false); setRows(null)
++    scansApi.staged(scanId).then((r) => {
++      if (!live) return
++      const list = r.rows || []
++      setRows(list)
++      setSel(new Set(list.filter(isSelectable).map((x) => x.id)))
++    }, () => live && setError(true))
++    return () => { live = false }
++  }, [scanId, rev])
++  React.useEffect(() => {
++    let live = true
++    agentsApi.list().then((a) => live && setOwners([...new Set((a || []).map((x) => x.owner).filter((o) => o && o !== 'unassigned'))]), () => {})
++    return () => { live = false }
++  }, [])
++
++  const provider = c.conn?.provider
++  const p = PROVIDERS[provider]
++  const sample = !!(c.conn?.sample || (rows || []).some((r) => r.sample))
++  const counts = React.useMemo(() => {
++    const out = {}
++    FILTERS.forEach(([k]) => { out[k] = (rows || []).filter((r) => matches(r, k)).length })
++    return out
++  }, [rows])
++
++  const needle = q.trim().toLowerCase()
++  const visible = (rows || []).filter((r) => matches(r, filter) && (!needle || [r.name, r.native_id, r.platform, r.summary?.description].some((v) => (v || '').toLowerCase().includes(needle))))
++  const selectableVisible = visible.filter(isSelectable)
++  const allOn = selectableVisible.length > 0 && selectableVisible.every((r) => sel.has(r.id))
++  const chosen = (rows || []).filter((r) => sel.has(r.id))
++  const noOwner = chosen.filter((r) => !r.owner && r.class === 'new').length
++  const missing = counts.missing || 0
++
++  const patch = (id, fn) => setRows((rs) => rs.map((r) => (r.id === id ? fn(r) : r)))
++  const setOwner = async (row, owner) => {
++    patch(row.id, (r) => ({ ...r, owner: owner || null }))
++    setOwnerSet((s) => new Set(s).add(row.id)); setOwnerErr('')
++    try { await scansApi.patch(row.id, { owner }) } catch { setOwnerErr(`ACT couldn't save the owner for ${row.name}.`); patch(row.id, (r) => ({ ...r, owner: row.owner })) }
++  }
++  const bulkOwner = async (owner) => {
++    if (!owner) return
++    await Promise.all(chosen.map((r) => setOwner(r, owner)))
++    setAnnounce(`Owner ${owner} set on ${plural(chosen.length, 'agent', 'agents')}.`)
++  }
++  const updated = (r) => patch(r.id, (old) => ({ ...old, ...r }))
++
++  const runImport = async () => {
++    setImporting(true); setImportErr('')
++    try {
++      const out = await scansApi.importRows(scanId, chosen.map((r) => r.id))
++      try { sessionStorage.setItem(`act-import-${scanId}`, JSON.stringify(out)) } catch { /* private mode: the summary rebuilds from the rows */ }
++      nav(`/connections/${connId}/scans/${scanId}/summary`, { state: { result: out } })
++    } catch (e) {
++      setImportErr(e.message || 'The database did not answer.')
++      setImporting(false)
++    }
++  }
++
++  if (c.error) return <div className="ds-page ds-container po-page"><ErrorPanel title="ACT couldn't load this connection" onRetry={c.reload}>Try again in a moment.</ErrorPanel></div>
++  if (c.conn && !p) return <Navigate to="/connections" replace />
++  if (!c.conn) return <div className="ds-page ds-container po-page" aria-busy="true"><span className="ds-skel po-skel-title" /><span className="ds-skel po-skel-row" /><span className="ds-skel po-skel-row" /></div>
++
++  const found = (rows || []).filter((r) => r.class !== 'missing').length
++  const nothingNew = rows && rows.length > 0 && !rows.some(isSelectable)
++  const label = chosen.length ? `Import ${plural(chosen.length, 'agent', 'agents')}${sample ? ' as sample data' : ''}` : 'Import'
++
++  return (
++    <WizardFrame provider={provider} connId={connId} step={5} title="Review agents" hideAside
++                 crumbs={[{ label: 'Connections', to: '/connections' }, { label: p.name, to: `/connections/${connId}` }, { label: 'Review' }]}
++                 hrefs={{ 3: `/connect/${provider}/${connId}/scope`, 4: `/connections/${connId}/scans/${scanId}` }}
++                 description={rows ? `Scan finished: ${plural(found, 'agent', 'agents')} found. New and changed agents are selected. Check owners and tiers, then import. Imported agents start in Pending review.` : 'Loading what the scan found.'}>
++      {sample && <SampleBanner provider={p.name} review />}
++      {error && (
++        <ErrorPanel title="ACT couldn't load the scan results" onRetry={() => setRev((r) => r + 1)}>
++          The scan is saved. This is a problem loading it; try again in a moment.
++        </ErrorPanel>
++      )}
++      {!error && !rows && (
++        <section className="ds-card po-panel" aria-busy="true" data-testid="review-loading">
++          <div className="po-panel-body">{[0, 1, 2, 3].map((i) => <span key={i} className="ds-skel po-skel-row" />)}</div>
++        </section>
++      )}
++      {rows && !error && (
++        <>
++          {importErr && (
++            <div className="ds-alert ds-alert-error" role="alert" data-testid="review-import-error">
++              <svg className="ds-alert-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M10 5.5v5.5M10 13.5v1.2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
++              <div><strong>Import didn't finish.</strong><p>{importErr}. Your selection is kept. Importing is safe to repeat: agents already imported are skipped.</p></div>
++            </div>
++          )}
++          {ownerErr && <Alert title="An owner didn't save">{ownerErr} Try choosing it again.</Alert>}
++          {nothingNew && (
++            <div className="ds-alert ds-alert-info" role="status">
++              <svg className="ds-alert-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9" fill="none" stroke="currentColor" strokeWidth="1.6" /><path d="M10 9v5M10 5.6v.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
++              <div><strong>Nothing new to import.</strong><p>All {found} agents match what's in ACT. <Link to={`/connections/${connId}`}>Back to the connection</Link></p></div>
++            </div>
++          )}
++
++          <div className="po-toolbar">
++            <div className="po-seg" role="group" aria-label="Filter by change">
++              {FILTERS.map(([k, name]) => (
++                <button type="button" key={k} data-testid={`review-filter-${k}`} aria-pressed={filter === k ? 'true' : 'false'} onClick={() => setFilter(k)}>{name}<b>{counts[k]}</b></button>
++              ))}
++            </div>
++            <div>
++              <label className="ds-sr" htmlFor="review-q">Search agents</label>
++              <input id="review-q" type="search" className="ds-input po-search" placeholder="Search name, account or type" value={q} data-testid="review-search" onChange={(e) => setQ(e.target.value)} />
++            </div>
++          </div>
++
++          <div className="ds-card po-tbl-card">
++            <table className="ds-table po-rt" data-testid="review-table" aria-describedby="rv-cap">
++              <caption className="ds-sr" id="rv-cap">Agents found in {p.name}. {visible.length} shown. Rows with a red edge need attention.</caption>
++              <colgroup><col className="c-cb" /><col /><col className="c-chg" /><col className="c-own" /><col className="c-tier" /><col className="c-flags" /><col className="c-why" /></colgroup>
++              <thead>
++                <tr>
++                  <th scope="col">{selectableVisible.length > 0 && (
++                    <input type="checkbox" data-testid="review-select-all" checked={allOn} aria-label="Select all shown agents that can be imported"
++                           onChange={(e) => setSel((s) => { const n = new Set(s); selectableVisible.forEach((r) => (e.target.checked ? n.add(r.id) : n.delete(r.id))); return n })} />
++                  )}</th>
++                  <th scope="col">Agent</th><th scope="col">Change</th><th scope="col">Owner</th><th scope="col">Tier</th><th scope="col">Risk flags</th>
++                  <th scope="col"><span className="ds-sr">Details</span></th>
++                </tr>
++              </thead>
++              <tbody>
++                {visible.map((r) => (
++                  <Row key={r.id} row={r} provider={p.name} owners={owners} open={open === r.id} onToggle={() => setOpen(open === r.id ? null : r.id)}
++                       selected={sel.has(r.id)} onSelect={(on) => setSel((s) => { const n = new Set(s); if (on) n.add(r.id); else n.delete(r.id); return n })}
++                       onOwner={(o) => setOwner(r, o)} ownerSet={ownerSet.has(r.id)} onUpdated={updated} />
++                ))}
++                {visible.length === 0 && (
++                  <tr className="po-empty-row"><td colSpan={7}>
++                    <div className="po-empty" data-testid="review-empty">
++                      <h3>No agents match</h3>
++                      <p>Try another filter or clear the search.</p>
++                      <button type="button" className="ds-btn ds-btn-sm" onClick={() => { setFilter('all'); setQ('') }}>Show all agents</button>
++                    </div>
++                  </td></tr>
++                )}
++              </tbody>
++            </table>
++          </div>
++
++          <div className="po-footer po-footer-sticky" data-testid="review-bulk-bar">
++            <div className="po-footer-l">
++              <strong data-testid="review-selected-count">{chosen.length} selected</strong>
++              <label className="ds-sr" htmlFor="bulk-owner">Assign owner to selected agents</label>
++              <select id="bulk-owner" className="po-own" data-testid="review-bulk-owner" disabled={!chosen.length} value="" onChange={(e) => bulkOwner(e.target.value)}>
++                <option value="">Assign owner…</option>
++                {owners.slice().sort((a, b) => a.localeCompare(b)).map((o) => <option key={o} value={o}>{o}</option>)}
++              </select>
++              <button type="button" className="ds-btn ds-btn-sm" data-testid="review-bulk-exclude" disabled={!chosen.length} onClick={() => setSel(new Set())}>Clear selection</button>
++              <span className="ds-helper po-flat po-footer-note" id="imp-note">
++                {chosen.length === 0 ? 'Select at least one agent to import.' : <>
++                  {noOwner > 0 && <>{plural(noOwner, 'agent', 'agents')} without an owner will import as <strong>Needs owner</strong>. </>}
++                  {missing > 0 && `${plural(missing, 'missing agent', 'missing agents')} ${missing === 1 ? 'stays' : 'stay'} in ACT. `}
++                </>}
++              </span>
++            </div>
++            <div className="po-footer-r">
++              <button type="button" className="ds-btn ds-btn-primary" data-testid="review-import" disabled={!chosen.length || importing}
++                      aria-busy={importing ? 'true' : undefined} aria-describedby="imp-note" onClick={runImport}>{importing ? 'Importing…' : label}</button>
++            </div>
++          </div>
++          <div className="ds-sr" role="status" aria-live="polite">{announce}</div>
++        </>
++      )}
++    </WizardFrame>
++  )
++}

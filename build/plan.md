@@ -495,3 +495,4 @@ Two sequential parts, two builders:
 - PO-7a test baseline 7b0a496 (4 red, the Snowflake walk green; POST /api/demo/reset leaves old connections behind, so the builder must clear them). Builder running.
 - PD end-of-wave on main cf253b2: code 960 pass / 3 skip (11:38); e2e 278 pass (6:05). Wave PD DONE.
 - PO-7a 4b28edf: D7-1..3 pass (72 e2e, 117 backend); the gallery card shows the real state + the sample badge; the seed clears foreign demo connections. MERGED c05542c. Worktree removed. PO-7b publish (domino-deploy, sonnet) running; post-merge suites running.
+- PO-7b: App published 6af633efb6f82078180d66d7, Running, GRANT_BASED, small-k8s; smoke ok (SPA, health, 12 agents). ACT_PUBLIC_URL unset (no app-level env). demo_mode on via the saved Settings switch.

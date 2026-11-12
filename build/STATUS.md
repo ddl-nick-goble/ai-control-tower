@@ -30,3 +30,10 @@ Worktrees under .worktrees/ are lost; recreate from origin/task/<id>. Playwright
 
 ## 2026-11-12: Provider onboarding (proposed)
 Research, design and plan are done: build/provider-onboarding-plan.md. The prototype is at <workspace proxy>/9201/provider-onboarding.html. Waiting on Nick's decisions D-1..D-6 before PA (T-20, PO-1, PO-2) starts.
+
+## 2026-11-12: Provider onboarding shipped + App published
+- "Connect a provider" (PO-1..PO-7a) merged: gallery, setup wizard with live detection, access check, scope picker, scans (sample in-process, live as a Domino Job), the review table with suggested tiers + why + overrides, import to Pending review, connection detail, sync schedule, awaiting queue, demo seed for all five clouds.
+- Published Domino App "Agent Control Tower": id 6af633efb6f82078180d66d7 (v1 6af633efb6f82078180d66da), URL https://apps.se-demo.domino.tech/u/nick_goble/ai-control-tower/app/?appId=6af633efb6f82078180d66d7, Running, small-k8s, visibility GRANT_BASED (Restricted). Smoke: SPA 200, health ok, 12 agents.
+- Notes: the App opens in demo mode because the saved in-app Settings switch is on (toggle in Settings). ACT_PUBLIC_URL is not set (Apps have no app-level env vars; a project var would also hit the workspace). It only matters for live provider return links, not for sample/demo.
+- Follow-ups logged in plan.md: PO-3f live-adapter fixes (SigV4, coverage re-crawl, IAM caching), the AWS account/org choice + CloudWatch traces, T-20f nav cue, minor UI items.
+- Remaining roadmap: Superblocks tasks T-21..T-33 (Audit, approval gate, findings, Home, policies, roles, ...).
