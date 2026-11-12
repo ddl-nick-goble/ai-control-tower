@@ -49,6 +49,8 @@
 .st-f-row .st-ctl { grid-area: ctl }
 .st-f-row .st-state { justify-content: flex-start; min-width: 0 }
 .st-f-row .st-state { grid-area: state }
+.st-f-row.st-f-locked { grid-template-areas: "label ctl ." "hint ctl ." "hint state state" }
+.st-f-row.st-f-locked .st-state { margin-top: 4px }
 
 /* stacked (platform cards) */
 .st-f-stack { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px; padding: 0; align-content: start }
@@ -118,6 +120,7 @@
 }
 @media (max-width: 799px) {
   .st-f-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px }
+  .st-f-row.st-f-locked { grid-template-areas: "label label" "ctl ctl" "state state" "hint hint" }
   .st-sk-row { grid-template-columns: minmax(0, 1fr) }
   .st-demo { grid-template-columns: minmax(0, 1fr); row-gap: 8px }
 }
@@ -135,3 +138,5 @@
 .st-chip strong { color: var(--ds-ink); font-weight: 600 }
 .st-plat-wrap .st-warning { margin: 0 0 var(--ds-s2) }
 @media (max-width: 1099px) { .st-plat-grid, .st-plat-fields { grid-template-columns: minmax(0, 1fr) } }
+
+.st-dialog .ds-btn { transition: none }

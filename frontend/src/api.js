@@ -46,6 +46,7 @@ const json = (method, body) => ({ method, headers: { 'Content-Type': 'applicatio
 export const settingsApi = {
   access: () => request('settings/access'),
   list: () => request('settings'),
+  realAgentCount: () => request('settings/real-agent-count'),
   put: (name, value) => request(`settings/${encodeURIComponent(name)}`, json('PUT', { value })),
   del: (name) => request(`settings/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 }
