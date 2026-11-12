@@ -349,3 +349,33 @@ Nick: "register agent" becomes a gallery of provider cards. Each card opens an o
 - Concurrency: session cap is 3 subagents; research runs in two batches (AWS, Vertex, Google agents; then Azure, Databricks, Snowflake), design after.
 - 2026-11-12: Provider onboarding research (6 providers + Domino token spike) and design (spec + prototype, served on port 9201) done. Plan PROPOSED: build/provider-onboarding-plan.md (PO-1..PO-7, PO-L; waves PA-PE; supersedes T-40..T-46, T-27, T-31). Waiting on Nick: D-1 service account, D-2 sandboxes, D-3 Google cards, D-4 sync default, D-5 sample import, D-6 order.
 - 2026-11-12: Nick asked me to create the service account. Created Domino service account act-svc (id 6af5db6de22ea40f8ee4fc60, idpId 6763d6ba-ba6c-49f3-830f-50ecb0ba2382, contact nick.goble+act-svc@...). No token minted yet; that waits for PO-L/publish (it goes into a Project secret variable, never printed). Its idpId is the sub every cloud trust pins (D-1). Nick has no test accounts (D-2 = none for now).
+
+## W3 (Nick 2026-11-12: "do the small ones. go."): T-20, T-19f, T-50f, then T-48f
+### T-20 Navigation and routes (ACs written 2026-11-12)
+- N-1 The top nav shows Home, Fleet, Findings, Policies, Connections and Audit, in that order, with the Settings gear at the right (unchanged). The current page carries aria-current="page" and a visible indicator. "Register external agent" leaves the nav; it stays reachable from Fleet's button and at #/register.
+- N-2 #/home, #/findings, #/policies, #/connections and #/audit each render inside the shell with a breadcrumb, a page title, a one-line description of what the page will hold, and a designed empty state ("Coming soon" is not enough: say what will appear). Never "unavailable", raw JSON or a status code.
+- N-3 #/ still opens Fleet (Home becomes the default when T-24 lands). An unknown route shows a not-found page with a link to Fleet.
+- N-4 No horizontal scroll at 1024 or 1440. Nav items are keyboard reachable with visible focus rings. At narrow widths the nav wraps or scrolls inside itself, never the page.
+- N-5 Deep links work behind the Domino proxy (hash routing, relative assets). All existing e2e tests still pass.
+Touches: frontend/src/components/ui.jsx (nav), frontend/src/main.jsx (routes), new frontend/src/pages/{Home,Findings,Policies,Connections,Audit,NotFound}.jsx, an optional new frontend/src/shell.css (NOT design.css: T-19f owns it), new tests/e2e/test_t20_nav.py, frontend/dist. Builder: builder. QA: ui-tester, visual-reviewer, code-reviewer. Branch task/T-20.
+### T-19f: F-1..F-3 above plus the T-19b r4 items (build/review/T-19b-visual-r4.md)
+- F-4 At 1024 and 1440, the Runs table "N spans" never touches the row chevron (fixed chevron column or right padding).
+- F-5 The highlighted violation row in the run timeline has the red left bar.
+- F-6 The empty agent page's columns are balanced at 1440.
+- F-7 The Runs table thead fill is uniform across all columns.
+- F-8 Card-level "Try again" is a ghost (secondary) button.
+- F-9 Filter chips and copy buttons show a visible focus ring on keyboard focus.
+Touches: frontend/src/design.css, frontend/src/pages/Agent.jsx, frontend/src/pages/Run.jsx, frontend/src/components/agentui.jsx, tests/e2e/test_t19a_shell_fleet.py (S-2 only), a new tests/e2e/test_t19f_tables.py, frontend/dist.
+### T-50f: restore_db follow-ups (build/review/T-50-code-r2.md)
+- DBF-1 The in-use guard tells "unopenable/corrupt" apart from "busy (another process holds a lock)". Unopenable gets a message naming the files to move aside, plus a --force flag that moves dest and its -wal/-shm/-journal aside even when unopenable. Busy still refuses, even with --force.
+- DBF-2 A hot -journal on a stopped app is handled: --force moves it aside, or the message says exactly which file to move.
+- DBF-3 The busy probe never mutates a WAL dest: open mode=ro plus a lock check, and no BEGIN EXCLUSIVE that could checkpoint or remove -wal/-shm before the move-aside.
+- DBF-4 A post-install integrity failure message names the .broken-* files.
+- DBF-5 Unreadable /proc/mounts falls back to DELETE (the safe mode), not WAL, and logs a warning.
+Touches: scripts/restore_db.py, backend/db.py, tests/test_t50*.py (test-author). Builder: builder. QA: test-author, code-reviewer.
+### T-48f: Settings minors (build/review/T-48-code-r2.md (2)-(4)); after T-20 merges if it needs ui.jsx
+- SRF-1 The env-locked badge wording matches SR-4, and the t39 expected text is updated together.
+- SRF-2 Integrations/Credentials fields render from the backend DEFS (no hard-coded list), or an e2e test proves every DEFS name renders.
+- SRF-3 The demo-off confirm copy states what will change, using live data (e.g. the agent count).
+Touches: frontend/src/pages/Settings.jsx, backend/settings.py (only if needed), tests/e2e/test_t39_settings.py, tests/e2e/test_t48_settings_reachable.py, frontend/dist.
+Waves: W3a = T-20, T-19f, T-50f (no shared files). T-48f joins when a slot frees.
