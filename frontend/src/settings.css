@@ -43,10 +43,11 @@
 .ds-input[readonly] { background: #f5f6f8; color: var(--ds-text) }
 
 /* table row */
-.st-f-row { grid-template-columns: minmax(280px, 40%) minmax(0, 1fr) 120px; grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
+.st-f-row { grid-template-columns: minmax(280px, 40%) minmax(0, 1fr) minmax(120px, max-content); column-gap: var(--ds-s2); grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
 .st-f-row .st-label { grid-area: label; align-self: end }
 .st-f-row .st-hint { grid-area: hint; align-self: start }
 .st-f-row .st-ctl { grid-area: ctl }
+.st-f-row .st-state { justify-content: flex-start; min-width: 0 }
 .st-f-row .st-state { grid-area: state }
 
 /* stacked (platform cards) */
