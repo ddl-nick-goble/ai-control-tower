@@ -449,3 +449,4 @@ Shared files nobody touches in PB: adapters/base.py, backend/normalize.py, jobs/
 - PB end-of-wave on main: code 941 pass / 3 skip; e2e 228 pass (2:36). PO-3b, PO-3c worktrees removed. Wave PB DONE. Starting PC (PO-4, PO-5).
 - PO-4 test baseline db0e1d9 (18 red). Builder running.
 - PO-5 test baseline f9d8dfa (30 red; test_t20_nav.py updated: connections is no longer a placeholder, /register -> #/connections/add-by-url). Builder running.
+- PO-5 r1 2d8a3f4: 30/30 PO-5 tests; 2 stale older tests (t20 n1, t18 r9 expect #/register to stay) + the _trusted_sample helper being fixed by ui-tester; full run + captures next. Scratch preview of task/PO-5 on port 9202 (ACT_DB in session scratch, not the real DB) for Nick. PO-4 round 2 running.
