@@ -78,6 +78,7 @@ a.ds-btn:not(.ds-btn-primary):not(.ds-btn-ghost) { color: var(--ds-ink) }
 .po-card-actions { margin-top: auto; padding-top: 4px; display: flex; flex-wrap: nowrap; gap: 4px; align-items: center }
 .po-card-actions .ds-btn { white-space: nowrap; padding-inline: 12px }
 .po-card-actions .ds-btn-ghost { padding-inline: 6px }
+@media (max-width: 1199px) { .po-card-actions { flex-direction: column; align-items: flex-start } }
 .po-card-other { background: transparent; border-style: dashed; box-shadow: none }
 
 /* step rail */
