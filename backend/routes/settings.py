@@ -17,7 +17,8 @@ def require_admin(user: User = Depends(require_user)) -> User:
 
 @router.get("/api/settings/access")
 def access(user: User = Depends(require_user)):
-    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured()}
+    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured(),
+            "user": user.username, "via": user.via}
 
 
 @router.get("/api/settings")

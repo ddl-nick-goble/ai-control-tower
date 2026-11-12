@@ -179,7 +179,17 @@ class _Switch:
         self.own = own
 
     def __enter__(self):
+        global _inflight
+        # The triggering request is counted in flight while it waits for another switch; that switch would wait
+        # for it to drain (a 15 s stall). Step out of the count while waiting, back in once the mutex is ours.
+        if self.own:
+            with _cond:
+                _inflight -= self.own
+                _cond.notify_all()
         _switch_mutex.acquire()
+        if self.own:
+            with _cond:
+                _inflight += self.own
         try:
             _begin_switch(self.own)
         except BaseException:

@@ -58,11 +58,13 @@ def _approve(agent_id, user):
 def demo_run(agent_id: str, _user: User = Depends(require_user)):
     from jobs import seed_demo
     try:
-        with demo.active_demo_engine() as eng:  # held for the whole run: the engine cannot change under it
+        with demo.active_demo_engine() as eng:  # the lock covers only the check, not the run
             a = _agent(agent_id, eng)
             if a.name != "recon-agent":
                 raise HTTPException(409, "only recon-agent can be run in demo mode")
-            run_id = seed_demo.run_recon_once(agent_id, eng)
+        # This request stays counted in flight, and a switch drains in-flight requests before it swaps the
+        # engine, so `eng` cannot change under the run even though _rt_lock is released.
+        run_id = seed_demo.run_recon_once(agent_id, eng)
     except demo.DemoGuardError as e:
         raise HTTPException(409, str(e))
     except HTTPException:
