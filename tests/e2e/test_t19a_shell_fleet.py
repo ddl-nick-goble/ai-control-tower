@@ -264,19 +264,34 @@ def test_s2_filter_bar_search_and_count(page, shot):
     shot("then")
 
 
-def test_s2_table_sticky_header_hover_and_cells(page, shot):
-    _fleet(page)
+@pytest.mark.parametrize("banner", [False, True], ids=["plain", "demo-banner"])
+def test_s2_table_sticky_header_hover_and_cells(page, shot, banner, demo_url):
+    # Seed enough agents (60 mocked rows, ~2600px of table) that the page really scrolls, with and without the banner.
+    origin = demo_url if banner else "./"
+    base = page.request.get(origin + "api/agents").json()
+    rows = []
+    for i in range(60):
+        r = dict(base[i % len(base)])
+        r["id"], r["name"] = f"mock-{i:03d}", f"mock-agent-{i:03d}"
+        rows.append(r)
+    page.route(re.compile(r"/api/agents(\?.*)?$"), lambda r: r.fulfill(json=rows))
+    page.goto(origin + "#/")
+    if banner:
+        expect(page.get_by_test_id("demo-banner")).to_be_visible()
+    expect(page.get_by_test_id("fleet-row")).to_have_count(60)
     for col in ("Source", "Name", "Owner", "Tier", "Status", "Open findings", "Last seen"):
         expect(page.get_by_role("columnheader", name=re.compile(col, re.I))).to_be_visible()
     th = page.get_by_role("columnheader").first
     assert th.evaluate("e => getComputedStyle(e).position") == "sticky" or \
         th.evaluate("e => getComputedStyle(e.parentElement).position") == "sticky" or \
         th.evaluate("e => getComputedStyle(e.closest('thead')).position") == "sticky"
-    page.mouse.wheel(0, 400)
+    assert page.evaluate("document.documentElement.scrollHeight") > page.evaluate("innerHeight") + 800, \
+        "page does not scroll for real"
+    page.mouse.wheel(0, 1200)
     settle(page)
-    wait_true(page, "window.scrollY > 50", 1000)
-    if page.evaluate("window.scrollY") > 50:
-        assert 0 <= th.bounding_box()["y"] < 120, "header not stuck while scrolling"
+    assert wait_true(page, "window.scrollY > 500", 3000), "page did not scroll"
+    assert 0 <= th.bounding_box()["y"] < 120, "header not stuck while scrolling"
+    expect(th).to_be_in_viewport()
     page.evaluate("window.scrollTo(0, 0)")
     rows = page.get_by_test_id("fleet-row")
     r = rows.nth(1)
