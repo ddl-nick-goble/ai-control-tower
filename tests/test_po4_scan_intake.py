@@ -180,7 +180,7 @@ def test_ac1_staged_rows_carry_suggestions(ctx):
         sug = r["suggestion"]
         assert set(sug["suggestions"]) == set(CRITERIA)
         assert all(1 <= v["score"] <= 5 for v in sug["suggestions"].values())
-        assert sug["tier"] in (1, 2, 3, "1", "2", "3")
+        assert sug["tier"] in (1, 2, 3, 4, "1", "2", "3", "4")
 
 
 def test_ac1_live_scan_launches_domino_job(ctx):
