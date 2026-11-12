@@ -5,8 +5,8 @@ import { Breadcrumb } from '../form'
 import { IconCheck, IconX } from './bits'
 import { PROVIDERS, STEPS } from './providers'
 
-export function StepRail({ provider, connId, step }) {
-  const hrefFor = { 3: connId && `/connect/${provider}/${connId}/scope` }
+export function StepRail({ provider, connId, step, hrefs }) {
+  const hrefFor = { 3: connId && `/connect/${provider}/${connId}/scope`, ...hrefs }
   return (
     <ol className="po-rail" aria-label="Setup steps" data-testid="step-rail">
       {STEPS.map((label, i) => {
@@ -53,7 +53,7 @@ export function TrustAside({ provider }) {
   )
 }
 
-export default function WizardFrame({ provider, connId, step, title, description, actions, children, hideAside }) {
+export default function WizardFrame({ provider, connId, step, title, description, actions, children, hideAside, crumbs, hrefs }) {
   const p = PROVIDERS[provider]
   const h1 = React.useRef(null)
   // Focus the step heading on every step change (each step mounts its own frame) and start at the top.
@@ -64,7 +64,7 @@ export default function WizardFrame({ provider, connId, step, title, description
   return (
     <div className="ds-page ds-container po-page" data-testid={`wizard-${provider}`}>
       <header className="ds-page-header">
-        <Breadcrumb items={[{ label: 'Connections', to: '/connections' }, { label: `Connect ${p.name}` }]} />
+        <Breadcrumb items={crumbs || [{ label: 'Connections', to: '/connections' }, { label: `Connect ${p.name}` }]} />
         <div className="ds-page-header-row">
           <div className="po-head-text">
             <h1 className="ds-title po-title" ref={h1} tabIndex={-1} data-testid="step-heading">{title}</h1>
@@ -73,7 +73,7 @@ export default function WizardFrame({ provider, connId, step, title, description
           {actions}
         </div>
       </header>
-      <StepRail provider={provider} connId={connId} step={step} />
+      <StepRail provider={provider} connId={connId} step={step} hrefs={hrefs} />
       <div className={hideAside ? 'po-wiz po-wiz-solo' : 'po-wiz'}>
         <div className="po-main">{children}</div>
         {!hideAside && <TrustAside provider={provider} />}

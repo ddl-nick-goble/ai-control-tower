@@ -20,7 +20,11 @@ import ConnectStart from './pages/ConnectStart'
 import ConnectCallback from './pages/ConnectCallback'
 import ConnectAccess from './pages/ConnectAccess'
 import ConnectScope from './pages/ConnectScope'
-import ConnectScan from './pages/ConnectScan'
+import ScanView, { ScanStart } from './pages/ConnectScan'
+import ScanReview from './pages/ScanReview'
+import ImportSummary from './pages/ImportSummary'
+import ConnectionDetail from './pages/ConnectionDetail'
+import Intake from './pages/Intake'
 import NotFound from './pages/NotFound'
 
 createRoot(document.getElementById('root')).render(
@@ -41,7 +45,12 @@ createRoot(document.getElementById('root')).render(
         <Route path="/connect/:provider/callback" element={<ConnectCallback />} />
         <Route path="/connect/:provider/:connId/access" element={<ConnectAccess />} />
         <Route path="/connect/:provider/:connId/scope" element={<ConnectScope />} />
-        <Route path="/connect/:provider/:connId/scan" element={<ConnectScan />} />
+        <Route path="/connect/:provider/:connId/scan" element={<ScanStart />} />
+        <Route path="/connections/:connId" element={<ConnectionDetail />} />
+        <Route path="/connections/:connId/scans/:scanId" element={<ScanView />} />
+        <Route path="/connections/:connId/scans/:scanId/review" element={<ScanReview />} />
+        <Route path="/connections/:connId/scans/:scanId/summary" element={<ImportSummary />} />
+        <Route path="/connections/:connId/intake/:stagedId" element={<Intake />} />
         <Route path="/audit" element={<Audit />} />
         <Route path="*" element={<NotFound />} />
       </Routes>

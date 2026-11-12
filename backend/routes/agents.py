@@ -19,6 +19,11 @@ def _tier(v):
         return None
 
 
+def _disconnected_ids(cx):
+    """Ids of connections the user disconnected: their agents stay and read "Source disconnected" (PO-6.3)."""
+    return {r.id for r in cx.execute(select(db.connections.c.id).where(db.connections.c.state == "disconnected"))}
+
+
 def _card_host(record):
     """Host[:port] of an external agent's card URL, so duplicate names can be told apart; None otherwise."""
     url = (record or {}).get("card_url")
@@ -43,21 +48,27 @@ def list_agents(source: str | None = None, tier: int | None = None, include_shad
         rows = cx.execute(q.order_by(db.agents.c.source_platform, db.agents.c.name)).all()
         open_f = dict(cx.execute(select(db.findings.c.agent_id, func.count()).where(db.findings.c.status == "open")
                                  .group_by(db.findings.c.agent_id)).all())
+        gone = _disconnected_ids(cx)
     return [{"id": r.id, "source_platform": r.source_platform, "native_id": r.native_id, "name": r.name,
              "owner": r.owner, "tier": _tier(r.tier), "status": r.status, "last_seen": r.last_seen,
              "open_findings": int(open_f.get(r.id, 0)),
-             "origin": (r.record or {}).get("origin", "internal"), "card_host": _card_host(r.record)} for r in rows]
+             "origin": (r.record or {}).get("origin", "internal"), "card_host": _card_host(r.record),
+             "connection_id": r.connection_id, "sample": bool((r.record or {}).get("sample")),
+             "source_disconnected": r.connection_id in gone} for r in rows]
 
 
 @router.get("/api/agents/{agent_id}")
 def get_agent(agent_id: str):
     with db.engine.connect() as cx:
         r = cx.execute(select(db.agents).where(db.agents.c.id == agent_id)).first()
+        gone = _disconnected_ids(cx)
     if r is None or not r.record:
         raise HTTPException(404, "agent not found")
     rec = dict(r.record)
     rec.update(id=r.id, name=r.name, owner=r.owner or rec.get("owner"), status=r.status, last_seen=r.last_seen,
-               tier=_tier(r.tier), tier_reasoning=r.tier_reasoning, criteria=r.criteria or rec.get("criteria"))
+               tier=_tier(r.tier), tier_reasoning=r.tier_reasoning, criteria=r.criteria or rec.get("criteria"),
+               connection_id=r.connection_id, sample=bool(rec.get("sample")),
+               source_disconnected=r.connection_id in gone)
     return rec
 
 
