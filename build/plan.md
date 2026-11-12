@@ -381,3 +381,4 @@ Touches: frontend/src/pages/Settings.jsx, backend/settings.py (only if needed), 
 Waves: W3a = T-20, T-19f, T-50f (no shared files). T-48f joins when a slot frees.
 - T-50f test baseline f2fccc8 (8 red, 2 regression guards).
 - T-20 test baseline d1c51d5 (N-1..N-3 red; edited S-1/S-5 in test_t19a_shell_fleet.py for the N-1 nav change). Builder round 1 running. T-19f ui-tester writing tests.
+- T-19f test baseline 8144f19 (F-1,F-3,F-4@1024,F-6,F-8 red; F-5,F-7,F-9 green at computed-style level, visual review decides). T-20 r1 9f72894: code review approve w/ minors (shell.css nav overflow clipping indicator; breadcrumb root; title/focus; test absolute-URL check).
