@@ -28,7 +28,14 @@ try:
 except OSError:
     log.exception("could not create DB directory for %s", DB_PATH)
 
-_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3")
+_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3", "smbfs", "ceph", "glusterfs", "lustre", "9p",
+               "fuse.sshfs", "fuse.s3fs", "fuse.gcsfuse", "fuse.goofys", "fuse.rclone", "fuse.juicefs")
+
+
+def _unescape_mount(s: str) -> str:
+    for esc, ch in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+        s = s.replace(esc, ch)
+    return s
 
 
 def _read_mounts() -> list:
@@ -38,9 +45,9 @@ def _read_mounts() -> list:
             for line in f:
                 parts = line.split()
                 if len(parts) >= 3:
-                    out.append((parts[1].replace("\\040", " "), parts[2]))
-    except OSError:
-        pass
+                    out.append((_unescape_mount(parts[1]), parts[2]))
+    except OSError as e:
+        log.warning("cannot read /proc/mounts (%s); treating the DB filesystem as local", e)
     return out
 
 
@@ -52,14 +59,14 @@ def fs_type(path, mounts=None) -> str:
     best, best_len = "unknown", -1
     for mp, fst in mounts:
         mp_n = mp.rstrip("/")
-        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) > best_len:
+        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) >= best_len:
             best, best_len = fst, len(mp_n)
     return best
 
 
 def is_network_fs(path, mounts=None) -> bool:
     t = fs_type(path, mounts).lower()
-    return t in _NETWORK_FS or t.startswith("fuse.")
+    return t in _NETWORK_FS
 
 
 def journal_mode_for(path, mounts=None) -> str:
@@ -101,7 +108,7 @@ def check_open(path) -> None:
         raise DatabaseOpenError(
             f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e}. "
             "On a network filesystem the usual cause is stale -wal/-shm files left by a crash; "
-            "move them aside (or run scripts/restore_db.py) and restart.") from e
+            "move them aside, or restore a known-good copy with scripts/restore_db.py, and restart.") from e
 
 
 def _make_engine(path: str):
