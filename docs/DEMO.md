@@ -16,7 +16,12 @@ classifier endpoint key. Every stand-in is labelled in the UI (a banner on every
   `svc-act-recon-demo`; a simulated second approver `demo-approver-simulated` ("Approve as demo approver" on the agent page,
   `POST /api/demo/approve/{agent_id}`; the normal approve route still refuses the registrant with 403); "Run recon agent"
   (`POST /api/demo/run/{agent_id}`) runs one mock recon run in-process.
-- "Reset demo" in the banner (`POST /api/demo/reset`) wipes the demo database and reseeds it.
+- Demo mode also seeds sample provider connections (backend/demo_connections.py): AWS and Google connected with a finished scan
+  holding New and Changed rows to review, Microsoft connected with an awaiting-import queue (the Fleet banner), Databricks
+  needing attention (one missing permission) and Snowflake not connected. The scans run in-process on the sample tenants. The
+  Changed rows come from `seed_changed_tool_difference()`, which drops one tool from a Fleet agent (treasury-sweep-agent, payments-fraud-screener)
+  so the tenant shows it as added. The real database is never seeded with sample connections.
+- "Reset demo" in the banner (`POST /api/demo/reset`) wipes the demo database (connections, scans and staged rows included) and reseeds it.
 - With `ACT_DEMO_MODE` unset none of this exists: no banner, `/api/demo/*` returns 404, and governance and the classifier behave as before.
 - Demo mode only seeds or resets its own demo database (the default demo DB, or an `ACT_DB` file that did not exist at startup); a hand-set `ACT_DB` that already exists needs `ACT_DEMO_ALLOW_DB=1`, and a refusal shows in the banner and as `demo_guard` in `GET /api/health`.
 
@@ -99,6 +104,19 @@ Notes for the walk:
 9. **Passport (30 s).** The passport shows the card fields (name, skills, endpoints), the tier computed from the
    criteria and the identity banner (unsigned unless the signed card is served). Click **Open the agent page**;
    the fleet now has 13 rows and the new one shows its card host.
+
+## Connect a provider (under 3 minutes)
+
+Start from a cold demo (or press Reset demo). Everything below is sample data, labelled as such.
+
+1. Open **Connections**. AWS, Google and Microsoft show "Connected" with a Sample data badge and a last scan; Databricks shows
+   "Needs attention"; Snowflake shows "Not connected".
+2. Open **AWS**. The sync history lists a finished scan with New and Changed counts. Click it.
+3. On the scan, choose **Review**. The review table lists New agents and Changed ones (a tool added at the source).
+4. Click **Why** on a row to see how ACT suggested its tier. Open **Override**, set Tier 1, give a reason, save: the row reads "Set by you".
+5. Click **Import N agents as sample data**. The summary opens; choose **Open Fleet**. The agents show "Pending review".
+6. Back on Fleet, the banner says Microsoft's agents are awaiting import; open **Connections > AWS** to show the connection detail.
+7. Live wizard: on **Connections**, choose **Explore sample data** on Snowflake. The handshake is detected, then check access, choose scope, and the scan runs to completion.
 
 ## Resetting
 

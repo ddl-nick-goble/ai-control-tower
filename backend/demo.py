@@ -317,7 +317,10 @@ def service_account_identity() -> dict:
 def _seed(**kw):
     from jobs import seed_demo
     with seed_demo._env(ACT_URL=""):  # bundles are created in-process on the simulated store
-        return seed_demo.seed(governance=True, **kw)
+        summary = seed_demo.seed(governance=True, **kw)
+    from . import demo_connections
+    demo_connections.seed()
+    return summary
 
 
 class DemoGuardError(Exception):
@@ -376,6 +379,9 @@ def ensure_seeded():
         _refuse(f"refusing to claim {db.DB_PATH} as a demo database: ACT_DB was set by hand; "
                 "set ACT_DEMO_ALLOW_DB=1 to let demo mode seed and reset it")
     if n:
+        if marked:  # a demo DB seeded before the connection samples existed gets them once
+            from . import demo_connections
+            demo_connections.seed()
         return None
     # Claim + re-check in one transaction: the marker insert takes the write lock, so of two
     # processes only one sees rowcount 1 and seeds; a DB that filled meanwhile rolls the claim back.
@@ -409,6 +415,8 @@ def reset():
             db.metadata.drop_all(eng, tables=[t for t in db.metadata.sorted_tables if t.name != "app_settings"])
             demo_governance.clear()
         db.init_db(eng)
+        from . import demo_connections
+        demo_connections.clear(eng)  # connections, scans and staged rows never survive a reset
         _write_marker(eng)
         if db.engine is not eng:  # cannot happen under _rt_lock; never seed another DB if it does
             _refuse("refusing to seed: the active database changed during the reset")
