@@ -33,7 +33,15 @@ import sys
 import pytest
 
 import _po3a_common as C
-from adapters.base import AdapterBase, SourceAgent
+
+
+def _AdapterBase():
+    return importlib.import_module("adapters.base").AdapterBase
+
+
+def _SourceAgent():
+    return importlib.import_module("adapters.base").SourceAgent
+
 
 CFG = {"sample": False, "account": "acme-prod", "host": "acme-prod.snowflakecomputing.com",
        "role": "ACT_READER", "warehouse": "ACT_WH"}
@@ -124,9 +132,9 @@ def _disp(row):
 # ---------------------------------------------------------------- PO-3.1
 def test_po31_registry_adapter_implements_all_four_methods():
     ad = _adapter()
-    assert isinstance(ad, AdapterBase)
+    assert isinstance(ad, _AdapterBase())
     for n in ("auth_methods", "test_connection", "list_scopes", "discover"):
-        assert getattr(type(ad), n) is not getattr(AdapterBase, n), f"{n} not implemented"
+        assert getattr(type(ad), n) is not getattr(_AdapterBase(), n), f"{n} not implemented"
 
 
 def test_po31_auth_methods_primary_and_fallback():
@@ -195,7 +203,7 @@ def test_po34_partitions_followed_all_agents_found(live):
     want = {_disp(x) for x in _all_agents_rows()}
     assert want <= {a.name for a in agents}
     assert any(c[0].upper() == "GET" and "partition" in c[1] + json.dumps(c[2], default=str) for c in r.calls)
-    assert all(isinstance(a, SourceAgent) and a.platform == "snowflake" for a in agents)
+    assert all(isinstance(a, _SourceAgent()) and a.platform == "snowflake" for a in agents)
 
 
 def test_po33_field_mapping_from_describe_agent(live):
@@ -211,7 +219,7 @@ def test_po33_field_mapping_from_describe_agent(live):
     want_tools = {t["tool_spec"]["name"] for t in spec["tools"]}
     assert want_tools <= C.names_of(a.tools)
     model = (spec.get("models") or {}).get("orchestration") or "auto"
-    assert model in (a.dependencies.get("models") or [])
+    assert model in [d["name"] if isinstance(d, dict) else d for d in (a.dependencies.get("models") or [])]
     assert a.identity.get("type") == "caller_rights" and a.identity.get("principal") == first["owner"]
     assert a.identity.get("distinct") is False
     res = spec.get("tool_resources") or {}
@@ -278,7 +286,7 @@ def test_sample_mode_no_http_all_methods(monkeypatch):
     assert isinstance(extra, list) and 1 <= len(extra) <= 3, "sample_tenants/snowflake.json needs 1-3 'agents'"
     assert len(agents) == len(extra)  # all discovery-only: no legacy replay for Snowflake
     for a in agents:
-        assert isinstance(a, SourceAgent) and a.platform == "snowflake" and a.name
+        assert isinstance(a, _SourceAgent()) and a.platform == "snowflake" and a.name
         C.assert_no_invented(a)
 
 

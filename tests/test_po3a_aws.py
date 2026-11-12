@@ -31,7 +31,15 @@ from urllib.parse import unquote, urlparse
 import pytest
 
 import _po3a_common as C
-from adapters.base import AdapterBase, SourceAgent
+
+
+def _AdapterBase():
+    return importlib.import_module("adapters.base").AdapterBase
+
+
+def _SourceAgent():
+    return importlib.import_module("adapters.base").SourceAgent
+
 
 LEGACY = {"treasury-sweep-agent", "kyc-refresh-agent", "trade-break-triage"}
 CFG = {"sample": False, "account_id": "123456789012", "regions": ["us-east-1"]}
@@ -95,9 +103,9 @@ def _all_recording_text():
 # ---------------------------------------------------------------- PO-3.1 contract / auth / test_connection
 def test_po31_registry_adapter_implements_all_four_methods():
     ad = _adapter()
-    assert isinstance(ad, AdapterBase)
+    assert isinstance(ad, _AdapterBase())
     for n in ("auth_methods", "test_connection", "list_scopes", "discover"):
-        assert getattr(type(ad), n) is not getattr(AdapterBase, n), f"{n} not implemented"
+        assert getattr(type(ad), n) is not getattr(_AdapterBase(), n), f"{n} not implemented"
 
 
 def test_po31_auth_methods_primary_and_fallback():
@@ -166,7 +174,7 @@ def test_po34_pagination_followed(live):
     want = {x["agentRuntimeName"] for x in p1["agentRuntimes"] + p2["agentRuntimes"]}
     assert want <= {a.name for a in agents}
     assert any("nextToken" in c[1] + json.dumps(c[2], default=str) and "tags" not in c[1] for c in r.calls)
-    assert all(isinstance(a, SourceAgent) and a.platform == "aws" for a in agents)
+    assert all(isinstance(a, _SourceAgent()) and a.platform == "aws" for a in agents)
 
 
 def test_po33_field_mapping_from_get_agent_runtime(live):
@@ -178,7 +186,7 @@ def test_po33_field_mapping_from_get_agent_runtime(live):
     assert a.status == rt["status"]
     assert a.identity.get("type") == "iam_role" and a.identity.get("principal") == rt["roleArn"]
     model = rt["environmentVariables"]["MODEL_ID"]
-    assert model in (a.dependencies.get("models") or [])
+    assert model in [d["name"] if isinstance(d, dict) else d for d in (a.dependencies.get("models") or [])]
     tags = C.rec("aws", "list_tags_for_resource")["json"]["tags"]
     assert a.owner == tags["owner"]
     targets = C.rec("aws", "list_gateway_targets")["json"]
@@ -245,7 +253,7 @@ def test_sample_mode_no_http_all_methods(monkeypatch):
     tree = ad.list_scopes(SAMPLE_CFG, {})
     C.check_tree_selected(tree)
     agents = ad.discover(SAMPLE_CFG, {}, [n["id"] for n in C.leaves(tree)])
-    assert all(isinstance(a, SourceAgent) for a in agents)
+    assert all(isinstance(a, _SourceAgent()) for a in agents)
     assert isinstance(ad.coverage(SAMPLE_CFG, {}, None), list)
 
 
