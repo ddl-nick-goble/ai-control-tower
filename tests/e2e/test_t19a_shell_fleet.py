@@ -246,7 +246,7 @@ def test_s1_demo_banner_above_and_aligned(page, shot, demo_url):
     bb, tb = banner.bounding_box(), bar.bounding_box()
     assert bb["y"] + bb["height"] <= tb["y"] + 1, (bb, tb)
     title = page.get_by_role("heading", level=1, name="Fleet")
-    banner_text = banner.locator("xpath=.//*[normalize-space(text())!=''][1]")
+    banner_text = banner.locator("xpath=.//*[normalize-space(text())!=''][1]").first
     assert abs(_left(banner_text) - _left(title)) <= 1.5, (_left(banner_text), _left(title))
     shot("then")
 
