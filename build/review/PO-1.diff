@@ -1,0 +1,1378 @@
+diff --git a/backend/connections/__init__.py b/backend/connections/__init__.py
+new file mode 100644
+index 0000000..0a051a2
+--- /dev/null
++++ b/backend/connections/__init__.py
+@@ -0,0 +1,2 @@
++"""PO-1: provider connections (the backend of "Connect a provider")."""
++PROVIDERS = ("aws", "google", "microsoft", "databricks", "snowflake")
+diff --git a/backend/connections/artifacts.py b/backend/connections/artifacts.py
+new file mode 100644
+index 0000000..74b0f04
+--- /dev/null
++++ b/backend/connections/artifacts.py
+@@ -0,0 +1,49 @@
++"""Setup artifacts: text rendered from templates/provisioning/ and pre-filled with the Domino trust values."""
++import os
++from pathlib import Path
++from urllib.parse import quote
++
++TEMPLATES = Path(__file__).resolve().parent.parent.parent / "templates" / "provisioning"
++DEFAULT_ISSUER = "https://se-demo.domino.tech/auth/realms/DominoRealm"
++AUDIENCE = "domino-platform"
++TEMPLATE_VERSION = "1"
++KINDS = {"aws": "quick_create_url", "google": "cloud_shell", "microsoft": "cloud_shell",
++         "databricks": "cli_script", "snowflake": "sql_worksheet"}
++FILES = {"aws": "aws.yaml", "google": "google.sh", "microsoft": "microsoft.sh",
++         "databricks": "databricks.sh", "snowflake": "snowflake.sql"}
++
++
++def issuer() -> str:
++    return os.environ.get("ACT_DOMINO_ISSUER") or DEFAULT_ISSUER
++
++
++def subject() -> str:
++    return os.environ.get("ACT_SERVICE_ACCOUNT") or "act-svc"
++
++
++def render(provider: str, state: str, return_url: str) -> str:
++    text = (TEMPLATES / FILES[provider]).read_text()
++    for k, v in {"ISSUER": issuer(), "AUDIENCE": AUDIENCE, "SUBJECT": subject(), "STATE": state,
++                 "RETURN_URL": return_url, "TEMPLATE_VERSION": TEMPLATE_VERSION}.items():
++        text = text.replace("{{" + k + "}}", v)
++    return text
++
++
++def build(provider: str, state: str, base_url: str) -> dict:
++    """{kind, text, open_url?, return_url}. `base_url` is the App's public URL (no trailing slash)."""
++    return_url = f"{base_url}/api/connections/callback?state={state}"
++    out = {"kind": KINDS[provider], "text": render(provider, state, return_url), "return_url": return_url,
++           "issuer": issuer(), "subject": subject(), "audience": AUDIENCE}
++    if provider == "aws":
++        template_url = f"{base_url}/api/connections/template?state={state}"
++        out["open_url"] = ("https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate"
++                           f"?templateURL={quote(template_url, safe='')}&stackName=ACT-ReadOnly"
++                           f"&param_OidcIssuerUrl={quote(issuer(), safe='')}&param_OidcAudience={AUDIENCE}"
++                           f"&param_OidcSubject={subject()}&param_Nonce={state}")
++    elif provider == "google":
++        out["open_url"] = "https://shell.cloud.google.com/?show=terminal"
++    elif provider == "microsoft":
++        out["open_url"] = "https://portal.azure.com/#cloudshell/"
++    elif provider == "snowflake":
++        out["open_url"] = "https://app.snowflake.com/"
++    return out
+diff --git a/backend/connections/federation.py b/backend/connections/federation.py
+new file mode 100644
+index 0000000..f8aa5be
+--- /dev/null
++++ b/backend/connections/federation.py
+@@ -0,0 +1,111 @@
++"""Federation helper (PO-1.7): turn a fresh Domino token into a provider credential.
++
++Pure functions build the request and parse the answer, so they are unit-tested without HTTP. `exchange()` runs them
++for real (live use waits for a test account). The Domino token lives 300 s: fetch one per exchange, never cache it.
++"""
++import json
++import os
++from urllib.parse import quote, urlencode
++
++TOKEN_URL = "http://localhost:8899/access-token"
++
++
++def domino_token(get=None) -> str:
++    """A fresh Domino token from the local token endpoint (`get` is injectable for tests)."""
++    if get is None:
++        import httpx
++        get = lambda u: httpx.get(u, timeout=5).text  # noqa: E731
++    return get(os.environ.get("ACT_DOMINO_TOKEN_URL") or TOKEN_URL).strip().strip('"')
++
++
++def _form(d: dict) -> str:
++    return urlencode(d)
++
++
++FORM = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
++
++
++def build_exchange_request(provider: str, domino_token: str, cfg: dict):
++    """-> (method, url, headers, body). cfg keys: aws {role_arn, region?}; google {audience, service_account?};
++    microsoft {tenant_id, client_id}; databricks {host, client_id?}; snowflake {account}."""
++    t = domino_token
++    if provider == "aws":
++        region = cfg.get("region") or "us-east-1"
++        body = _form({"Action": "AssumeRoleWithWebIdentity", "Version": "2011-06-15", "RoleArn": cfg["role_arn"],
++                      "RoleSessionName": "act-scan", "WebIdentityToken": t, "DurationSeconds": 3600})
++        return "POST", f"https://sts.{region}.amazonaws.com/", dict(FORM), body
++    if provider == "google":
++        body = {"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "audience": cfg["audience"],
++                "scope": "https://www.googleapis.com/auth/cloud-platform",
++                "requested_token_type": "urn:ietf:params:oauth:token-type:access_token",
++                "subject_token_type": "urn:ietf:params:oauth:token-type:jwt", "subject_token": t}
++        return "POST", "https://sts.googleapis.com/v1/token", {"Content-Type": "application/json"}, body
++    if provider == "microsoft":
++        body = _form({"client_id": cfg["client_id"], "grant_type": "client_credentials",
++                      "scope": cfg.get("scope") or "https://management.azure.com/.default",
++                      "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
++                      "client_assertion": t})
++        return "POST", f"https://login.microsoftonline.com/{cfg['tenant_id']}/oauth2/v2.0/token", dict(FORM), body
++    if provider == "databricks":
++        f = {"grant_type": "urn:ietf:params:oauth:grant-type:token-exchange", "subject_token": t,
++             "subject_token_type": "urn:ietf:params:oauth:token-type:jwt", "scope": "all-apis"}
++        if cfg.get("client_id"):
++            f["client_id"] = cfg["client_id"]
++        return "POST", cfg["host"].rstrip("/") + "/oidc/v1/token", dict(FORM), _form(f)
++    if provider == "snowflake":
++        # No exchange: Snowflake takes the Domino token itself as a WIF bearer on every SQL API call.
++        host = f"https://{cfg['account'].lower()}.snowflakecomputing.com/api/v2/statements"
++        headers = {"Authorization": f"Bearer WIF.OIDC.{t}",
++                   "X-Snowflake-Authorization-Token-Type": "WORKLOAD_IDENTITY_FEDERATION",
++                   "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "ACT/1.0"}
++        return "POST", host, headers, {"statement": "SELECT CURRENT_USER()"}
++    raise ValueError(f"unknown provider {provider}")
++
++
++def build_impersonation_request(access_token: str, service_account: str):
++    """Google step 2: the federated token impersonates the read-only service account."""
++    url = ("https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
++           f"{quote(service_account, safe='@.')}:generateAccessToken")
++    body = {"scope": ["https://www.googleapis.com/auth/cloud-platform"]}
++    return "POST", url, {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}, body
++
++
++def parse_exchange_response(provider: str, payload: dict) -> dict:
++    """-> {"token", "expires_in"} or, for AWS, {"credentials": {...}, "expires_in"}."""
++    if provider == "aws":
++        cred = payload["AssumeRoleWithWebIdentityResponse"]["AssumeRoleWithWebIdentityResult"]["Credentials"]
++        return {"credentials": {"access_key_id": cred["AccessKeyId"], "secret_access_key": cred["SecretAccessKey"],
++                                "session_token": cred["SessionToken"]},
++                "expires_in": 3600, "expiration": cred.get("Expiration")}
++    token = payload.get("access_token") or payload.get("accessToken") or payload.get("token")
++    if not token:
++        raise ValueError(f"{provider} answered without a token")
++    return {"token": token, "expires_in": int(payload.get("expires_in") or 3600)}
++
++
++def _send(method, url, headers, body):
++    import httpx
++    kw = {"json": body} if isinstance(body, dict) else {"content": body}
++    r = httpx.request(method, url, headers=headers, timeout=20, **kw)
++    r.raise_for_status()
++    return r.json()
++
++
++def exchange(provider: str, cfg: dict, send=None, token_getter=None) -> dict:
++    """Fetch a fresh Domino token and trade it for a provider credential. `send` and `token_getter` are injectable."""
++    send = send or _send
++    tok = (token_getter or domino_token)()
++    if provider == "snowflake":
++        return {"token": f"WIF.OIDC.{tok}", "expires_in": 300}
++    out = parse_exchange_response(provider, send(*build_exchange_request(provider, tok, cfg)))
++    if provider == "google" and cfg.get("service_account"):
++        out = parse_exchange_response(provider, send(*build_impersonation_request(out["token"], cfg["service_account"])))
++    return out
++
++
++# One function per provider, as the AC asks.
++def aws(cfg, **kw): return exchange("aws", cfg, **kw)
++def google(cfg, **kw): return exchange("google", cfg, **kw)
++def microsoft(cfg, **kw): return exchange("microsoft", cfg, **kw)
++def databricks(cfg, **kw): return exchange("databricks", cfg, **kw)
++def snowflake(cfg, **kw): return exchange("snowflake", cfg, **kw)
+diff --git a/backend/connections/paste.py b/backend/connections/paste.py
+new file mode 100644
+index 0000000..b12b861
+--- /dev/null
++++ b/backend/connections/paste.py
+@@ -0,0 +1,101 @@
++"""Paste-anything: classify whatever the user pasted. Pure function, no I/O."""
++import base64
++import json
++import re
++from urllib.parse import unquote, urlparse, parse_qs
++
++GUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
++PROVIDER_OF = {"aws_role_arn": "aws", "gcp_project": "google", "gcp_wif_provider": "google",
++               "azure_guid": "microsoft", "databricks_account": "databricks", "databricks_url": "databricks",
++               "databricks_code": "databricks", "snowflake_url": "snowflake", "snowflake_account": "snowflake"}
++NAMES = {"aws": "AWS", "google": "Google Cloud", "microsoft": "Microsoft Azure", "databricks": "Databricks",
++         "snowflake": "Snowflake"}
++EXAMPLES = ("Examples: arn:aws:iam::123456789012:role/ACT-ReadOnly, act-demo-project-482311, "
++            "a 36-character Azure ID, https://dbc-a1b2c3d4-e5f6.cloud.databricks.com, myorg-myaccount.")
++RECOGNISED_TEXT = {
++    "aws_role_arn": "Recognized: AWS role {value}.",
++    "gcp_project": "Recognized: Google Cloud project {value}.",
++    "gcp_wif_provider": "Recognized: Google Cloud workload identity provider {value}.",
++    "azure_guid": "Recognized: Azure ID {value}.",
++    "databricks_account": "Recognized: Databricks account {value}.",
++    "databricks_url": "Recognized: Databricks address {value}.",
++    "databricks_code": "Recognized: Databricks connection code (account {account_id}).",
++    "snowflake_url": "Recognized: Snowflake account {value} (from a Snowsight link).",
++    "snowflake_account": "Recognized: Snowflake account {value}.",
++}
++
++
++def _hit(kind, value, **extra):
++    return {"kind": kind, "value": value, **extra}
++
++
++def _classify_core(text: str, hint: str):
++    t = text.strip()
++    d = unquote(t)
++    if re.search(r"\.well-known/agent(-card)?\.json|agent-card\.json", d):
++        return _hit("a2a_url", t)
++    m = re.search(r"arn:aws:iam::(\d{12}):role/[\w+=,.@/-]+", d)
++    if m:
++        return _hit("aws_role_arn", m.group(0), account=m.group(1))
++    m = re.search(r"projects/(\d+)/locations/global/workloadIdentityPools/[\w-]+/providers/[\w-]+", d)
++    if m:
++        return _hit("gcp_wif_provider", m.group(0), project_number=m.group(1))
++    m = re.search(r"app\.snowflake\.com/([\w-]+)/([\w-]+)", d) or None
++    if m:
++        return _hit("snowflake_url", f"{m.group(1)}-{m.group(2)}")
++    m = re.search(r"([\w-]+)\.snowflakecomputing\.com", d)
++    if m:
++        return _hit("snowflake_account", m.group(1))
++    m = re.search(r"[\w.-]*(?:cloud\.databricks\.com|azuredatabricks\.net|gcp\.databricks\.com)\S*", d)
++    if m:
++        url = m.group(0) if d.startswith("http") else "https://" + m.group(0)
++        if d.startswith("http"):
++            url = re.search(r"https?://\S+", d).group(0)
++        acct = (parse_qs(urlparse(url).query).get("account_id") or [None])[0]
++        return _hit("databricks_url", url, account_id=acct)
++    if re.fullmatch(r"[A-Za-z0-9+/=_-]{24,}", t):  # base64 JSON connection code
++        try:
++            body = json.loads(base64.b64decode(t + "=" * (-len(t) % 4), altchars=b"-_" if "-" in t or "_" in t else None))
++            if isinstance(body, dict) and body.get("account_id"):
++                return _hit("databricks_code", t, account_id=body["account_id"], cloud=body.get("cloud"))
++        except Exception:  # noqa: BLE001
++            pass
++    g = re.search(GUID, d)
++    if g:
++        return _hit("databricks_account" if hint == "databricks" else "azure_guid", g.group(0).lower())
++    if re.fullmatch(r"\d{12}", t) and hint == "aws":
++        return {"kind": "unknown", "value": t, "partial": "aws_account_id"}
++    if re.fullmatch(r"\d{6,13}", t):
++        return _hit("gcp_project", t)
++    sf = re.fullmatch(r"[A-Za-z0-9]+-[A-Za-z0-9_]+", t) or re.fullmatch(r"[a-z]{2}\d{5}(\.[a-z0-9-]+){1,2}", t)
++    gcp = re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", t) and re.search(r"[\d-]", t)
++    if sf and (hint == "snowflake" or not gcp):
++        return _hit("snowflake_account", t)
++    if gcp:
++        return _hit("gcp_project", t)
++    return {"kind": "unknown", "value": t}
++
++
++def classify(text: str, provider: str = "") -> dict:
++    """{recognised, kind, value, message, provider?, wrong_provider?, hint?}. `provider` is the connection's cloud;
++    it breaks ties for bare ids and decides whether a recognised value can be used on this connection."""
++    r = _classify_core(text or "", provider)
++    kind = r["kind"]
++    if kind == "a2a_url":
++        return {**r, "recognised": False, "hint": "use_other",
++                "message": "That is an A2A agent card URL. Add it from Other: add an agent by URL."}
++    if kind == "unknown":
++        if r.get("partial") == "aws_account_id":
++            return {**r, "recognised": False, "message": "Not recognised yet: that looks like an AWS account ID. "
++                    "ACT needs the role too: paste the role ARN from the stack's Outputs tab, "
++                    "e.g. arn:aws:iam::123456789012:role/ACT-ReadOnly."}
++        return {**r, "recognised": False,
++                "message": "Not recognised. ACT couldn't work out what that is. Paste a role ARN, a Finish or Return "
++                           "link, a connection code or an account URL. " + EXAMPLES}
++    owner = PROVIDER_OF[kind]
++    msg = RECOGNISED_TEXT[kind].format(**{**r, "account_id": r.get("account_id") or "unknown"})
++    if provider and owner != provider:
++        return {**r, "recognised": False, "wrong_provider": True, "provider": owner,
++                "message": f"{msg} That looks like a {NAMES[owner]} value, but this connection is "
++                           f"{NAMES.get(provider, provider)}. Connect {NAMES[owner]} instead."}
++    return {**r, "recognised": True, "provider": owner, "message": msg}
+diff --git a/backend/connections/sample.py b/backend/connections/sample.py
+new file mode 100644
+index 0000000..c401332
+--- /dev/null
++++ b/backend/connections/sample.py
+@@ -0,0 +1,24 @@
++"""Sample tenants: realistic permission checklists and scope trees per cloud, from fixtures/sample_tenants/."""
++import copy
++import json
++from pathlib import Path
++
++DIR = Path(__file__).resolve().parent.parent.parent / "fixtures" / "sample_tenants"
++
++
++def tenant(provider: str) -> dict:
++    return json.loads((DIR / f"{provider}.json").read_text())
++
++
++def permissions(provider: str, recheck: bool) -> list:
++    """The checklist. The first check shows the one flagged item as missing; a re-check turns it green."""
++    out = []
++    for p in tenant(provider)["permissions"]:
++        missing = bool(p.get("missing_first")) and not recheck
++        out.append({"name": p["name"], "detail": p.get("detail", ""), "required": bool(p.get("required")),
++                    "ok": not missing, "fix": p["fix"] if missing else None})
++    return out
++
++
++def tree(provider: str) -> list:
++    return copy.deepcopy(tenant(provider)["tree"])
+diff --git a/backend/connections/store.py b/backend/connections/store.py
+new file mode 100644
+index 0000000..65adf08
+--- /dev/null
++++ b/backend/connections/store.py
+@@ -0,0 +1,279 @@
++"""Connection storage and the state machine.
++
++States: draft -> waiting -> trusted -> verified | partial -> connected, plus needs_attention | failed, and
++disconnected (DELETE keeps the row and its agents). Always read db.engine at call time so the demo-mode DB switch works.
++"""
++import os
++import secrets
++import time
++
++from sqlalchemy import func, insert, select, update
++
++from .. import db
++from ..normalize import now_iso
++from . import PROVIDERS, sample
++
++STATES = ("draft", "waiting", "trusted", "verified", "partial", "connected", "needs_attention", "failed",
++          "disconnected")
++TRUSTED_OR_LATER = ("trusted", "verified", "partial", "connected", "needs_attention")
++now = time.time  # injectable clock (epoch seconds)
++
++
++class ConnectionError_(Exception):
++    """A user-facing problem; `status` is the HTTP code the route should use."""
++
++    def __init__(self, message, status=409):
++        super().__init__(message)
++        self.message, self.status = message, status
++
++
++def trust_delay() -> float:
++    try:
++        return float(os.environ.get("ACT_SAMPLE_TRUST_DELAY_S", "3"))
++    except ValueError:
++        return 3.0
++
++
++def audit(cx, actor, action, target, detail=None):
++    cx.execute(insert(db.audit_events).values(
++        actor_user_id=actor.user_id, actor_username=actor.username, action=action, target=target, ts=now_iso(),
++        detail=detail or {}))
++
++
++def _row(cx, cid):
++    r = cx.execute(select(db.connections).where(db.connections.c.id == cid)).first()
++    return None if r is None else r._mapping
++
++
++def _by_token(cx, token):
++    r = cx.execute(select(db.connections).where(db.connections.c.state_token == token)).first()
++    return None if r is None else r._mapping
++
++
++def _set(cx, cid, **vals):
++    cx.execute(update(db.connections).where(db.connections.c.id == cid).values(updated_at=now_iso(), **vals))
++
++
++def create(provider: str, sample_mode: bool, actor):
++    """-> (row dict, state_token). Sample connections start waiting straight away (nothing to open)."""
++    if provider not in PROVIDERS:
++        raise ConnectionError_(f"Unknown provider. Choose one of: {', '.join(PROVIDERS)}.", 400)
++    cid, token = "conn-" + secrets.token_hex(6), secrets.token_urlsafe(24)
++    with db.engine.begin() as cx:
++        cx.execute(insert(db.connections).values(
++            id=cid, provider=provider, state="waiting" if sample_mode else "draft", sample=sample_mode,
++            state_token=token, token_used=False, config={}, scopes=None, created_by=actor.user_id,
++            created_by_username=actor.username, created_at=now_iso(), updated_at=now_iso(),
++            waiting_since=now() if sample_mode else None))
++        audit(cx, actor, "connection_connect", cid, {"provider": provider, "sample": sample_mode})
++        return dict(_row(cx, cid)), token
++
++
++def _tree_ids(nodes):
++    for n in nodes:
++        yield n["id"]
++        yield from _tree_ids(n.get("children") or [])
++
++
++def scope_tree(row) -> list:
++    """The scope tree with `selected` filled in (everything by default). Live trees come from the provider adapter
++    (PO-3); until then a live connection has none."""
++    if not row["sample"]:
++        tree = _adapter_scopes(row)
++    else:
++        tree = sample.tree(row["provider"])
++    chosen = (row["scopes"] or {}).get("selected")
++
++    def mark(nodes):
++        for n in nodes:
++            n["selected"] = chosen is None or n["id"] in chosen
++            n["children"] = mark(n.get("children") or [])
++        return nodes
++    return mark(tree)
++
++
++def _adapter(provider):
++    try:
++        import importlib
++        return importlib.import_module(f"adapters.{provider}")
++    except ImportError:
++        return None
++
++
++def _adapter_scopes(row) -> list:
++    mod = _adapter(row["provider"])
++    fn = getattr(mod, "list_scopes", None)
++    return fn(row["config"] or {}) if fn else []
++
++
++def view(cx, row) -> dict:
++    """The public shape of a connection."""
++    tree = scope_tree(row)
++    ids = list(_tree_ids(tree))
++    selected = [n for n in ids if _selected(tree, n)]
++    agents = cx.execute(select(func.count()).select_from(db.agents).where(
++        db.agents.c.connection_id == row["id"])).scalar() or 0
++    return {"id": row["id"], "provider": row["provider"], "state": row["state"], "sample": bool(row["sample"]),
++            "scopes": {"selected": selected, "total": len(ids)}, "last_check": row["last_check"],
++            "last_scan": row["last_scan"], "agent_count": agents, "config": row["config"] or {},
++            "created_by": row["created_by_username"], "created_at": row["created_at"],
++            "updated_at": row["updated_at"]}
++
++
++def _selected(tree, node_id):
++    for n in tree:
++        if n["id"] == node_id:
++            return n["selected"]
++        r = _selected(n["children"], node_id)
++        if r is not None:
++            return r
++    return None
++
++
++def poll(cx, cid):
++    """Called on every GET: draft -> waiting, and a sample connection trusts itself after the delay."""
++    row = _row(cx, cid)
++    if row is None:
++        return None
++    if row["state"] == "draft":
++        _set(cx, cid, state="waiting", waiting_since=now())
++        row = _row(cx, cid)
++    if row["state"] == "waiting" and row["sample"]:
++        since = row["waiting_since"] or now()
++        if now() - since >= trust_delay():
++            _set(cx, cid, state="trusted", token_used=True)
++            row = _row(cx, cid)
++    return row
++
++
++def get(cid):
++    with db.engine.begin() as cx:
++        row = poll(cx, cid)
++        return None if row is None else view(cx, row)
++
++
++def list_all():
++    with db.engine.begin() as cx:
++        rows = cx.execute(select(db.connections).order_by(db.connections.c.created_at.desc())).all()
++        out = []
++        for r in rows:
++            r = poll(cx, r.id)
++            out.append(view(cx, r))
++        return out
++
++
++def use_callback(token: str, extra: dict):
++    """-> (ok, message, row|None). A plain-language answer for every failure."""
++    with db.engine.begin() as cx:
++        row = _by_token(cx, token) if token else None
++        if row is None:
++            return False, ("ACT doesn't recognise that setup link. Go back to ACT, start the connection again "
++                           "and use the new link."), None
++        if row["token_used"] or row["state"] not in ("draft", "waiting"):
++            return False, ("This setup link was already used. Go back to ACT; "
++                           "if the connection isn't ready, start it again for a fresh link."), None
++        cfg = {**(row["config"] or {}), **{k: v for k, v in extra.items() if k != "state"}}
++        _set(cx, row["id"], state="trusted", token_used=True, config=cfg)
++        return True, f"Connected to {row['provider']}. You can close this tab; ACT continues on its own.", \
++            dict(_row(cx, row["id"]))
++
++
++def template_for_state(token: str):
++    with db.engine.begin() as cx:
++        row = _by_token(cx, token)
++        return dict(row) if row else None
++
++
++def apply_paste(cid, result: dict, actor):
++    """Record a classified paste; a recognised value trusts the connection."""
++    with db.engine.begin() as cx:
++        row = _row(cx, cid)
++        if row is None:
++            return None
++        if row["state"] == "disconnected":
++            raise ConnectionError_("This connection was disconnected. Start a new one.")
++        vals = {}
++        if result["recognised"]:
++            vals["config"] = {**(row["config"] or {}), result["kind"]: result["value"]}
++            if result.get("account_id"):
++                vals["config"]["account_id"] = result["account_id"]
++            if row["state"] in ("draft", "waiting"):
++                vals.update(state="trusted", token_used=True)
++        if vals:
++            _set(cx, cid, **vals)
++        audit(cx, actor, "connection_paste", cid, {"kind": result["kind"], "recognised": result["recognised"]})
++        return view(cx, _row(cx, cid))
++
++
++def run_check(cid, actor):
++    """-> {state, permissions}. Sample tenants answer from fixtures (green on the second check); live ones use the
++    provider adapter's test_connection when it exists."""
++    with db.engine.begin() as cx:
++        row = _row(cx, cid)
++        if row is None:
++            return None
++        if row["state"] not in TRUSTED_OR_LATER:
++            raise ConnectionError_("ACT hasn't seen the trust yet. Finish the setup step first, then check access.")
++        if row["sample"]:
++            before = cx.execute(select(func.count()).select_from(db.connection_checks).where(
++                db.connection_checks.c.connection_id == cid)).scalar() or 0
++            perms = sample.permissions(row["provider"], recheck=before > 0)
++        else:
++            perms = _live_check(row)
++        required_missing = any(not p["ok"] and p.get("required") for p in perms)
++        state = "needs_attention" if required_missing and not row["sample"] else \
++            "verified" if all(p["ok"] for p in perms) else "partial"
++        ts = now_iso()
++        cx.execute(insert(db.connection_checks).values(connection_id=cid, ts=ts, state=state, permissions=perms))
++        if row["state"] != "connected":
++            _set(cx, cid, state=state, last_check=ts)
++        else:
++            _set(cx, cid, last_check=ts)
++        return {"state": state if row["state"] != "connected" else "connected", "permissions": perms,
++                "last_check": ts}
++
++
++def _live_check(row) -> list:
++    fn = getattr(_adapter(row["provider"]), "test_connection", None)
++    if fn is None:
++        return [{"name": "Provider adapter", "detail": "", "required": True, "ok": False,
++                 "fix": f"Live access checks for {row['provider']} arrive with its adapter. "
++                        "Use a sample connection to walk the flow now."}]
++    return [{"name": p.get("name"), "detail": p.get("detail", ""), "required": bool(p.get("required")),
++             "ok": bool(p.get("ok")), "fix": p.get("fix")} for p in fn(row["config"] or {})]
++
++
++def save_scopes(cid, selected: list):
++    with db.engine.begin() as cx:
++        row = _row(cx, cid)
++        if row is None:
++            return None
++        valid = set(_tree_ids(scope_tree(row)))
++        unknown = [s for s in selected if s not in valid]
++        if unknown:
++            raise ConnectionError_(f"Unknown scope: {unknown[0]}", 400)
++        _set(cx, cid, scopes={"selected": list(dict.fromkeys(selected))})
++        return scope_tree(_row(cx, cid))
++
++
++def disconnect(cid, actor):
++    with db.engine.begin() as cx:
++        row = _row(cx, cid)
++        if row is None:
++            return None
++        _set(cx, cid, state="disconnected", disconnected_at=now_iso())
++        audit(cx, actor, "connection_disconnect", cid,
++              {"provider": row["provider"], "agents_kept": True})
++        return view(cx, _row(cx, cid))
++
++
++def tree_for(cid):
++    with db.engine.begin() as cx:
++        row = _row(cx, cid)
++        return None if row is None else scope_tree(row)
++
++
++def provider_of(cid):
++    with db.engine.begin() as cx:
++        row = _row(cx, cid)
++        return None if row is None else row["provider"]
+diff --git a/backend/db.py b/backend/db.py
+index d890b49..69883c5 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -196,6 +196,7 @@ agents = Table(
+     Column("record", JSON),
+     Column("bundle_id", String),
+     Column("governance", JSON),
++    Column("connection_id", String),  # PO-1: the provider connection that discovered it (set by PO-4 intake)
+ )
+ 
+ agent_versions = Table(
+@@ -342,6 +343,39 @@ audit_events = Table(
+     Column("detail", JSON),
+ )
+ 
++# PO-1: provider connections ("Connect a provider"). state: draft, waiting, trusted, verified, partial, connected,
++# needs_attention, failed, disconnected. `config` holds what the handshake or paste learned (role ARN, project, ...);
++# `scopes` is {"selected": [ids]} once the user saved a selection (None = everything selected).
++connections = Table(
++    "connections", metadata,
++    Column("id", String, primary_key=True),
++    Column("provider", String, nullable=False),
++    Column("state", String, nullable=False, default="draft"),
++    Column("sample", Boolean, default=False),
++    Column("state_token", String, index=True),
++    Column("token_used", Boolean, default=False),
++    Column("config", JSON),
++    Column("scopes", JSON),
++    Column("created_by", String),
++    Column("created_by_username", String),
++    Column("created_at", String),
++    Column("updated_at", String),
++    Column("waiting_since", Float),
++    Column("last_check", String),
++    Column("last_scan", String),
++    Column("disconnected_at", String),
++)
++
++# One row per access check, newest last (the sample tenant turns green on the second check).
++connection_checks = Table(
++    "connection_checks", metadata,
++    Column("id", Integer, primary_key=True, autoincrement=True),
++    Column("connection_id", String, index=True),
++    Column("ts", String),
++    Column("state", String),
++    Column("permissions", JSON),
++)
++
+ # In-app Settings (T-39). Secret values are Fernet ciphertext; plain values are text. Always in the real DB.
+ app_settings = Table(
+     "app_settings", metadata,
+diff --git a/backend/routes/connections.py b/backend/routes/connections.py
+new file mode 100644
+index 0000000..10bb96e
+--- /dev/null
++++ b/backend/routes/connections.py
+@@ -0,0 +1,102 @@
++"""Connections API (PO-1): the backend of "Connect a provider". Route order matters: /callback and /template come
++before /{id}."""
++import os
++
++from fastapi import APIRouter, Body, Depends, HTTPException, Request
++from fastapi.responses import PlainTextResponse
++
++from ..connections import artifacts, store
++from ..connections.paste import classify
++from ..domino_identity import User, require_user
++
++router = APIRouter()
++
++
++def _public_base(request: Request) -> str:
++    """The App's public URL, no trailing slash: ACT_PUBLIC_URL, else the request URL plus the Domino run path."""
++    explicit = (os.environ.get("ACT_PUBLIC_URL") or "").strip().rstrip("/")
++    if explicit:
++        return explicit
++    base = str(request.base_url).rstrip("/")
++    path = (os.environ.get("DOMINO_RUN_HOST_PATH") or "").rstrip("/")
++    return base if not path or base.endswith(path) else base + path
++
++
++def _guard(fn, *a):
++    try:
++        return fn(*a)
++    except store.ConnectionError_ as e:
++        raise HTTPException(e.status, e.message)
++
++
++def _found(x, cid):
++    if x is None:
++        raise HTTPException(404, "ACT has no connection with that id.")
++    return x
++
++
++@router.post("/api/connections")
++def create_connection(request: Request, body: dict = Body(...), user: User = Depends(require_user)):
++    provider = str(body.get("provider") or "").lower()
++    row, token = _guard(store.create, provider, bool(body.get("sample")), user)
++    return {"id": row["id"], "provider": provider, "state": row["state"], "sample": bool(row["sample"]),
++            "state_token": token, "artifact": artifacts.build(provider, token, _public_base(request))}
++
++
++@router.get("/api/connections")
++def list_connections(_user: User = Depends(require_user)):
++    return {"connections": store.list_all()}
++
++
++@router.get("/api/connections/callback")
++def callback(request: Request, state: str = ""):
++    """The return link from the cloud step. Open to any tab: the single-use state token is the proof.
++    Extra query values (role, project, account...) are kept on the connection."""
++    ok, message, row = store.use_callback(state, {k: v for k, v in request.query_params.items()})
++    return {"ok": ok, "message": message, "connection_id": row["id"] if row else None,
++            "provider": row["provider"] if row else None, "state": row["state"] if row else None}
++
++
++@router.get("/api/connections/template")
++def template(request: Request, state: str = ""):
++    """The CloudFormation template for a connection (what the quick-create link points at)."""
++    row = store.template_for_state(state)
++    if row is None or row["provider"] != "aws":
++        raise HTTPException(404, "ACT doesn't recognise that setup link.")
++    return PlainTextResponse(artifacts.render("aws", state, artifacts.build("aws", state, _public_base(request))["return_url"]))
++
++
++@router.get("/api/connections/{cid}")
++def get_connection(cid: str, _user: User = Depends(require_user)):
++    return _found(store.get(cid), cid)
++
++
++@router.delete("/api/connections/{cid}")
++def delete_connection(cid: str, user: User = Depends(require_user)):
++    return _found(store.disconnect(cid, user), cid)
++
++
++@router.post("/api/connections/{cid}/paste")
++def paste(cid: str, body: dict = Body(...), user: User = Depends(require_user)):
++    provider = _found(store.provider_of(cid), cid)
++    result = classify(str(body.get("text") or ""), provider)
++    view = _guard(store.apply_paste, cid, result, user)
++    return {**result, "connection": view}
++
++
++@router.post("/api/connections/{cid}/check")
++def check(cid: str, user: User = Depends(require_user)):
++    return _found(_guard(store.run_check, cid, user), cid)
++
++
++@router.get("/api/connections/{cid}/scopes")
++def get_scopes(cid: str, _user: User = Depends(require_user)):
++    return {"tree": _found(store.tree_for(cid), cid)}
++
++
++@router.put("/api/connections/{cid}/scopes")
++def put_scopes(cid: str, body: dict = Body(...), _user: User = Depends(require_user)):
++    selected = body.get("selected")
++    if not isinstance(selected, list):
++        raise HTTPException(400, 'Send {"selected": [scope ids]}.')
++    return {"tree": _found(_guard(store.save_scopes, cid, selected), cid)}
+diff --git a/templates/provisioning/aws.yaml b/templates/provisioning/aws.yaml
+new file mode 100644
+index 0000000..315c044
+--- /dev/null
++++ b/templates/provisioning/aws.yaml
+@@ -0,0 +1,73 @@
++AWSTemplateFormatVersion: "2010-09-09"
++Description: ACT read-only role for Bedrock AgentCore, Bedrock Agents and the Agent Registry (template v{{TEMPLATE_VERSION}}). Contains no secret.
++Parameters:
++  OidcIssuerUrl: {Type: String, Default: "{{ISSUER}}"}
++  OidcAudience: {Type: String, Default: "{{AUDIENCE}}"}
++  OidcSubject: {Type: String, Default: "{{SUBJECT}}"}
++  Nonce: {Type: String, Default: "{{STATE}}", Description: "One-time setup token from ACT"}
++  CreateOidcProvider: {Type: String, Default: "true", AllowedValues: ["true", "false"]}
++Conditions:
++  MakeOidc: !Equals [!Ref CreateOidcProvider, "true"]
++Resources:
++  OidcProvider:
++    Type: AWS::IAM::OIDCProvider
++    Condition: MakeOidc
++    Properties:
++      Url: !Ref OidcIssuerUrl
++      ClientIdList: [!Ref OidcAudience]
++  ActReadOnlyRole:
++    Type: AWS::IAM::Role
++    Properties:
++      RoleName: ACT-ReadOnly
++      MaxSessionDuration: 3600
++      Tags: [{Key: "act:template-version", Value: "{{TEMPLATE_VERSION}}"}]
++      AssumeRolePolicyDocument:
++        Version: "2012-10-17"
++        Statement:
++          - Effect: Allow
++            Principal:
++              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/se-demo.domino.tech/auth/realms/DominoRealm"
++            Action: sts:AssumeRoleWithWebIdentity
++            Condition:
++              StringEquals:
++                "se-demo.domino.tech/auth/realms/DominoRealm:aud": "{{AUDIENCE}}"
++                "se-demo.domino.tech/auth/realms/DominoRealm:sub": "{{SUBJECT}}"
++      Policies:
++        - PolicyName: ACT-ReadOnly
++          PolicyDocument:
++            Version: "2012-10-17"
++            Statement:
++              - Sid: AgentCoreRead
++                Effect: Allow
++                Resource: "*"
++                Action:
++                  - bedrock-agentcore:ListAgentRuntimes
++                  - bedrock-agentcore:GetAgentRuntime
++                  - bedrock-agentcore:ListAgentRuntimeEndpoints
++                  - bedrock-agentcore:ListHarnesses
++                  - bedrock-agentcore:GetHarness
++                  - bedrock-agentcore:ListGateways
++                  - bedrock-agentcore:ListGatewayTargets
++                  - bedrock-agentcore:ListWorkloadIdentities
++              - Sid: ClassicAgentsRead
++                Effect: Allow
++                Resource: "*"
++                Action:
++                  - bedrock:ListAgents
++                  - bedrock:GetAgent
++                  - bedrock:ListAgentActionGroups
++                  - bedrock:GetAgentActionGroup
++              - Sid: RolePoliciesRead
++                Effect: Allow
++                Resource: "*"
++                Action:
++                  - iam:GetRole
++                  - iam:ListAttachedRolePolicies
++                  - iam:ListRolePolicies
++                  - iam:GetRolePolicy
++Outputs:
++  RoleArn:
++    Value: !GetAtt ActReadOnlyRole.Arn
++  ReturnToACT:
++    Description: Open this link to finish in ACT
++    Value: !Sub "{{RETURN_URL}}&role=${ActReadOnlyRole.Arn}"
+diff --git a/templates/provisioning/databricks.sh b/templates/provisioning/databricks.sh
+new file mode 100644
+index 0000000..2740f46
+--- /dev/null
++++ b/templates/provisioning/databricks.sh
+@@ -0,0 +1,22 @@
++# ACT setup for Databricks (CLI 0.250 or later): a federated service principal that trusts Domino.
++# Idempotent, contains no secret. It prints a connection code to paste into ACT.
++set -e
++ACCOUNT_ID="${DATABRICKS_ACCOUNT_ID:?set DATABRICKS_ACCOUNT_ID to your account id}"
++SP_JSON="$(databricks account service-principals create --display-name act-reader -o json)"
++SP_ID="$(echo "$SP_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
++SP_CLIENT="$(echo "$SP_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["applicationId"])')"
++databricks account service-principal-federation-policy create "$SP_ID" --json '{
++  "oidc_policy": {"issuer": "{{ISSUER}}", "audiences": ["{{AUDIENCE}}"], "subject": "{{SUBJECT}}"}}'
++databricks account workspaces list -o json > /tmp/act-workspaces.json
++CODE="$(python3 - "$ACCOUNT_ID" "$SP_CLIENT" <<'PY'
++import base64, json, sys
++ws = [{"id": w["workspace_id"], "host": "https://%s.cloud.databricks.com" % w["deployment_name"]}
++      for w in json.load(open("/tmp/act-workspaces.json"))]
++print(base64.b64encode(json.dumps({"cloud": "aws", "account_id": sys.argv[1], "sp_client_id": sys.argv[2],
++                                   "state": "{{STATE}}", "workspaces": ws}).encode()).decode())
++PY
++)"
++echo
++echo "Your ACT connection code (not a secret). Paste it into ACT:"
++echo "$CODE"
++echo "Or open: {{RETURN_URL}}&code=$CODE"
+diff --git a/templates/provisioning/google.sh b/templates/provisioning/google.sh
+new file mode 100644
+index 0000000..02332c7
+--- /dev/null
++++ b/templates/provisioning/google.sh
+@@ -0,0 +1,20 @@
++# ACT setup for Google Cloud: keyless trust with Domino. Idempotent, safe to re-run, contains no secret.
++set -e
++PROJECT="$(gcloud config get-value project)"
++PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
++gcloud services enable sts.googleapis.com iamcredentials.googleapis.com agentregistry.googleapis.com \
++  discoveryengine.googleapis.com aiplatform.googleapis.com cloudresourcemanager.googleapis.com cloudasset.googleapis.com
++gcloud iam workload-identity-pools create act-pool --location=global 2>/dev/null || true
++gcloud iam workload-identity-pools providers create-oidc act-domino --location=global \
++  --workload-identity-pool=act-pool --issuer-uri="{{ISSUER}}" --allowed-audiences="{{AUDIENCE}}" \
++  --attribute-mapping="google.subject=assertion.sub" \
++  --attribute-condition="assertion.sub=='{{SUBJECT}}'" 2>/dev/null || true
++gcloud iam service-accounts create act-reader --display-name="ACT read-only" 2>/dev/null || true
++SA="act-reader@${PROJECT}.iam.gserviceaccount.com"
++gcloud iam service-accounts add-iam-policy-binding "$SA" --role=roles/iam.workloadIdentityUser \
++  --member="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/act-pool/subject/{{SUBJECT}}"
++for ROLE in roles/agentregistry.viewer roles/discoveryengine.viewer roles/aiplatform.viewer roles/cloudasset.viewer; do
++  gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:$SA" --role="$ROLE" --condition=None >/dev/null
++done
++echo
++echo "Finish in ACT: {{RETURN_URL}}&project=${PROJECT_NUMBER}&wif=projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/act-pool/providers/act-domino"
+diff --git a/templates/provisioning/microsoft.sh b/templates/provisioning/microsoft.sh
+new file mode 100644
+index 0000000..f961f65
+--- /dev/null
++++ b/templates/provisioning/microsoft.sh
+@@ -0,0 +1,16 @@
++# ACT setup for Azure: a user-assigned managed identity with a federated credential and a read-only role.
++# Idempotent, safe to re-run, contains no secret.
++set -e
++SUB="$(az account show --query id -o tsv)"
++TENANT="$(az account show --query tenantId -o tsv)"
++RG=act-readonly-rg
++az group create -n "$RG" -l eastus -o none
++az identity create -g "$RG" -n act-reader -o none
++CLIENT_ID="$(az identity show -g "$RG" -n act-reader --query clientId -o tsv)"
++PRINCIPAL_ID="$(az identity show -g "$RG" -n act-reader --query principalId -o tsv)"
++az identity federated-credential create -g "$RG" --identity-name act-reader --name act-domino \
++  --issuer "{{ISSUER}}" --subject "{{SUBJECT}}" --audiences "{{AUDIENCE}}" -o none
++az role assignment create --assignee-object-id "$PRINCIPAL_ID" --assignee-principal-type ServicePrincipal \
++  --role Reader --scope "/subscriptions/$SUB" -o none
++echo
++echo "Return to ACT: {{RETURN_URL}}&tenant=${TENANT}&subscription=${SUB}&client=${CLIENT_ID}"
+diff --git a/templates/provisioning/snowflake.sql b/templates/provisioning/snowflake.sql
+new file mode 100644
+index 0000000..89b6905
+--- /dev/null
++++ b/templates/provisioning/snowflake.sql
+@@ -0,0 +1,22 @@
++-- ACT setup for Snowflake: a service user that trusts Domino through workload identity federation.
++-- Run All as ACCOUNTADMIN. Contains no secret.
++USE ROLE ACCOUNTADMIN;
++CREATE ROLE IF NOT EXISTS ACT_READER;
++CREATE WAREHOUSE IF NOT EXISTS ACT_WH WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60;
++GRANT USAGE ON WAREHOUSE ACT_WH TO ROLE ACT_READER;
++GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE ACT_READER;
++GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE ACT_READER;
++GRANT DATABASE ROLE SNOWFLAKE.SECURITY_VIEWER TO ROLE ACT_READER;
++CREATE OR REPLACE USER ACT_SVC
++  TYPE = SERVICE
++  DEFAULT_ROLE = ACT_READER
++  DEFAULT_WAREHOUSE = ACT_WH
++  WORKLOAD_IDENTITY = (
++    TYPE = OIDC
++    ISSUER = '{{ISSUER}}'
++    SUBJECT = '{{SUBJECT}}'
++    OIDC_AUDIENCE_LIST = ('{{AUDIENCE}}')
++  );
++GRANT ROLE ACT_READER TO USER ACT_SVC;
++-- Last result row: the "Finish in ACT" link (setup token {{STATE}}).
++SELECT '{{RETURN_URL}}&account=' || CURRENT_ORGANIZATION_NAME() || '-' || CURRENT_ACCOUNT_NAME() AS "Finish in ACT";
+diff --git a/tests/test_po1_connections.py b/tests/test_po1_connections.py
+new file mode 100644
+index 0000000..63a39c8
+--- /dev/null
++++ b/tests/test_po1_connections.py
+@@ -0,0 +1,258 @@
++"""PO-1: Connections core (/api/connections). Written from the AC and interface contract only.
++
++Interface contract the builder follows:
++- POST /api/connections {provider, sample?} -> {id, provider, state, sample, artifact: {kind, text, open_url?}, state_token}
++  artifact.kind in quick_create_url | cloud_shell | cli_script | sql_worksheet; artifact.text contains the Domino
++  issuer, "domino-platform", the act-svc subject and the state token.
++- GET /api/connections -> list (or {"connections": [...]}); GET /api/connections/{id} -> {id, provider, state, sample,
++  scopes, last_check, last_scan, agent_count}. DELETE /api/connections/{id} -> state "disconnected".
++- GET /api/connections/callback?state=... -> 200 with a plain-language message; unknown/used state is a 200 with
++  {"ok": false, "message": "..."} style body (no 4xx/5xx). Success moves the connection to trusted.
++- POST /api/connections/{id}/paste {text} -> {recognised: bool, kind, value, message}; kind is one of aws_role_arn,
++  gcp_project, gcp_wif_provider, azure_guid, databricks_account, databricks_url, databricks_code, snowflake_url,
++  snowflake_account, a2a_url, unknown.
++- POST /api/connections/{id}/check -> {state, permissions: [{name, ok, fix}]}
++- GET/PUT /api/connections/{id}/scopes -> {tree: [{id, label, selected, children}]}; PUT body {"selected": [ids]}.
++- Sample-mode auto-trust delay: env ACT_SAMPLE_TRUST_DELAY_S (default ~3). Tests set it to 0 (instant) or large
++  (never). Detection happens on GET polling of /api/connections/{id}. Builder may also expose
++  backend.connections.store.now as an injectable clock.
++- Audit: rows in db.audit_events with the Domino user; action contains "connect", "disconnect" or "paste".
++"""
++import importlib
++import sqlite3
++import sys
++
++import pytest
++from fastapi.testclient import TestClient
++
++H = {"X-Domino-User-Id": "u-owner", "X-Domino-User": "owner"}
++ISSUER = "https://se-demo.domino.tech/auth/realms/DominoRealm"
++PROVIDERS = ["aws", "google", "microsoft", "databricks", "snowflake"]
++KINDS = {"aws": "quick_create_url", "google": "cloud_shell", "microsoft": "cloud_shell",
++         "databricks": "cli_script", "snowflake": "sql_worksheet"}
++
++
++def _purge():
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++
++
++def _make(db_env, tmp_path, monkeypatch, delay):
++    monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
++    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
++    monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
++    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
++    monkeypatch.setenv("ACT_SAMPLE_TRUST_DELAY_S", str(delay))
++    _purge()
++    return importlib.import_module("backend.main")
++
++
++@pytest.fixture
++def client(db_env, tmp_path, monkeypatch):
++    main = _make(db_env, tmp_path, monkeypatch, 0)
++    with TestClient(main.app) as c:
++        yield c
++    _purge()
++
++
++@pytest.fixture
++def slow_client(db_env, tmp_path, monkeypatch):
++    main = _make(db_env, tmp_path, monkeypatch, 100000)
++    with TestClient(main.app) as c:
++        yield c
++    _purge()
++
++
++def create(c, provider, sample=False):
++    r = c.post("/api/connections", json={"provider": provider, "sample": sample}, headers=H)
++    assert r.status_code in (200, 201), r.text
++    return r.json()
++
++
++def get(c, cid):
++    r = c.get(f"/api/connections/{cid}", headers=H)
++    assert r.status_code == 200, r.text
++    return r.json()
++
++
++def _items(body):
++    return body["connections"] if isinstance(body, dict) else body
++
++
++# ---- PO-1.1 ----
++@pytest.mark.parametrize("provider", PROVIDERS)
++def test_ac1_create_returns_artifact(client, provider):
++    d = create(client, provider)
++    assert d["provider"] == provider and d["state"] == "draft" and d["sample"] is False
++    assert d["id"] and d["state_token"]
++    a = d["artifact"]
++    assert a["kind"] == KINDS[provider]
++    for needle in (ISSUER, "domino-platform", d["state_token"], "act-svc"):
++        assert needle in a["text"], needle
++
++
++def test_ac1_aws_quick_create_url_and_template(client):
++    a = create(client, "aws")["artifact"]
++    assert a["open_url"].startswith("https://") and "cloudformation" in a["open_url"].lower()
++    assert "AWS::IAM::Role" in a["text"] and "sts:AssumeRoleWithWebIdentity" in a["text"]
++
++
++def test_ac1_provider_specific_text(client):
++    assert "gcloud" in create(client, "google")["artifact"]["text"]
++    assert "az " in create(client, "microsoft")["artifact"]["text"]
++    assert "databricks" in create(client, "databricks")["artifact"]["text"].lower()
++    sql = create(client, "snowflake")["artifact"]["text"]
++    assert "SELECT" in sql.upper()
++
++
++def test_ac1_return_url_in_artifact(client):
++    d = create(client, "google")
++    assert "callback" in d["artifact"]["text"] or "finish" in d["artifact"]["text"].lower()
++
++
++def test_ac1_rejects_unknown_provider(client):
++    r = client.post("/api/connections", json={"provider": "oracle"}, headers=H)
++    assert r.status_code in (400, 422)
++
++
++# ---- PO-1.2 ----
++def test_ac2_list_and_get_fields(client):
++    d = create(client, "aws", sample=True)
++    items = _items(client.get("/api/connections", headers=H).json())
++    assert any(i["id"] == d["id"] for i in items)
++    g = get(client, d["id"])
++    for k in ("state", "provider", "sample", "scopes", "last_check", "last_scan", "agent_count"):
++        assert k in g, k
++    assert g["provider"] == "aws" and g["sample"] is True and g["agent_count"] == 0
++
++
++def test_ac2_get_unknown_is_404(client):
++    create(client, "aws")  # route must exist for real ids
++    assert client.get("/api/connections/nope-123", headers=H).status_code == 404
++
++
++def test_ac2_delete_marks_disconnected_and_keeps_record(client):
++    d = create(client, "aws", sample=True)
++    r = client.delete(f"/api/connections/{d['id']}", headers=H)
++    assert r.status_code in (200, 204)
++    assert get(client, d["id"])["state"] == "disconnected"
++
++
++# ---- PO-1.3 ----
++def test_ac3_callback_moves_to_trusted(slow_client):
++    c = slow_client
++    d = create(c, "google")
++    r = c.get("/api/connections/callback", params={"state": d["state_token"]})
++    assert r.status_code == 200
++    assert get(c, d["id"])["state"] == "trusted"
++
++
++def test_ac3_callback_unknown_state_is_plain_language(client):
++    r = client.get("/api/connections/callback", params={"state": "bogus"})
++    assert r.status_code == 200
++    assert len(r.text) > 10 and "Traceback" not in r.text
++
++
++def test_ac3_callback_state_single_use(client):
++    d = create(client, "google")
++    client.get("/api/connections/callback", params={"state": d["state_token"]})
++    r = client.get("/api/connections/callback", params={"state": d["state_token"]})
++    assert r.status_code == 200
++    body = r.text.lower()
++    assert "already" in body or "expired" in body or "not" in body or "used" in body
++
++
++# ---- PO-1.5 ----
++@pytest.mark.parametrize("provider", PROVIDERS)
++def test_ac5_sample_flow_auto_trusts_by_polling(client, provider):
++    d = create(client, provider, sample=True)
++    assert d["sample"] is True
++    assert d["state"] in ("draft", "waiting")
++    g = get(client, d["id"])
++    assert g["sample"] is True and g["state"] in ("waiting", "trusted")
++    assert get(client, d["id"])["state"] == "trusted"
++
++
++def test_ac5_sample_waits_before_delay(slow_client):
++    d = create(slow_client, "aws", sample=True)
++    assert get(slow_client, d["id"])["state"] == "waiting"
++    assert get(slow_client, d["id"])["state"] == "waiting"
++
++
++def test_ac5_check_has_one_missing_then_recheck_green(client):
++    d = create(client, "aws", sample=True)
++    get(client, d["id"]); get(client, d["id"])
++    r = client.post(f"/api/connections/{d['id']}/check", headers=H).json()
++    missing = [p for p in r["permissions"] if not p["ok"]]
++    assert len(missing) == 1 and missing[0]["fix"] and len(r["permissions"]) > 1
++    assert r["state"] == "partial"
++    r2 = client.post(f"/api/connections/{d['id']}/check", headers=H).json()
++    assert all(p["ok"] for p in r2["permissions"])
++    assert r2["state"] == "verified"
++
++
++@pytest.mark.parametrize("provider", PROVIDERS)
++def test_ac5_sample_scopes_and_flag_in_list(client, provider):
++    d = create(client, provider, sample=True)
++    tree = client.get(f"/api/connections/{d['id']}/scopes", headers=H).json()["tree"]
++    assert tree and all(n["selected"] for n in tree)
++    items = _items(client.get("/api/connections", headers=H).json())
++    assert [i for i in items if i["id"] == d["id"]][0]["sample"] is True
++
++
++# ---- PO-1.6 ----
++def test_ac6_scopes_default_selected_and_put_saves(client):
++    d = create(client, "snowflake", sample=True)
++    get(client, d["id"]); get(client, d["id"])
++    tree = client.get(f"/api/connections/{d['id']}/scopes", headers=H).json()["tree"]
++    for n in tree:
++        assert {"id", "label", "selected", "children"} <= set(n)
++    flat = []
++    def walk(ns):
++        for n in ns:
++            flat.append(n); walk(n["children"])
++    walk(tree)
++    assert all(n["selected"] for n in flat)
++    keep = [flat[0]["id"]]
++    r = client.put(f"/api/connections/{d['id']}/scopes", json={"selected": keep}, headers=H)
++    assert r.status_code == 200, r.text
++    tree2 = client.get(f"/api/connections/{d['id']}/scopes", headers=H).json()["tree"]
++    flat2 = []
++    def walk2(ns):
++        for n in ns:
++            flat2.append(n); walk2(n["children"])
++    walk2(tree2)
++    sel = {n["id"] for n in flat2 if n["selected"]}
++    assert flat[0]["id"] in sel and len(sel) < len(flat2)
++
++
++def test_ac6_check_shape(client):
++    d = create(client, "google", sample=True)
++    get(client, d["id"]); get(client, d["id"])
++    r = client.post(f"/api/connections/{d['id']}/check", headers=H).json()
++    assert r["state"] in ("verified", "partial")
++    for p in r["permissions"]:
++        assert {"name", "ok", "fix"} <= set(p)
++    assert get(client, d["id"])["state"] == r["state"]
++    assert get(client, d["id"])["last_check"]
++
++
++# ---- PO-1.8 ----
++def _audit(db_env):
++    cx = sqlite3.connect(str(db_env))
++    try:
++        return cx.execute("select actor_user_id, actor_username, action, target from audit_events").fetchall()
++    finally:
++        cx.close()
++
++
++def test_ac8_connect_paste_disconnect_audited(client, db_env):
++    d = create(client, "aws")
++    client.post(f"/api/connections/{d['id']}/paste",
++                json={"text": "arn:aws:iam::123456789012:role/ActReadOnly"}, headers=H)
++    client.delete(f"/api/connections/{d['id']}", headers=H)
++    rows = [r for r in _audit(db_env) if "connect" in (r[2] or "").lower() or "paste" in (r[2] or "").lower()]
++    actions = " ".join(r[2].lower() for r in rows)
++    assert "paste" in actions and "disconnect" in actions
++    assert len(rows) >= 3
++    assert all(r[0] == "u-owner" for r in rows)
+diff --git a/tests/test_po1_federation.py b/tests/test_po1_federation.py
+new file mode 100644
+index 0000000..2a26cd8
+--- /dev/null
++++ b/tests/test_po1_federation.py
+@@ -0,0 +1,90 @@
++"""PO-1.7 federation helper: backend/connections/federation.py (pure functions, no live HTTP).
++
++Contract:
++  build_exchange_request(provider, domino_token, cfg) -> (method, url, headers, body)
++  parse_exchange_response(provider, payload) -> {"token" or "credentials", "expires_in"}
++cfg keys per provider:
++  aws {role_arn, region?}; google {audience (WIF provider path), service_account?};
++  microsoft {tenant_id, client_id}; databricks {host, client_id?}; snowflake {account}
++body is str/bytes/dict; the Domino token must appear in it (or in headers for snowflake bearer).
++"""
++import json
++from urllib.parse import parse_qs
++
++import pytest
++
++TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhY3Qtc3ZjIn0.c2ln"
++CFG = {
++    "aws": {"role_arn": "arn:aws:iam::123456789012:role/ActReadOnly", "region": "us-east-1"},
++    "google": {"audience": "//iam.googleapis.com/projects/483920174563/locations/global/workloadIdentityPools/p/providers/d",
++               "service_account": "act@proj.iam.gserviceaccount.com"},
++    "microsoft": {"tenant_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "client_id": "9b2c1d4e-1111-4222-8333-444455556666"},
++    "databricks": {"host": "https://dbc-a1b2c3d4-e5f6.cloud.databricks.com", "client_id": "abc"},
++    "snowflake": {"account": "myorg-myaccount"},
++}
++
++
++@pytest.fixture
++def fed():
++    from backend.connections import federation
++    return federation
++
++
++def _blob(body):
++    if isinstance(body, bytes):
++        body = body.decode()
++    if isinstance(body, dict):
++        body = json.dumps(body)
++    return body
++
++
++@pytest.mark.parametrize("provider", list(CFG))
++def test_ac7_request_carries_token_and_target(fed, provider):
++    method, url, headers, body = fed.build_exchange_request(provider, TOKEN, CFG[provider])
++    assert method in ("GET", "POST") and url.startswith("https://")
++    assert TOKEN in _blob(body) + json.dumps(headers)
++
++
++def test_ac7_aws_sts(fed):
++    _, url, _, body = fed.build_exchange_request("aws", TOKEN, CFG["aws"])
++    assert "sts" in url and "amazonaws.com" in url
++    b = _blob(body)
++    assert "AssumeRoleWithWebIdentity" in b + url and "WebIdentityToken" in b + url
++    assert "role%2FActReadOnly" in b + url or "role/ActReadOnly" in b + url
++
++
++def test_ac7_google_sts(fed):
++    _, url, _, body = fed.build_exchange_request("google", TOKEN, CFG["google"])
++    assert "sts.googleapis.com" in url
++    assert "token-exchange" in _blob(body)
++
++
++def test_ac7_microsoft_client_assertion(fed):
++    _, url, _, body = fed.build_exchange_request("microsoft", TOKEN, CFG["microsoft"])
++    assert "login.microsoftonline.com/" + CFG["microsoft"]["tenant_id"] in url
++    b = _blob(body)
++    assert "client_assertion" in b and "jwt-bearer" in b and CFG["microsoft"]["client_id"] in b
++
++
++def test_ac7_databricks_oidc(fed):
++    _, url, _, body = fed.build_exchange_request("databricks", TOKEN, CFG["databricks"])
++    assert url.endswith("/oidc/v1/token") and url.startswith(CFG["databricks"]["host"])
++    assert "token-exchange" in _blob(body)
++
++
++def test_ac7_snowflake_bearer(fed):
++    _, url, headers, body = fed.build_exchange_request("snowflake", TOKEN, CFG["snowflake"])
++    assert "myorg-myaccount" in url or "myorg-myaccount" in _blob(body)
++
++
++@pytest.mark.parametrize("provider,payload,key", [
++    ("aws", {"AssumeRoleWithWebIdentityResponse": {"AssumeRoleWithWebIdentityResult": {"Credentials": {
++        "AccessKeyId": "ASIAXXX", "SecretAccessKey": "s", "SessionToken": "t", "Expiration": 1893456000}}}}, "credentials"),
++    ("google", {"access_token": "ya29.abc", "token_type": "Bearer", "expires_in": 3599}, "token"),
++    ("microsoft", {"access_token": "eyJ0.az", "token_type": "Bearer", "expires_in": 3599}, "token"),
++    ("databricks", {"access_token": "dapi-oidc", "token_type": "Bearer", "expires_in": 3600}, "token"),
++    ("snowflake", {"access_token": "sf-tok", "token_type": "Bearer", "expires_in": 3600}, "token"),
++])
++def test_ac7_parse_response(fed, provider, payload, key):
++    out = fed.parse_exchange_response(provider, payload)
++    assert key in out and out[key] and "expires_in" in out
+diff --git a/tests/test_po1_paste.py b/tests/test_po1_paste.py
+new file mode 100644
+index 0000000..16ed026
+--- /dev/null
++++ b/tests/test_po1_paste.py
+@@ -0,0 +1,67 @@
++"""PO-1.4 paste-anything classifier via POST /api/connections/{id}/paste {text} ->
++{recognised, kind, value, message}. See tests/test_po1_connections.py for the full contract."""
++import pytest
++
++from test_po1_connections import H, client, create  # noqa: F401
++
++AWS = "arn:aws:iam::123456789012:role/ActReadOnly"
++GUID = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
++
++
++def paste(c, text, provider="aws"):
++    d = create(c, provider)
++    r = c.post(f"/api/connections/{d['id']}/paste", json={"text": text}, headers=H)
++    assert r.status_code == 200, r.text
++    return d, r.json()
++
++
++CASES = [
++    ("aws", AWS, "aws_role_arn"),
++    ("aws", "  " + AWS + "\n", "aws_role_arn"),
++    ("google", "act-demo-project-482311", "gcp_project"),
++    ("google", "483920174563", "gcp_project"),
++    ("google", "projects/483920174563/locations/global/workloadIdentityPools/domino-pool/providers/domino-oidc",
++     "gcp_wif_provider"),
++    ("microsoft", GUID, "azure_guid"),
++    ("databricks", "dbc-a1b2c3d4-e5f6.cloud.databricks.com", "databricks_url"),
++    ("databricks", "https://adb-1234567890123456.7.azuredatabricks.net/", "databricks_url"),
++    ("databricks", "https://accounts.cloud.databricks.com/?account_id=" + GUID, "databricks_url"),
++    ("snowflake", "https://app.snowflake.com/myorg/myaccount/#/homepage", "snowflake_url"),
++    ("snowflake", "myorg-myaccount", "snowflake_account"),
++    ("snowflake", "xy12345.us-east-1", "snowflake_account"),
++]
++
++
++@pytest.mark.parametrize("provider,text,kind", CASES)
++def test_ac4_classifies(client, provider, text, kind):
++    d, r = paste(client, text, provider)
++    assert r["recognised"] is True and r["kind"] == kind, r
++    assert r["value"] and r["message"]
++
++
++def test_ac4_recognised_moves_to_trusted(client):
++    d, r = paste(client, AWS)
++    assert client.get(f"/api/connections/{d['id']}", headers=H).json()["state"] == "trusted"
++
++
++def test_ac4_databricks_account_id_and_code(client):
++    _, r = paste(client, "Databricks account id: " + GUID, "databricks")
++    assert r["recognised"] and r["kind"] in ("databricks_account", "azure_guid")
++    _, r = paste(client, "act-conn-ABCD-1234-EFGH-5678", "databricks")
++    assert r["kind"] in ("databricks_code", "unknown")
++
++
++def test_ac4_a2a_card_says_use_other(client):
++    d, r = paste(client, "https://agents.example.com/.well-known/agent-card.json")
++    assert r["kind"] == "a2a_url"
++    assert "other" in r["message"].lower()
++    assert client.get(f"/api/connections/{d['id']}", headers=H).json()["state"] != "trusted"
++
++
++@pytest.mark.parametrize("text", ["hello world", "please connect my cloud", "12"])
++def test_ac4_unknown_not_recognised_with_examples(client, text):
++    d, r = paste(client, text)
++    assert r["recognised"] is False and r["kind"] == "unknown"
++    assert "not recognised" in r["message"].lower() or "not recognized" in r["message"].lower()
++    assert "arn:aws:iam" in r["message"] or "e.g." in r["message"].lower() or "example" in r["message"].lower()
++    assert client.get(f"/api/connections/{d['id']}", headers=H).json()["state"] != "trusted"
