@@ -1,0 +1,2134 @@
+diff --git a/README.md b/README.md
+index 7958d15..6295980 100644
+--- a/README.md
++++ b/README.md
+@@ -48,10 +48,35 @@ Details and go-live steps are in [docs/INTEGRATION.md](docs/INTEGRATION.md).
+ 
+ ```
+ PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e
+-PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright QA_RUN_DIR=<dir> python3 -m pytest tests/e2e -q -p no:cacheprovider
++PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright python3 -m pytest tests/e2e -q -p no:cacheprovider -p no:xdist   # regression
++PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright python3 -m pytest tests/e2e -q -p no:cacheprovider -p no:xdist -m smoke   # ~15 tests
+ ```
+ 
+-The browser suite serves the app on port 9888 and needs Playwright browsers.
++Browser suite (`tests/e2e`, serial on a 1-core machine; needs Playwright browsers):
++
++- `pytest.ini` runs `-m "not capture"` by default: capture tests (`@pytest.mark.capture`, screenshots only) are not
++  regression tests. Run them explicitly with `-m capture`.
++- `-m smoke` selects about 15 tests (shell, nav, Fleet, Agent, Run, Settings load) for a quick check after a change.
++- Apps start on free OS-assigned ports (never a fixed port), once per distinct environment per run, and are shared by
++  the modules that need that environment (the seed runs once; each module starts from the seeded DB again). See
++  `tests/e2e/conftest.py` (`apps(...)`) and `tests/e2e/_server.py`.
++- Screenshots: regression runs write a viewport PNG only for a failed test (`<test>-FAILED.png`). Set `QA_SHOTS=1` to
++  also write the `shot("then")` PNGs; `QA_RUN_DIR=<dir>` chooses the folder (default `test-results/`).
++  `shot(step, full_page=True)` takes a full-page one.
++- No `wait_for_timeout` / `time.sleep` in `test_*.py` (a guard test fails if one is added); use `expect(...)`, the helpers
++  in `tests/e2e/_waits.py`, or `_server.wait_until`.
++
++### Capture CLI (design review)
++
++`tests/e2e/capture.py` starts the app on a free port, takes full-page PNGs of the routes you name, and stops the app:
++
++```
++python3 tests/e2e/capture.py --out DIR --widths 1440,1024 --demo --route '#/agents/{treasury_id}' --route '#/settings' \
++    [--delay-api 'api/settings:3000'] [--fail-api 'api/agents/*:500'] [--as owner|admin|NAME] [--no-auth]
++```
++
++`--delay-api` holds matching API responses (loading states); `--fail-api` answers with an HTTP status (error states).
++`python3 tests/e2e/capture.py -h` lists all options.
+ 
+ ## App Preview and published Apps
+ 
+diff --git a/pytest.ini b/pytest.ini
+new file mode 100644
+index 0000000..0ab1ac6
+--- /dev/null
++++ b/pytest.ini
+@@ -0,0 +1,5 @@
++[pytest]
++markers =
++    capture: screenshot-only design/QA captures; excluded from regression runs (run them with -m capture or tests/e2e/capture.py)
++    smoke: fast cross-section of the e2e suite (shell, nav, Fleet, Agent, Run, Settings load); run with -m smoke
++addopts = -m "not capture"
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+index f53fe65..1a8e684 100644
+--- a/requirements-dev.txt
++++ b/requirements-dev.txt
+@@ -1,2 +1,3 @@
+ pytest>=8
+ jsonschema>=4
++pytest-xdist>=3.5
+diff --git a/tests/e2e/_server.py b/tests/e2e/_server.py
+new file mode 100644
+index 0000000..1082495
+--- /dev/null
++++ b/tests/e2e/_server.py
+@@ -0,0 +1,219 @@
++"""Shared e2e app launcher: start app.sh on a free OS-assigned port with its own temp ACT_DB; stop by process group.
++
++Never kills anything by port. Ports 9888-9895 (used by older suites that may run in the same workspace) are never picked.
++"""
++import fcntl
++import json
++import os
++import pathlib
++import re
++import signal
++import socket
++import sqlite3
++import subprocess
++import sys
++import tempfile
++import time
++import urllib.request
++
++ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
++JWKS = ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json"
++RESERVED = range(9888, 9896)
++_LOCK = pathlib.Path(tempfile.gettempdir()) / "act-e2e-start.lock"
++
++
++def free_port():
++    """Ask the OS for a free port (bind port 0), skipping the legacy 9888-9895 range."""
++    for _ in range(50):
++        with socket.socket() as sk:
++            sk.bind(("127.0.0.1", 0))
++            port = sk.getsockname()[1]
++        if port not in RESERVED:
++            return port
++    raise RuntimeError("no free port")
++
++
++def _health(url, timeout=10):
++    try:
++        return urllib.request.urlopen(url + "api/health", timeout=timeout).status == 200
++    except Exception:
++        return False
++
++
++def copy_db(src, dst):
++    """Consistent copy of a SQLite DB through the backup API; also safe onto a DB another process has open."""
++    s, d = sqlite3.connect(str(src)), sqlite3.connect(str(dst), timeout=30)
++    try:
++        s.backup(d)
++    finally:
++        d.close()
++        s.close()
++
++
++_SEEDED = {}  # seed once per run: {"db": template path, "ids": ids}
++
++
++def seed_db(db_path, env=None):
++    """Seed db_path with tests/e2e/seed.py; returns the id dict it prints. The seed runs once per process: later calls
++    copy the seeded DB."""
++    if _SEEDED:
++        copy_db(_SEEDED["db"], db_path)
++        return dict(_SEEDED["ids"])
++    ids = _run_seed(db_path, env)
++    tpl = pathlib.Path(tempfile.mkdtemp(prefix="act-e2e-seed-")) / "seeded.db"
++    copy_db(db_path, tpl)
++    _SEEDED.update(db=tpl, ids=ids)
++    return dict(ids)
++
++
++def _run_seed(db_path, env=None):
++    env = {**(env or os.environ), "PYTHONDONTWRITEBYTECODE": "1"}
++    out = subprocess.run([sys.executable, str(ROOT / "tests" / "e2e" / "seed.py"), str(db_path)], cwd=ROOT, env=env,
++                         capture_output=True, text=True, timeout=180)
++    assert out.returncode == 0, f"seed failed:\n{out.stdout}\n{out.stderr[-3000:]}"
++    return json.loads(out.stdout.strip().splitlines()[-1])
++
++
++class App:
++    def __init__(self, proc, logf, log_path, url, port, ids, db_path):
++        self.proc, self.logf, self.log_path = proc, logf, log_path
++        self.url, self.port, self.ids, self.db_path = url, port, ids, db_path
++
++    def stop(self):
++        try:
++            os.killpg(self.proc.pid, signal.SIGTERM)
++        except ProcessLookupError:
++            pass
++        try:
++            self.proc.wait(timeout=20)
++        except Exception:
++            try:
++                os.killpg(self.proc.pid, signal.SIGKILL)
++            except ProcessLookupError:
++                pass
++        self.logf.close()
++
++
++def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_env=None, strip_env=(), timeout=300):
++    """Start app.sh on a free port (or `port`, e.g. to restart on the same URL) and wait until it is healthy."""
++    tmp = pathlib.Path(tmp)
++    tmp.mkdir(parents=True, exist_ok=True)
++    # Inherited ACT_* / BREAK_CLASSIFIER_* (and any names in strip_env) never leak in; tests set them via extra_env.
++    env = {k: v for k, v in os.environ.items()
++           if not k.startswith(("ACT_", "BREAK_CLASSIFIER_")) and k not in set(strip_env)}
++    db_path = tmp / "act.db"
++    env.update({"PYTHONDONTWRITEBYTECODE": "1", "HOST": "0.0.0.0", "ACT_DB": str(db_path),
++                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev")})
++    if external:
++        env.update({"ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost", "ACT_TRUSTED_JWKS_PATH": str(JWKS)})
++    if demo:
++        env["ACT_DEMO_MODE"] = "1"
++    env.update(extra_env or {})
++    ids = seed_db(db_path, env) if seed else {}
++
++    log_path = tmp / "app.log"
++    last = ""
++    for attempt in range(3):
++        p = port or free_port()
++        env["PORT"] = str(p)
++        logf = open(log_path, "w")
++        # serialize startup: app.sh may (re)build the frontend, which must not run twice concurrently
++        with open(_LOCK, "w") as lk:
++            fcntl.flock(lk, fcntl.LOCK_EX)
++            proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
++                                    start_new_session=True)
++            url, deadline = None, time.time() + timeout
++            while time.time() < deadline and url is None and proc.poll() is None:
++                m = re.search(r"APP_URL=(\S+)", log_path.read_text())
++                if m:
++                    url = m.group(1)
++                else:
++                    time.sleep(0.3)
++        app = App(proc, logf, log_path, url, p, ids, db_path)
++        last = log_path.read_text()[-3000:]
++        if not (url and url.endswith("/")):
++            app.stop()
++            if port is None and "in use" in last.lower():
++                continue
++            raise AssertionError(f"no APP_URL:\n{last}")
++        # Wait on localhost (fast, always reachable), then prefer the printed APP_URL (Domino proxy prefix) if the proxy
++        # serves it right now; one probe, so a proxy that is not reachable from here costs nothing.
++        local = f"http://localhost:{p}/"
++        try:
++            wait_until(lambda: _health(local) or proc.poll() is not None, 120, 0.3, f"{local} healthy")
++        except AssertionError:
++            app.stop()
++            raise
++        url = url if (proc.poll() is None and _health(url, timeout=3)) else local
++        if proc.poll() is not None:
++            app.stop()
++            if port is None:
++                continue
++            raise AssertionError(f"app exited:\n{last}")
++        app.url = url
++        return app
++    raise AssertionError(f"app failed to start:\n{last}")
++
++
++def wait_until(cond, timeout=10.0, interval=0.25, what="condition"):
++    """Documented polling helper: call cond() until it returns truthy or `timeout` seconds pass."""
++    end = time.time() + timeout
++    while True:
++        v = cond()
++        if v:
++            return v
++        if time.time() >= end:
++            raise AssertionError(f"timed out waiting for {what}")
++        time.sleep(interval)
++
++
++def wait_port(port, host="127.0.0.1", timeout=10.0):
++    """Wait until something accepts TCP connections on host:port."""
++    def up():
++        try:
++            socket.create_connection((host, port), timeout=0.5).close()
++            return True
++        except OSError:
++            return False
++    wait_until(up, timeout, 0.25, f"port {port}")
++
++
++class AppRegistry:
++    """One running app per distinct environment, started lazily and cached by an env key for the whole run.
++
++    The first get() for a key starts the app (the seeded DB is copied from the one seed) and snapshots its DB.
++    reset() (called at each module start) restores every snapshot over the live DB, so modules that share an
++    environment still begin from a fresh DB without a restart. Demo apps are not restored (their tests reset the
++    state through the demo API).
++    """
++
++    def __init__(self, base_tmp):
++        self.base_tmp = pathlib.Path(base_tmp)
++        self.apps, self.snap, self.starts = {}, {}, []
++
++    @staticmethod
++    def key(seed=False, demo=False, external=True, extra_env=None, strip_env=()):
++        return (bool(seed), bool(demo), bool(external), tuple(sorted((extra_env or {}).items())),
++                tuple(sorted(set(strip_env))))
++
++    def get(self, *, seed=False, demo=False, external=True, extra_env=None, strip_env=()):
++        key = self.key(seed, demo, external, extra_env, strip_env)
++        app = self.apps.get(key)
++        if app is None:
++            tmp = self.base_tmp / f"app{len(self.apps)}"
++            app = start_app(tmp, seed=seed, demo=demo, external=external, extra_env=extra_env, strip_env=strip_env)
++            self.apps[key] = app
++            self.starts.append(key)
++            if not demo and app.db_path.exists():
++                self.snap[key] = tmp / "snapshot.db"
++                copy_db(app.db_path, self.snap[key])
++        return app
++
++    def reset(self):
++        for key, snap in self.snap.items():
++            copy_db(snap, self.apps[key].db_path)
++
++    def stop_all(self):
++        for app in self.apps.values():
++            app.stop()
++        self.apps.clear()
+diff --git a/tests/e2e/_waits.py b/tests/e2e/_waits.py
+new file mode 100644
+index 0000000..8669ecf
+--- /dev/null
++++ b/tests/e2e/_waits.py
+@@ -0,0 +1,20 @@
++"""Condition-based waits for e2e tests (no fixed sleeps; the guard test forbids wait_for_timeout/time.sleep in test_*.py)."""
++
++
++def settle(page):
++    """Let layout, scroll and style transitions flush: resolves after two animation frames."""
++    page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
++
++
++def round_trip(page):
++    """One HTTP round trip through the page's network stack (orders after requests already issued by the page)."""
++    page.evaluate("() => fetch('api/health').then(r => r.status)")
++
++
++def wait_true(page, expr, timeout=3000):
++    """Poll a JS expression in the page until truthy; returns whether it became truthy (never raises)."""
++    try:
++        page.wait_for_function(expr, timeout=timeout)
++        return True
++    except Exception:
++        return False
+diff --git a/tests/e2e/capture.py b/tests/e2e/capture.py
+new file mode 100644
+index 0000000..3291ecd
+--- /dev/null
++++ b/tests/e2e/capture.py
+@@ -0,0 +1,116 @@
++#!/usr/bin/env python
++"""Screenshot app pages for design review.
++
++Starts the app on a free port (e2e seed by default, demo mode with --demo), optionally signs in, takes full-page PNGs
++named <slug>-<width>.png, prints their paths, and stops the app.
++
++Usage:
++  python tests/e2e/capture.py --out DIR --widths 1440,1024 --demo \\
++      --route '#/agents/<id>' --route '#/settings' \\
++      [--delay-api 'api/settings:3000'] [--fail-api 'api/agents/*:500'] [--as owner|admin|NAME] [--no-auth]
++
++Options:
++  --out DIR         output directory (created)
++  --widths W,W      viewport widths in px (default 1440); height 900, full_page capture
++  --demo            start in demo mode (ACT_DEMO_MODE=1, empty DB) instead of the e2e seed
++  --route R         route to capture (repeatable; default '#/'). '#/x' or '/x' hashes are accepted; the slug is derived
++                    from it ('#/agents/abc' -> agents-abc, '#/' -> home). With the e2e seed, the tokens {recon_id},
++                    {treasury_id}, {run_id} are replaced by the seeded ids.
++  --as NAME         identity sent as X-Domino-User-Id / X-Domino-User (default 'owner'; 'admin' also works). The
++                    same header injection the e2e tests use (context.set_extra_http_headers).
++  --no-auth         send no identity headers (anonymous)
++  --delay-api SPEC  'url-glob-substring:MILLIS' (repeatable): hold matching API responses for MILLIS ms (loading states;
++                    keep --settle below MILLIS to capture the loading state).
++                    Matched as a glob against the request URL, e.g. 'api/settings:3000' -> **/api/settings*
++  --fail-api SPEC   'url-glob:STATUS' (repeatable): answer matching requests with that HTTP status (error states),
++                    e.g. 'api/agents/*:500'
++  --settle MS       extra wait after load before each shot (default 800)
++"""
++import argparse
++import pathlib
++import re
++import sys
++import tempfile
++
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
++from _server import start_app  # noqa: E402
++
++
++def _slug(route):
++    s = re.sub(r"[^A-Za-z0-9]+", "-", route.lstrip("#/")).strip("-")
++    return s or "home"
++
++
++def _spec(spec):
++    pat, _, val = spec.rpartition(":")
++    if not pat or not val.isdigit():
++        raise SystemExit(f"bad spec {spec!r}: expected 'url-glob:NUMBER'")
++    if "*" not in pat:
++        pat = f"**/{pat.lstrip('/')}*"
++    elif not pat.startswith(("**", "http")):
++        pat = f"**/{pat.lstrip('/')}"
++    return pat, int(val)
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description="Screenshot app pages for design review.")
++    ap.add_argument("--out", required=True)
++    ap.add_argument("--widths", default="1440")
++    ap.add_argument("--demo", action="store_true")
++    ap.add_argument("--route", action="append")
++    ap.add_argument("--as", dest="user", default="owner")
++    ap.add_argument("--no-auth", action="store_true")
++    ap.add_argument("--delay-api", action="append", default=[])
++    ap.add_argument("--fail-api", action="append", default=[])
++    ap.add_argument("--settle", type=int, default=800)
++    a = ap.parse_args(argv)
++
++    out = pathlib.Path(a.out)
++    out.mkdir(parents=True, exist_ok=True)
++    widths = [int(w) for w in a.widths.split(",") if w.strip()]
++    routes = a.route or ["#/"]
++    delays = [_spec(s) for s in a.delay_api]
++    fails = [_spec(s) for s in a.fail_api]
++
++    from playwright.sync_api import sync_playwright
++
++    paths = []
++    with tempfile.TemporaryDirectory(prefix="act-capture-") as tmp:
++        app = start_app(tmp, seed=not a.demo, demo=a.demo)
++        try:
++            with sync_playwright() as pw:
++                browser = pw.chromium.launch()
++                for width in widths:
++                    ctx = browser.new_context(viewport={"width": width, "height": 900}, base_url=app.url)
++                    if not a.no_auth:
++                        ctx.set_extra_http_headers({"X-Domino-User-Id": a.user, "X-Domino-User": a.user})
++                    page = ctx.new_page()
++                    for pat, ms in delays:
++                        def _delay(route, ms=ms):
++                            resp = route.fetch()
++                            page.wait_for_timeout(ms)  # keeps the event loop running while the response is held
++                            route.fulfill(response=resp)
++                        page.route(pat, _delay)
++                    for pat, status in fails:
++                        ctx.route(pat, lambda r, status=status: r.fulfill(
++                            status=status, content_type="application/json", body='{"detail":"injected failure"}'))
++                    for r in routes:
++                        r = r.format(**{k: v for k, v in app.ids.items() if isinstance(v, str)}) if "{" in r else r
++                        target = r if r.startswith("#") else "#" + r
++                        page.goto("./" + target)
++                        page.wait_for_load_state("load")
++                        page.wait_for_timeout(a.settle)
++                        page.evaluate("window.scrollTo(0, 0)")
++                        path = out / f"{_slug(r)}-{width}.png"
++                        page.screenshot(path=str(path), full_page=True)
++                        paths.append(str(path.resolve()))
++                        print(paths[-1], flush=True)
++                    ctx.close()
++                browser.close()
++        finally:
++            app.stop()
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/e2e/conftest.py b/tests/e2e/conftest.py
+index f56e6dc..bf4f8aa 100644
+--- a/tests/e2e/conftest.py
++++ b/tests/e2e/conftest.py
+@@ -9,92 +9,81 @@ def browser_context_args(browser_context_args):
+     return {**browser_context_args, "viewport": {"width": 1440, "height": 900}}
+ 
+ 
++def _run_dir():
++    return pathlib.Path(os.environ.get("QA_RUN_DIR", "test-results"))
++
++
+ @pytest.fixture
+ def shot(page, request):
+-    run_dir = pathlib.Path(os.environ.get("QA_RUN_DIR", "test-results"))
+-    run_dir.mkdir(parents=True, exist_ok=True)
+-
+-    def _shot(step: str) -> str:
+-        path = run_dir / f"{request.node.originalname}-{step}.png"
+-        page.evaluate("window.scrollTo(0, 0)")
+-        page.wait_for_timeout(250)
+-        page.screenshot(path=str(path), full_page=True)
++    """shot(step, full_page=False): a viewport PNG in $QA_RUN_DIR (default test-results/), no fixed wait.
++
++    Regression runs take screenshots only on failure (see _failure_shot): shot() writes nothing unless QA_SHOTS=1,
++    which QA/design runs set. full_page is opt-in.
++    """
++    on = os.environ.get("QA_SHOTS") == "1"
++
++    def _shot(step: str, full_page: bool = False) -> str:
++        path = _run_dir() / f"{request.node.originalname}-{step}.png"
++        if on:
++            path.parent.mkdir(parents=True, exist_ok=True)
++            page.screenshot(path=str(path), full_page=full_page)
+         return str(path)
+ 
+     return _shot
+ 
+ 
+-# ---- T-9 console: seed demo DB, start the app, expose base_url -------------------------------
++@pytest.hookimpl(hookwrapper=True)
++def pytest_runtest_makereport(item, call):
++    """A failed test gets a viewport screenshot of its page (taken while the page is still open) in $QA_RUN_DIR."""
++    out = yield
++    if call.when == "call" and out.get_result().failed:
++        page = getattr(item, "funcargs", {}).get("page")
++        if page is not None:
++            try:
++                _run_dir().mkdir(parents=True, exist_ok=True)
++                page.screenshot(path=str(_run_dir() / f"{item.originalname}-FAILED.png"))
++            except Exception:
++                pass  # page already closed
++
++
++# ---- apps: one per distinct environment per run (FE-3) --------------------------------------------------------
+ import json  # noqa: E402
+-import re  # noqa: E402
+-import shutil  # noqa: E402
+-import signal  # noqa: E402
++import socket  # noqa: E402
+ import subprocess  # noqa: E402
+ import sys  # noqa: E402
+-import time  # noqa: E402
+ 
+ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+-PORT = "9888"
+-
+-
+-def _free_port():
+-    for cmd in (["fuser", "-k", f"{PORT}/tcp"],):
+-        if shutil.which(cmd[0]):
+-            subprocess.run(cmd, capture_output=True)
+-    time.sleep(1)
++sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
++from _server import AppRegistry, wait_port  # noqa: E402
+ 
+ 
+ @pytest.fixture(scope="session")
+-def app_session(tmp_path_factory):
+-    """Seed a demo DB, start app.sh in the background, yield {base_url, ids...}; stop the app at the end."""
+-    db_path = str(tmp_path_factory.mktemp("act-e2e") / "act.db")
+-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+-    out = subprocess.run([sys.executable, str(ROOT / "tests" / "e2e" / "seed.py"), db_path], cwd=ROOT, env=env,
+-                         capture_output=True, text=True, timeout=180)
+-    assert out.returncode == 0, f"seed failed:\n{out.stdout}\n{out.stderr[-3000:]}"
+-    ids = json.loads(out.stdout.strip().splitlines()[-1])
+-
+-    _free_port()
+-    log_path = tmp_path_factory.mktemp("applog") / "app.log"
+-    logf = open(log_path, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
+-                            env={**env, "ACT_DB": db_path, "ACT_DB_PREWARM_COUNT": "0", "PORT": PORT,
+-                                 "ACT_EVIDENCE_DIR": str(tmp_path_factory.mktemp("act-evidence")),
+-                                 "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
+-                                 "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")},
+-                            start_new_session=True)
++def app_registry(tmp_path_factory):
++    """One app per distinct environment (cached by env key) for the whole run; all stopped at the end."""
++    reg = AppRegistry(tmp_path_factory.mktemp("act-e2e"))
+     try:
+-        url = None
+-        deadline = time.time() + 300  # first run may npm install + build
+-        while time.time() < deadline and url is None:
+-            if proc.poll() is not None:
+-                break
+-            m = re.search(r"APP_URL=(\S+)", log_path.read_text())
+-            if m:
+-                url = m.group(1)
+-            else:
+-                time.sleep(0.5)
+-        assert url, f"app did not print APP_URL:\n{log_path.read_text()[-3000:]}"
+-        assert url.endswith("/"), url
+-        time.sleep(1)
+-        # Prefer the printed APP_URL (Domino proxy prefix); fall back to localhost if the proxy does not serve it.
+-        import urllib.request
+-        def _ok(u):
+-            try:
+-                return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-            except Exception:
+-                return False
+-        if not _ok(url):
+-            print(f"APP_URL {url} unreachable; falling back to http://localhost:{PORT}/")
+-            url = f"http://localhost:{PORT}/"
+-        yield {"base_url": url, **ids}
++        yield reg
+     finally:
+-        try:
+-            os.killpg(proc.pid, signal.SIGTERM)
+-        except ProcessLookupError:
+-            pass
+-        proc.wait(timeout=20)
+-        logf.close()
++        reg.stop_all()
++
++
++@pytest.fixture(scope="module", autouse=True)
++def _fresh_dbs(app_registry):
++    """Each module starts from the seeded/initial DB of every shared app (restored from its snapshot)."""
++    app_registry.reset()
++
++
++@pytest.fixture(scope="session")
++def apps(app_registry):
++    """apps(seed=, demo=, external=, extra_env=, strip_env=) -> the cached App for that environment."""
++    return app_registry.get
++
++
++@pytest.fixture(scope="session")
++def app_session(apps):
++    """The seeded app (external cards allowed, demo off); ids from the seed are merged into the dict."""
++    app = apps(seed=True)
++    return {"base_url": app.url, **app.ids}
+ 
+ 
+ @pytest.fixture(scope="session")
+@@ -109,7 +98,6 @@ def seeded(app_session):
+ 
+ 
+ # ---- T-12: fixture A2A card servers ----------------------------------------------------------
+-import socket  # noqa: E402
+ 
+ 
+ def _start_card_server(signed):
+@@ -121,12 +109,11 @@ def _start_card_server(signed):
+         if signed:
+             cmd.append("--signed")
+         proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+-        for _ in range(40):
+-            try:
+-                socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+-                return proc, f"http://127.0.0.1:{port}/.well-known/agent-card.json"
+-            except OSError:
+-                time.sleep(0.25)
++        try:
++            wait_port(port)
++            return proc, f"http://127.0.0.1:{port}/.well-known/agent-card.json"
++        except AssertionError:
++            pass
+         proc.terminate()
+     raise RuntimeError("card server did not start")
+ 
+@@ -143,3 +130,22 @@ def card_urls():
+                 proc.wait(timeout=10)
+             except Exception:
+                 proc.kill()
++
++
++# ---- smoke: ~15 tests across shell, nav, Fleet, Agent, Run, Settings load (run with -m smoke) --------------------
++SMOKE = {
++    "test_t19a_shell_fleet": {"test_s1_topbar_on_every_page", "test_s1_breadcrumbs", "test_s2_page_header",
++                              "test_s2_summary_tiles", "test_s2_whole_row_click_opens_agent"},
++    "test_t9_console": {"test_ac5_timeline_matches_api_and_renders_fast",
++                        "test_agent_page_tier_card_identity_manifest_approvals"},
++    "test_t19b_agent_run_pages": {"test_s3_header_name_chip_tier_status_actions_right",
++                                  "test_s4_header_run_id_copy_agent_link_range_count",
++                                  "test_s6_existing_testids_on_agent_and_run"},
++    "test_t48_settings_reachable": {"test_sr1_owner_nav_link_with_gear", "test_sr4_lists_exactly_defs_grouped"},
++}
++
++
++def pytest_collection_modifyitems(items):
++    for item in items:
++        if item.originalname in SMOKE.get(item.module.__name__, ()) and item.cls is None:
++            item.add_marker(pytest.mark.smoke)
+diff --git a/tests/e2e/test_guard_no_sleeps.py b/tests/e2e/test_guard_no_sleeps.py
+new file mode 100644
+index 0000000..dc45278
+--- /dev/null
++++ b/tests/e2e/test_guard_no_sleeps.py
+@@ -0,0 +1,25 @@
++"""Guard: no fixed waits in e2e tests. Wait for the condition instead (expect(...), wait_for_function, _waits.py).
++
++The only sleeps allowed live in the helper modules (_server.py wait_until/wait_port, startup polling), never in test_*.py.
++"""
++import pathlib
++import re
++
++HERE = pathlib.Path(__file__).resolve().parent
++FIXED_WAIT = re.compile(r"wait_for_timeout\s*\(|time\s*\.\s*sleep\s*\(|\bsleep\s*\(|asyncio\s*\.\s*sleep")
++
++
++def test_no_fixed_waits_in_e2e_tests():
++    bad = []
++    for f in sorted(HERE.glob("test_*.py")):
++        if f.name == pathlib.Path(__file__).name:
++            continue
++        for n, line in enumerate(f.read_text().splitlines(), 1):
++            if FIXED_WAIT.search(line.split("#")[0]):
++                bad.append(f"{f.name}:{n}: {line.strip()}")
++    assert not bad, "fixed waits found (use a condition-based wait):\n" + "\n".join(bad)
++
++
++def test_guard_detects_a_sleep():
++    assert FIXED_WAIT.search("    page.wait_for_timeout(300)")
++    assert FIXED_WAIT.search("    time.sleep(1)")
+diff --git a/tests/e2e/test_t12_passport.py b/tests/e2e/test_t12_passport.py
+index 67d5969..25c3be6 100644
+--- a/tests/e2e/test_t12_passport.py
++++ b/tests/e2e/test_t12_passport.py
+@@ -116,7 +116,7 @@ def tampered_url(tmp_path):
+     import socket
+     import subprocess
+     import sys
+-    import time
++    from _server import wait_port
+     card = json.loads((ROOT / "fixtures/external/agent-card-signed.json").read_text())
+     card["description"] = card["description"] + " (tampered)"
+     d = tmp_path / "srv" / ".well-known"
+@@ -128,12 +128,7 @@ def tampered_url(tmp_path):
+     proc = subprocess.Popen([sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1",
+                              "--directory", str(tmp_path / "srv")],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+-    for _ in range(40):
+-        try:
+-            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
+-            break
+-        except OSError:
+-            time.sleep(0.25)
++    wait_port(port)
+     yield f"http://127.0.0.1:{port}/.well-known/agent-card.json"
+     proc.terminate()
+     proc.wait(timeout=10)
+diff --git a/tests/e2e/test_t15_demo_mode.py b/tests/e2e/test_t15_demo_mode.py
+index fda2b62..c8c683d 100644
+--- a/tests/e2e/test_t15_demo_mode.py
++++ b/tests/e2e/test_t15_demo_mode.py
+@@ -1,6 +1,6 @@
+ """T-15 e2e: one-switch demo mode (D-2..D-10).
+ 
+-One app on port 9889 via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
++The shared demo app (ACT_DEMO_MODE=1, temp ACT_DB, conftest registry), reset per test; the off-by-default test (last) checks the shared non-demo app instead.
+ data-testid contract (suggested; role/text locators are primary):
+   demo-banner  persistent banner with "Demo mode: simulated data and stand-ins" and the stand-in labels
+ Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agent".
+@@ -8,76 +8,12 @@ Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agen
+ import os
+ import pathlib
+ import re
+-import shutil
+-import signal
+-import subprocess
+-import time
+ import urllib.request
+ 
+ import pytest
+ from playwright.sync_api import expect
+ 
+ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+-PORT = "9889"  # separate from the shared suite app on 9888 so this module never kills it
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-15"
+-
+-
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+-
+-def _start(tmp_path, demo):
+-    if shutil.which("fuser"):
+-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
+-    time.sleep(1)
+-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
+-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
+-                "ACT_DB": str(tmp_path / "act.db"), "ACT_DB_PREWARM_COUNT": "0",
+-                "ACT_EVIDENCE_DIR": str(tmp_path / "evidence")})
+-    if demo:
+-        env["ACT_DEMO_MODE"] = "1"
+-    log = tmp_path / "app.log"
+-    logf = open(log, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
+-                            env=env, start_new_session=True)
+-    url, deadline = None, time.time() + 300
+-    while time.time() < deadline and url is None and proc.poll() is None:
+-        m = re.search(r"APP_URL=(\S+)", log.read_text())
+-        if m:
+-            url = m.group(1)
+-        else:
+-            time.sleep(0.5)
+-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
+-
+-    def ok(u):
+-        try:
+-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-        except Exception:
+-            return False
+-    for _ in range(30):
+-        if ok(url):
+-            break
+-        time.sleep(1)
+-    else:
+-        url = f"http://localhost:{PORT}/"
+-    return proc, logf, url
+-
+-
+-def _stop(proc, logf):
+-    try:
+-        os.killpg(proc.pid, signal.SIGTERM)
+-    except ProcessLookupError:
+-        pass
+-    try:
+-        proc.wait(timeout=20)
+-    except Exception:
+-        os.killpg(proc.pid, signal.SIGKILL)
+-    logf.close()
+-
+-
+-_APP = {}
+ 
+ 
+ @pytest.fixture
+@@ -87,14 +23,9 @@ def browser_context_args(browser_context_args, demo_url):
+ 
+ 
+ @pytest.fixture(scope="module")
+-def demo_url(tmp_path_factory):
+-    """One demo-mode app for the session; the off-by-default test swaps it for a non-demo app."""
+-    proc, logf, url = _start(tmp_path_factory.mktemp("t15-demo"), True)
+-    _APP.update(proc=proc, logf=logf, url=url)
+-    try:
+-        yield url
+-    finally:
+-        _stop(_APP["proc"], _APP["logf"])
++def demo_url(apps):
++    """The run's shared demo-mode app (conftest); the off-by-default test uses the shared non-demo app instead."""
++    return apps(demo=True).url
+ 
+ 
+ @pytest.fixture(autouse=True)
+@@ -222,17 +153,15 @@ def test_d2_fresh_fleet(page, shot, demo_url):
+     shot("then")
+ 
+ 
+-def test_d10_off_by_default(page, shot, demo_url, tmp_path_factory):
+-    _stop(_APP["proc"], _APP["logf"])
+-    proc, logf, _url = _start(tmp_path_factory.mktemp("t15-off"), False)
+-    _APP.update(proc=proc, logf=logf)
+-    assert page.request.get("api/health").json().get("demo_mode") in (False, None)
+-    page.goto("./#/")
++def test_d10_off_by_default(page, shot, demo_url, apps):
++    # the run's shared non-demo app (ACT_DEMO_MODE unset); absolute URLs because this module's base_url is the demo app
++    off = apps().url
++    assert page.request.get(off + "api/health").json().get("demo_mode") in (False, None)
++    page.goto(off + "#/")
+     expect(page.get_by_role("heading").first).to_be_visible()
+     expect(page.get_by_test_id("demo-banner")).to_have_count(0)
+     expect(page.get_by_text("Demo mode: simulated data and stand-ins")).to_have_count(0)
+     for name in ("Approve as demo approver", "Run recon agent", "Reset demo"):
+         expect(page.get_by_role("button", name=name)).to_have_count(0)
+-    assert page.request.post("api/demo/reset").status == 404
++    assert page.request.post(off + "api/demo/reset").status == 404
+     shot("then")
+-    _stop(_APP["proc"], _APP["logf"])  # leave port 9888 free for later modules
+diff --git a/tests/e2e/test_t18_register_page.py b/tests/e2e/test_t18_register_page.py
+index b91fe63..14f7b25 100644
+--- a/tests/e2e/test_t18_register_page.py
++++ b/tests/e2e/test_t18_register_page.py
+@@ -1,6 +1,6 @@
+ """T-18 e2e: redesigned "Register external agent" page (R-1..R-9).
+ 
+-Own app on port 9889 (the shared suite app on 9888 is never touched). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
++Own app on a free port (shared helper _server.py). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
+ data-testid contract (role/label locators are primary):
+   register-page         page root           register-section (x3)   numbered card, contains a heading "1 Agent card" etc.
+   register-summary      sticky panel with tier-badge (data-tier, text "Tier N"), summary-score, summary-host, summary-scopes-count
+@@ -13,77 +13,26 @@ data-testid contract (role/label locators are primary):
+ import json
+ import os
+ import re
+-import shutil
+-import signal
+-import subprocess
+-import sys
+-import time
+-import urllib.request
+ 
+ import pytest
+ from playwright.sync_api import expect
+ 
++from _waits import round_trip, settle, wait_true
++
++
+ ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+-PORT = "9889"
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-18"
+ NAMES = ["Decision impact", "Financial exposure", "Customer impact", "Autonomy", "Data sensitivity",
+          "Reversibility", "Regulatory exposure"]
+ KEYS = ["decision_impact", "financial_exposure", "customer_impact", "autonomy", "data_sensitivity",
+         "reversibility", "regulatory_exposure"]
+ 
+ 
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+-
+-# Module-scoped app on its own port; never starts the 9888 app. The conftest's session-scoped base_url is shadowed
++# Unseeded app shared per run (conftest registry; DB restored per module). The conftest's session-scoped base_url is shadowed
+ # here, and browser_context_args is overridden at function scope (not chaining to the session one, which would
+-# cache this module's URL for every later module or start the 9888 app).
++# cache this module's URL for every later module or start the shared app).
+ @pytest.fixture(scope="module")
+-def base_url(tmp_path_factory):
+-    tmp = tmp_path_factory.mktemp("t18")
+-    if shutil.which("fuser"):
+-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
+-    time.sleep(1)
+-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
+-           "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
+-           "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
+-           "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")}
+-    log = tmp / "app.log"
+-    logf = open(log, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
+-                            start_new_session=True)
+-    url, deadline = None, time.time() + 300
+-    while time.time() < deadline and url is None and proc.poll() is None:
+-        m = re.search(r"APP_URL=(\S+)", log.read_text())
+-        if m:
+-            url = m.group(1)
+-        else:
+-            time.sleep(0.5)
+-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
+-
+-    def ok(u):
+-        try:
+-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-        except Exception:
+-            return False
+-    for _ in range(30):
+-        if ok(url):
+-            break
+-        time.sleep(1)
+-    else:
+-        url = f"http://localhost:{PORT}/"
+-    try:
+-        yield url
+-    finally:
+-        try:
+-            os.killpg(proc.pid, signal.SIGTERM)
+-        except ProcessLookupError:
+-            pass
+-        proc.wait(timeout=20)
+-        logf.close()
++def base_url(apps):
++    return apps().url
+ 
+ 
+ @pytest.fixture
+@@ -146,7 +95,8 @@ def test_r1_two_columns_sticky_at_1440(page, shot):
+     expect(summary.get_by_test_id("summary-scopes-count")).to_be_visible()
+     assert _no_hscroll(page)
+     page.mouse.wheel(0, 900)
+-    page.wait_for_timeout(300)
++    settle(page)
++    wait_true(page, "window.scrollY > 100", 2000)
+     assert page.evaluate("window.scrollY") > 100, "page too short to scroll: form not substantial"
+     top = summary.bounding_box()["y"]
+     assert 0 <= top < 200, f"summary not sticky, top={top}"
+@@ -322,7 +272,8 @@ def test_r7_busy_and_no_double_submit(page, shot, card_urls):
+     expect(busy).to_have_text(re.compile("Registering…"))
+     busy.click(force=True)
+     page.keyboard.press("Enter")
+-    page.wait_for_timeout(500)
++    settle(page)
++    round_trip(page)  # any second submission would have reached the route by now
+     assert len(held) == 1, f"{len(held)} submissions while busy"
+     shot("then")
+     held[0].continue_()  # release the held request
+diff --git a/tests/e2e/test_t19a_captures.py b/tests/e2e/test_t19a_captures.py
+index c48f648..4d6c528 100644
+--- a/tests/e2e/test_t19a_captures.py
++++ b/tests/e2e/test_t19a_captures.py
+@@ -1,14 +1,26 @@
+-"""T-19a QA viewport captures (not full-page). Output: /mnt/data/ai-control-tower/qa/T-19a/."""
++"""T-19a QA viewport captures (not full-page). Output: $QA_RUN_DIR (default test-results/). Marked capture: not part of regression runs."""
++import os
+ import re
+ 
++import pytest
+ from playwright.sync_api import expect
+ 
+-from test_t19a_shell_fleet import (SHOT_DIR, app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
++from _waits import settle
++
++pytestmark = pytest.mark.capture
++SHOT_DIR = os.environ.get("QA_RUN_DIR", "test-results")  # honours QA_RUN_DIR
++
++
++@pytest.fixture(autouse=True)
++def _out_dir():
++    os.makedirs(SHOT_DIR, exist_ok=True)
++
++from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
+                                    seeded)
+ 
+ 
+ def _snap(page, name):
+-    page.wait_for_timeout(300)
++    settle(page)
+     page.screenshot(path=f"{SHOT_DIR}/{name}.png", full_page=False)
+ 
+ 
+diff --git a/tests/e2e/test_t19a_preview_p2.py b/tests/e2e/test_t19a_preview_p2.py
+index b8d4028..69f818c 100644
+--- a/tests/e2e/test_t19a_preview_p2.py
++++ b/tests/e2e/test_t19a_preview_p2.py
+@@ -1,76 +1,23 @@
+ """T-19a e2e: Register tier preview works without sign-in and explains failures (P-2).
+ 
+-Own app on port 9893; the shared 9888 app is never touched. Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
++Own app on a free port. Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
+ No identity headers are ever set in this module.
+ """
+ import os
+ import re
+-import shutil
+-import signal
+-import subprocess
+-import time
+-import urllib.request
+ 
+ import pytest
+ from playwright.sync_api import expect
+ 
+ ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+-PORT = "9893"
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19a"
+ MEANINGS = re.compile(r"Highest consequence|High consequence|Moderate consequence|Lowest consequence")
+ UNAVAILABLE = re.compile(r"unavailable", re.I)
+ 
+ 
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+-
+ @pytest.fixture(scope="module")
+-def base_url(tmp_path_factory):
+-    tmp = tmp_path_factory.mktemp("t19a-p2")
+-    if shutil.which("fuser"):
+-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
+-    time.sleep(1)
+-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
+-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
+-                "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
+-                "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
+-                "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")})
+-    log = tmp / "app.log"
+-    logf = open(log, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
+-                            start_new_session=True)
+-    url, deadline = None, time.time() + 300
+-    while time.time() < deadline and url is None and proc.poll() is None:
+-        m = re.search(r"APP_URL=(\S+)", log.read_text())
+-        if m:
+-            url = m.group(1)
+-        else:
+-            time.sleep(0.5)
+-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
+-
+-    def ok(u):
+-        try:
+-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-        except Exception:
+-            return False
+-    for _ in range(30):
+-        if ok(url):
+-            break
+-        time.sleep(1)
+-    else:
+-        url = f"http://localhost:{PORT}/"
+-    try:
+-        yield url
+-    finally:
+-        try:
+-            os.killpg(proc.pid, signal.SIGTERM)
+-        except ProcessLookupError:
+-            pass
+-        proc.wait(timeout=20)
+-        logf.close()
++def base_url(apps):
++    """The run's shared unseeded app (conftest)."""
++    return apps().url
+ 
+ 
+ @pytest.fixture
+diff --git a/tests/e2e/test_t19a_shell_fleet.py b/tests/e2e/test_t19a_shell_fleet.py
+index 9b10dc1..9ccae07 100644
+--- a/tests/e2e/test_t19a_shell_fleet.py
++++ b/tests/e2e/test_t19a_shell_fleet.py
+@@ -1,6 +1,6 @@
+ """T-19a e2e: app shell + Fleet page enterprise redesign (S-1, S-2, S-5) and Register carry-overs.
+ 
+-Own seeded app on port 9891 (and a demo-mode app on 9892 for the banner); the shared 9888 app is never touched.
++Own seeded app (and a demo-mode app for the banner), each on a free port.
+ Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
+ data-testid contract (role/label locators are primary):
+   app-topbar        the top bar (landmark role=banner) holding the product name "Agent Control Tower",
+@@ -13,102 +13,28 @@ data-testid contract (role/label locators are primary):
+   Clear filters     button, visible only while a filter (search, source, tier) is active
+   fleet-row         tabindex=0, Enter opens the agent; whole row clickable
+ """
+-import json
+ import os
+ import re
+-import shutil
+-import signal
+-import subprocess
+-import sys
+-import time
+-import urllib.request
+ 
+ import pytest
+ from playwright.sync_api import expect
+ 
+-ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+-PORT, DEMO_PORT = "9891", "9892"
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19a"
++from _waits import settle, wait_true
+ 
+ 
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+-
+-def _start(tmp, port, demo=False, seed=False):
+-    if shutil.which("fuser"):
+-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
+-    time.sleep(1)
+-    env = {k: v for k, v in os.environ.items() if not k.startswith("ACT_DEMO")}
+-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0",
+-                "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
+-                "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
+-                "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")})
+-    ids = {}
+-    if seed:
+-        out = subprocess.run([sys.executable, str(ROOT / "tests" / "e2e" / "seed.py"), str(tmp / "act.db")],
+-                             cwd=ROOT, env=env, capture_output=True, text=True, timeout=180)
+-        assert out.returncode == 0, f"seed failed:\n{out.stdout}\n{out.stderr[-3000:]}"
+-        ids = json.loads(out.stdout.strip().splitlines()[-1])
+-    if demo:
+-        env["ACT_DEMO_MODE"] = "1"
+-    log = tmp / "app.log"
+-    logf = open(log, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
+-                            start_new_session=True)
+-    url, deadline = None, time.time() + 300
+-    while time.time() < deadline and url is None and proc.poll() is None:
+-        m = re.search(r"APP_URL=(\S+)", log.read_text())
+-        if m:
+-            url = m.group(1)
+-        else:
+-            time.sleep(0.5)
+-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
+-
+-    def ok(u):
+-        try:
+-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-        except Exception:
+-            return False
+-    for _ in range(30):
+-        if ok(url):
+-            break
+-        time.sleep(1)
+-    else:
+-        url = f"http://localhost:{port}/"
+-    return proc, logf, url, ids
+-
+-
+-def _stop(proc, logf):
+-    try:
+-        os.killpg(proc.pid, signal.SIGTERM)
+-    except ProcessLookupError:
+-        pass
+-    try:
+-        proc.wait(timeout=20)
+-    except Exception:
+-        os.killpg(proc.pid, signal.SIGKILL)
+-    logf.close()
++ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app(tmp_path_factory):
+-    proc, logf, url, ids = _start(tmp_path_factory.mktemp("t19a"), PORT, seed=True)
+-    try:
+-        yield {"base_url": url, **ids}
+-    finally:
+-        _stop(proc, logf)
++def app(app_session):
++    """The run's shared seeded app (conftest)."""
++    return app_session
+ 
+ 
+ @pytest.fixture(scope="module")
+-def demo_url(tmp_path_factory):
+-    proc, logf, url, _ = _start(tmp_path_factory.mktemp("t19a-demo"), DEMO_PORT, demo=True)
+-    try:
+-        yield url
+-    finally:
+-        _stop(proc, logf)
++def demo_url(apps):
++    """The run's shared demo-mode app (conftest)."""
++    return apps(demo=True).url
+ 
+ 
+ @pytest.fixture(scope="module")
+@@ -347,7 +273,8 @@ def test_s2_table_sticky_header_hover_and_cells(page, shot):
+         th.evaluate("e => getComputedStyle(e.parentElement).position") == "sticky" or \
+         th.evaluate("e => getComputedStyle(e.closest('thead')).position") == "sticky"
+     page.mouse.wheel(0, 400)
+-    page.wait_for_timeout(300)
++    settle(page)
++    wait_true(page, "window.scrollY > 50", 1000)
+     if page.evaluate("window.scrollY") > 50:
+         assert 0 <= th.bounding_box()["y"] < 120, "header not stuck while scrolling"
+     page.evaluate("window.scrollTo(0, 0)")
+@@ -356,7 +283,12 @@ def test_s2_table_sticky_header_hover_and_cells(page, shot):
+     r.scroll_into_view_if_needed()
+     bg0 = r.evaluate("e => getComputedStyle(e.querySelector('td')).backgroundColor")
+     r.hover()
+-    page.wait_for_timeout(300)
++    r.evaluate("""(e, b) => new Promise(res => {  // wait (up to 2 s) for the hover transition to change the colour
++        const t0 = Date.now();
++        const f = () => (getComputedStyle(e.querySelector('td')).backgroundColor !== b || Date.now() - t0 > 2000)
++            ? res() : requestAnimationFrame(f);
++        f();
++    })""", bg0)
+     bg1 = r.evaluate("e => getComputedStyle(e.querySelector('td')).backgroundColor")
+     assert bg0 != bg1, "no row hover style"
+     first = rows.first
+@@ -445,7 +377,7 @@ def test_s5_no_horizontal_scroll(page, shot, size, route):
+     page.set_viewport_size({"width": size[0], "height": size[1]})
+     page.goto(route)
+     expect(page.get_by_role("heading", level=1)).to_be_visible()
+-    page.wait_for_timeout(300)
++    settle(page)
+     assert _no_hscroll(page)
+     shot(f"then-{size[0]}")
+ 
+diff --git a/tests/e2e/test_t19b_agent_run_pages.py b/tests/e2e/test_t19b_agent_run_pages.py
+index cd51792..b2ccf4d 100644
+--- a/tests/e2e/test_t19b_agent_run_pages.py
++++ b/tests/e2e/test_t19b_agent_run_pages.py
+@@ -33,17 +33,12 @@ import time
+ import pytest
+ from playwright.sync_api import expect
+ 
+-from test_t19a_shell_fleet import (PORT, DEMO_PORT, _start, _stop, app, authed, base_url,  # noqa: F401
+-                                   browser_context_args, demo_url, seeded)
++from _waits import settle
+ 
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19b"
++from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
++                                   seeded)
+ 
+ 
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+ 
+ def _agent(page, aid):
+     page.goto(f"./#/agents/{aid}")
+@@ -325,7 +320,7 @@ def test_s5_no_horizontal_scroll_and_contrast(page, shot, seeded, which, w, h):
+         _agent(page, seeded["treasury_id"])
+     else:
+         _run(page, seeded["run_id"])
+-    page.wait_for_timeout(300)
++    settle(page)
+     assert _no_hscroll(page), f"horizontal scroll at {w}"
+     bad = page.evaluate(CONTRAST_JS)
+     assert not bad, f"AA contrast failures: {bad[:10]}"
+@@ -352,25 +347,24 @@ def test_s5_keyboard_focus_visible(page, shot, seeded, which):
+ @pytest.mark.parametrize("which", ["agent", "run"])
+ def test_s5_ui_never_mentions_claude(page, shot, seeded, which):
+     _agent(page, seeded["recon_id"]) if which == "agent" else _run(page, seeded["run_id"])
+-    page.wait_for_timeout(500)
++    if which == "agent":
++        expect(page.get_by_test_id("agent-header")).to_be_visible()  # content rendered before checking its text
++    settle(page)
+     assert not re.search(r"claude|anthropic", page.locator("body").inner_text(), re.I)
+     assert not re.search(r"claude|anthropic", page.content(), re.I)
+     shot("then")
+ 
+ 
+ def test_s5_loading_state_agent(page, shot, seeded):
+-    def slow(route):
+-        time.sleep(1.5)
+-        try:
+-            route.continue_()
+-        except Exception:
+-            pass  # page/context closed during teardown
+-    page.route(re.compile(r"/api/agents/[^/]+$"), slow)
++    held = []  # hold the agent response until the loading state has been asserted
++    page.route(re.compile(r"/api/agents/[^/]+$"), lambda r: held.append(r))
+     page.goto(f"./#/agents/{seeded['recon_id']}")
+     st = page.get_by_role("status").filter(has_text=re.compile("loading", re.I))
+     expect(st.first).to_be_visible()
+     assert page.locator("body").inner_text().strip() != ""
+     shot("then")
++    for route in held:
++        route.continue_()
+ 
+ 
+ def test_s5_error_state_agent_and_run(page, shot, seeded):
+@@ -443,7 +437,7 @@ def test_co_fleet_header_pinned_and_name_tooltip(page, shot, seeded):
+     last = page.get_by_test_id("fleet-row").last
+     last.scroll_into_view_if_needed()
+     page.mouse.wheel(0, 3000)
+-    page.wait_for_timeout(300)
++    settle(page)
+     th = page.get_by_role("columnheader", name=re.compile("Name", re.I))
+     expect(th).to_be_in_viewport()
+     assert 0 <= th.bounding_box()["y"] < 140, "table header not pinned while scrolling"
+diff --git a/tests/e2e/test_t19b_run2_captures.py b/tests/e2e/test_t19b_run2_captures.py
+deleted file mode 100644
+index b1b892a..0000000
+--- a/tests/e2e/test_t19b_run2_captures.py
++++ /dev/null
+@@ -1,214 +0,0 @@
+-"""T-19b run 2 full-page captures (1440 and 1024). Output: /mnt/data/ai-control-tower/qa/T-19b-run2/captures/."""
+-import json
+-import os
+-import re
+-import time
+-
+-import pytest
+-from playwright.sync_api import expect
+-
+-from test_t19a_shell_fleet import (PORT, DEMO_PORT, _start, _stop, app, authed, base_url,  # noqa: F401
+-                                   browser_context_args, demo_url, seeded)
+-from test_t19b_agent_run_pages import _mock_fleet
+-
+-OUT = "/mnt/data/ai-control-tower/qa/T-19b-run2/captures"
+-WIDTHS = [(1440, 900), (1024, 768)]
+-
+-
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(OUT, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", "/mnt/data/ai-control-tower/qa/T-19b-run2")
+-
+-
+-def _cap(page, name, setup):
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        setup()
+-        page.wait_for_timeout(400)
+-        page.screenshot(path=f"{OUT}/{name}-{w}.png", full_page=True)
+-
+-
+-def _timeline(page, rid):
+-    return page.request.get(f"./api/runs/{rid}/timeline").json()
+-
+-
+-def _longest_run(page, seeded):
+-    best = max((seeded["run_id"], seeded["run2_id"]), key=lambda r: len(_timeline(page, r)["events"]))
+-    return best, _timeline(page, best)
+-
+-
+-def _slow(route):
+-    time.sleep(3)
+-    try:
+-        route.continue_()
+-    except Exception:
+-        pass
+-
+-
+-def test_cap_agent_tier1_findings(page, seeded):
+-    _cap(page, "agent-tier1-findings", lambda: (page.goto(f"./#/agents/{seeded['treasury_id']}"),
+-         expect(page.get_by_role("heading", level=1)).to_be_visible(),
+-         expect(page.get_by_test_id("finding-item").first).to_be_visible()))
+-
+-
+-def test_cap_agent_empty(page, seeded):
+-    agents = page.request.get("./api/agents").json()
+-    empty = None
+-    for a in agents:
+-        f = page.request.get(f"./api/agents/{a['id']}/findings").json()
+-        r = page.request.get(f"./api/agents/{a['id']}/runs").json()
+-        if not f and not r:
+-            empty = a
+-            break
+-    assert empty, "no agent without findings and runs"
+-    print("EMPTY AGENT", empty["name"])
+-    _cap(page, "agent-empty", lambda: (page.goto(f"./#/agents/{empty['id']}"),
+-         expect(page.get_by_role("heading", level=1)).to_be_visible()))
+-
+-
+-def test_cap_agent_loading(page, seeded):
+-    page.route(re.compile(r"/api/agents/[^/]+(/[a-z]+)?$"), _slow)
+-
+-    def s():
+-        page.goto("about:blank")
+-        page.goto(f"./#/agents/{seeded['treasury_id']}")
+-        expect(page.get_by_role("status").first).to_be_visible()
+-        page.screenshot(path=f"{OUT}/agent-loading-{page.viewport_size['width']}.png", full_page=True)
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        s()
+-    page.unroute(re.compile(r"/api/agents/[^/]+(/[a-z]+)?$"))
+-
+-
+-def test_cap_agent_error(page, seeded):
+-    pat = re.compile(r"/api/agents/[^/]+$")
+-    page.route(pat, lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+-    _cap(page, "agent-error", lambda: (page.goto(f"./#/agents/{seeded['treasury_id']}"),
+-         expect(page.get_by_role("alert").first).to_be_visible()))
+-
+-
+-def test_cap_agent_card_error(page, seeded):
+-    page.route(re.compile(r"/api/agents/[^/]+/findings$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+-    _cap(page, "agent-card-error", lambda: (page.goto(f"./#/agents/{seeded['treasury_id']}"),
+-         expect(page.get_by_role("button", name="Try again").first).to_be_visible()))
+-
+-
+-def test_cap_run_default(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    _cap(page, "run-default", lambda: (page.goto(f"./#/runs/{rid}"),
+-         expect(page.get_by_test_id("timeline-event").first).to_be_visible()))
+-
+-
+-def test_cap_run_violation_filter(page, seeded):
+-    rid = seeded["run_id"]  # the drift run, which has violation events
+-
+-    def s():
+-        page.goto(f"./#/runs/{rid}")
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.get_by_role("group", name="Filter by event type").get_by_role("button", name="Violation").click()
+-    _cap(page, "run-violation-filter", s)
+-
+-
+-def test_cap_run_from_finding_span(page, seeded):
+-    def s():
+-        page.goto(f"./#/agents/{seeded['treasury_id']}")
+-        page.get_by_test_id("finding-timeline-link").first.click()
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.wait_for_timeout(600)
+-    _cap(page, "run-from-finding-span", s)
+-
+-
+-def _lengthened(route):
+-    resp = route.fetch()
+-    d = resp.json()
+-    done = False
+-    for e in d["events"]:
+-        if e.get("kind") == "tool_call" and not done:
+-            e["args_redacted"] = {f"field_{k}": "value " * 6 for k in range(30)}
+-            done = True
+-    route.fulfill(status=200, json=d)
+-
+-
+-def test_cap_run_long_payload(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    page.route(re.compile(r"/api/runs/[^/]+/timeline$"), _lengthened)  # intercepted: one tool-call payload lengthened
+-
+-    def load():
+-        page.goto(f"./#/runs/{rid}")
+-        page.reload()
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        t = page.locator('[data-testid="timeline-payload"][data-collapsed="true"]').first
+-        t.scroll_into_view_if_needed()
+-        return t
+-    _cap(page, "run-long-payload-collapsed", lambda: load())
+-
+-    def exp():
+-        t = load()
+-        t.locator("xpath=ancestor::*[@data-testid='timeline-event'][1]").get_by_test_id("payload-toggle").click()
+-    _cap(page, "run-long-payload-expanded", exp)
+-
+-
+-def test_cap_run_loading(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    page.route(re.compile(r"/api/runs/[^/]+/timeline$"), _slow)
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        page.goto("about:blank")
+-        page.goto(f"./#/runs/{rid}")
+-        expect(page.get_by_role("status").first).to_be_visible()
+-        page.screenshot(path=f"{OUT}/run-loading-{w}.png", full_page=True)
+-
+-
+-def test_cap_run_error(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    page.route(re.compile(r"/api/runs/[^/]+/timeline$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+-    _cap(page, "run-error", lambda: (page.goto(f"./#/runs/{rid}"),
+-         expect(page.get_by_role("alert").first).to_be_visible()))
+-
+-
+-def test_cap_run_empty_filter(page, seeded):
+-    rid, tl = _longest_run(page, seeded)
+-    kinds = {e["kind"] for e in tl["events"]}
+-    print("EVKEYS", [e for e in tl["events"] if e["kind"] == "tool_call"][:1])
+-    print("KINDS", kinds)
+-    labels = {"input": "Input", "model_call": "Model call", "tool_call": "Tool call"}
+-    missing = [l for k, l in labels.items() if k not in kinds]
+-    if not any(e.get("violation") or e.get("kind") == "violation" for e in tl["events"]):
+-        missing.append("Violation")
+-    if not missing:
+-        pytest.skip("every filter has events on the longest run")
+-    lab = missing[0]
+-    print("EMPTY FILTER", lab)
+-
+-    def s():
+-        page.goto(f"./#/runs/{rid}")
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.get_by_role("group", name="Filter by event type").get_by_role("button", name=lab).click()
+-    _cap(page, "run-empty-filter", s)
+-
+-
+-def test_cap_fleet_long_list_scrolled(page, seeded):
+-    _mock_fleet(page, page.request.get("./api/agents").json())
+-
+-    def s():
+-        page.goto("./#/")
+-        expect(page.get_by_test_id("fleet-row")).to_have_count(60)
+-        page.mouse.move(600, 500)
+-        page.mouse.wheel(0, 1500)
+-        page.wait_for_timeout(400)
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        s()
+-        page.screenshot(path=f"{OUT}/fleet-long-list-scrolled-{w}.png", full_page=False)  # viewport: shows pinned header
+-
+-
+-def test_cap_demo_banner_expanded(page, demo_url):
+-    def s():
+-        page.goto(demo_url + "#/")
+-        b = page.get_by_test_id("demo-banner")
+-        expect(b).to_be_visible()
+-        t = b.get_by_role("button", name=re.compile("stand-ins"))
+-        if t.get_attribute("aria-expanded") != "true":
+-            t.click()
+-    _cap(page, "demo-banner-expanded", s)
+diff --git a/tests/e2e/test_t19b_run3_captures.py b/tests/e2e/test_t19b_run3_captures.py
+deleted file mode 100644
+index 604f8ab..0000000
+--- a/tests/e2e/test_t19b_run3_captures.py
++++ /dev/null
+@@ -1,257 +0,0 @@
+-"""T-19b run 3 full-page captures (1440 and 1024). Output: /mnt/data/ai-control-tower/qa/T-19b-run3/captures/."""
+-import json
+-import os
+-import re
+-import time
+-
+-import pytest
+-from playwright.sync_api import expect
+-
+-from test_t19a_shell_fleet import (PORT, DEMO_PORT, _start, _stop, app, authed, base_url,  # noqa: F401
+-                                   browser_context_args, demo_url, seeded)
+-from test_t19b_agent_run_pages import _mock_fleet
+-
+-OUT = "/mnt/data/ai-control-tower/qa/T-19b-run3/captures"
+-WIDTHS = [(1440, 900), (1024, 768)]
+-
+-
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(OUT, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", "/mnt/data/ai-control-tower/qa/T-19b-run3")
+-
+-
+-def _cap(page, name, setup):
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        setup()
+-        page.wait_for_timeout(400)
+-        page.screenshot(path=f"{OUT}/{name}-{w}.png", full_page=True)
+-
+-
+-def _timeline(page, rid):
+-    return page.request.get(f"./api/runs/{rid}/timeline").json()
+-
+-
+-def _longest_run(page, seeded):
+-    best = max((seeded["run_id"], seeded["run2_id"]), key=lambda r: len(_timeline(page, r)["events"]))
+-    return best, _timeline(page, best)
+-
+-
+-def _slow(route):
+-    time.sleep(3)
+-    try:
+-        route.continue_()
+-    except Exception:
+-        pass
+-
+-
+-def test_cap_agent_tier1_findings(page, seeded):
+-    _cap(page, "agent-tier1-findings", lambda: (page.goto(f"./#/agents/{seeded['treasury_id']}"),
+-         expect(page.get_by_role("heading", level=1)).to_be_visible(),
+-         expect(page.get_by_test_id("finding-item").first).to_be_visible()))
+-
+-
+-def test_cap_agent_empty(page, seeded):
+-    agents = page.request.get("./api/agents").json()
+-    empty = None
+-    for a in agents:
+-        f = page.request.get(f"./api/agents/{a['id']}/findings").json()
+-        r = page.request.get(f"./api/agents/{a['id']}/runs").json()
+-        if not f and not r:
+-            empty = a
+-            break
+-    assert empty, "no agent without findings and runs"
+-    print("EMPTY AGENT", empty["name"])
+-    _cap(page, "agent-empty", lambda: (page.goto(f"./#/agents/{empty['id']}"),
+-         expect(page.get_by_role("heading", level=1)).to_be_visible()))
+-
+-
+-def test_cap_agent_loading(page, seeded):
+-    page.route(re.compile(r"/api/agents/[^/]+(/[a-z]+)?$"), _slow)
+-
+-    def s():
+-        page.goto("about:blank")
+-        page.goto(f"./#/agents/{seeded['treasury_id']}")
+-        expect(page.get_by_role("status").first).to_be_visible()
+-        page.screenshot(path=f"{OUT}/agent-loading-{page.viewport_size['width']}.png", full_page=True)
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        s()
+-    page.unroute(re.compile(r"/api/agents/[^/]+(/[a-z]+)?$"))
+-
+-
+-def test_cap_agent_error(page, seeded):
+-    pat = re.compile(r"/api/agents/[^/]+$")
+-    page.route(pat, lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+-    _cap(page, "agent-error", lambda: (page.goto(f"./#/agents/{seeded['treasury_id']}"),
+-         expect(page.get_by_role("alert").first).to_be_visible()))
+-
+-
+-def test_cap_agent_card_error(page, seeded):
+-    page.route(re.compile(r"/api/agents/[^/]+/findings$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+-    _cap(page, "agent-card-error", lambda: (page.goto(f"./#/agents/{seeded['treasury_id']}"),
+-         expect(page.get_by_role("button", name="Try again").first).to_be_visible()))
+-
+-
+-def test_cap_run_default(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    _cap(page, "run-default", lambda: (page.goto(f"./#/runs/{rid}"),
+-         expect(page.get_by_test_id("timeline-event").first).to_be_visible()))
+-
+-
+-def test_cap_run_violation_filter(page, seeded):
+-    rid = seeded["run_id"]  # the drift run, which has violation events
+-
+-    def s():
+-        page.goto(f"./#/runs/{rid}")
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.get_by_role("group", name="Filter by event type").get_by_role("button", name="Violation").click()
+-    _cap(page, "run-violation-filter", s)
+-
+-
+-def test_cap_run_from_finding_span(page, seeded):
+-    def s():
+-        page.goto(f"./#/agents/{seeded['treasury_id']}")
+-        page.get_by_test_id("finding-timeline-link").first.click()
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.wait_for_timeout(600)
+-    _cap(page, "run-from-finding-span", s)
+-
+-
+-def _lengthened(route):
+-    resp = route.fetch()
+-    d = resp.json()
+-    done = False
+-    for e in d["events"]:
+-        if e.get("kind") == "tool_call" and not done:
+-            e["args_redacted"] = {f"field_{k}": "value " * 6 for k in range(30)}
+-            done = True
+-    route.fulfill(status=200, json=d)
+-
+-
+-def test_cap_run_long_payload(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    page.route(re.compile(r"/api/runs/[^/]+/timeline$"), _lengthened)  # intercepted: one tool-call payload lengthened
+-
+-    def load():
+-        page.goto(f"./#/runs/{rid}")
+-        page.reload()
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        t = page.locator('[data-testid="timeline-payload"][data-collapsed="true"]').first
+-        t.scroll_into_view_if_needed()
+-        return t
+-    _cap(page, "run-long-payload-collapsed", lambda: load())
+-
+-    def exp():
+-        t = load()
+-        t.locator("xpath=ancestor::*[@data-testid='timeline-event'][1]").get_by_test_id("payload-toggle").click()
+-    _cap(page, "run-long-payload-expanded", exp)
+-
+-
+-def test_cap_run_loading(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    page.route(re.compile(r"/api/runs/[^/]+/timeline$"), _slow)
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        page.goto("about:blank")
+-        page.goto(f"./#/runs/{rid}")
+-        expect(page.get_by_role("status").first).to_be_visible()
+-        page.screenshot(path=f"{OUT}/run-loading-{w}.png", full_page=True)
+-
+-
+-def test_cap_run_error(page, seeded):
+-    rid, _ = _longest_run(page, seeded)
+-    page.route(re.compile(r"/api/runs/[^/]+/timeline$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+-    _cap(page, "run-error", lambda: (page.goto(f"./#/runs/{rid}"),
+-         expect(page.get_by_role("alert").first).to_be_visible()))
+-
+-
+-def test_cap_run_empty_filter(page, seeded):
+-    rid, tl = _longest_run(page, seeded)
+-    kinds = {e["kind"] for e in tl["events"]}
+-    print("EVKEYS", [e for e in tl["events"] if e["kind"] == "tool_call"][:1])
+-    print("KINDS", kinds)
+-    labels = {"input": "Input", "model_call": "Model call", "tool_call": "Tool call"}
+-    missing = [l for k, l in labels.items() if k not in kinds]
+-    if not any(e.get("violation") or e.get("kind") == "violation" for e in tl["events"]):
+-        missing.append("Violation")
+-    if not missing:
+-        pytest.skip("every filter has events on the longest run")
+-    lab = missing[0]
+-    print("EMPTY FILTER", lab)
+-
+-    def s():
+-        page.goto(f"./#/runs/{rid}")
+-        expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.get_by_role("group", name="Filter by event type").get_by_role("button", name=lab).click()
+-    _cap(page, "run-empty-filter", s)
+-
+-
+-def test_cap_fleet_long_list_scrolled(page, seeded):
+-    _mock_fleet(page, page.request.get("./api/agents").json())
+-
+-    def s():
+-        page.goto("./#/")
+-        expect(page.get_by_test_id("fleet-row")).to_have_count(60)
+-        page.mouse.move(600, 500)
+-        page.mouse.wheel(0, 1500)
+-        page.wait_for_timeout(400)
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        s()
+-        page.screenshot(path=f"{OUT}/fleet-long-list-scrolled-{w}.png", full_page=False)  # viewport: shows pinned header
+-
+-
+-def _old_demo_banner_expanded(page, demo_url):
+-    def s():
+-        page.goto(demo_url + "#/")
+-        b = page.get_by_test_id("demo-banner")
+-        expect(b).to_be_visible()
+-        t = b.get_by_role("button", name=re.compile("stand-ins"))
+-        if t.get_attribute("aria-expanded") != "true":
+-            t.click()
+-    _cap(page, "demo-banner-expanded", s)
+-
+-
+-def _banner(page, demo_url, expanded):
+-    page.goto(demo_url + "#/")
+-    b = page.get_by_test_id("demo-banner")
+-    expect(b).to_be_visible()
+-    t = b.get_by_role("button", name=re.compile("stand-ins"))
+-    if (t.get_attribute("aria-expanded") == "true") != expanded:
+-        t.click()
+-    expect(t).to_have_attribute("aria-expanded", "true" if expanded else "false")
+-
+-
+-def test_cap_demo_banner_expanded(page, demo_url):
+-    _cap(page, "demo-banner-expanded", lambda: _banner(page, demo_url, True))
+-
+-
+-def test_cap_demo_banner_collapsed(page, demo_url):
+-    _cap(page, "demo-banner-collapsed", lambda: _banner(page, demo_url, False))
+-
+-
+-def test_cap_fleet_banner_scrolled(page, demo_url, seeded, base_url):
+-    from test_t19b_agent_run_pages import _mock_fleet
+-    _mock_fleet(page, page.request.get(base_url + "api/agents").json())
+-    for w, h in WIDTHS:
+-        page.set_viewport_size({"width": w, "height": h})
+-        page.goto(demo_url + "#/")
+-        expect(page.get_by_test_id("demo-banner")).to_be_visible()
+-        expect(page.get_by_test_id("fleet-row")).to_have_count(60)
+-        page.mouse.move(600, 500)
+-        page.mouse.wheel(0, 1500)
+-        page.wait_for_timeout(400)
+-        page.screenshot(path=f"{OUT}/fleet-banner-scrolled-{w}.png", full_page=False)
+-
+-
+-def test_cap_run_two_violations_1440(page, seeded):
+-    page.set_viewport_size({"width": 1440, "height": 900})
+-    page.goto(f"./#/runs/{seeded['run_id']}")
+-    expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-    links = page.get_by_role("link", name=re.compile("finding"))
+-    expect(links.filter(has_text="View finding")).to_have_count(1)
+-    expect(links.filter(has_text="Included in finding")).to_have_count(1)
+-    page.get_by_role("link", name=re.compile("Included in finding")).scroll_into_view_if_needed()
+-    page.screenshot(path=f"{OUT}/run-two-violations-1440.png", full_page=True)
+diff --git a/tests/e2e/test_t19b_run4_captures.py b/tests/e2e/test_t19b_run4_captures.py
+index 09f8e0f..35aad90 100644
+--- a/tests/e2e/test_t19b_run4_captures.py
++++ b/tests/e2e/test_t19b_run4_captures.py
+@@ -1,31 +1,44 @@
+-"""T-19b run 4 full-page captures (1440 and 1024). Output: /mnt/data/ai-control-tower/qa/T-19b-run4/captures/."""
++"""T-19b run 4 full-page captures (1440 and 1024). Output: $QA_RUN_DIR/captures/ (default test-results/captures/). Marked capture: not part of regression runs."""
+ import json
+ import os
+ import re
+-import time
+-
+ import pytest
+ from playwright.sync_api import expect
+ 
+-from test_t19a_shell_fleet import (PORT, DEMO_PORT, _start, _stop, app, authed, base_url,  # noqa: F401
+-                                   browser_context_args, demo_url, seeded)
++from _waits import settle
++from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
++                                   seeded)
+ from test_t19b_agent_run_pages import _mock_fleet
+ 
+-OUT = "/mnt/data/ai-control-tower/qa/T-19b-run4/captures"
++OUT = os.path.join(os.environ.get("QA_RUN_DIR", "test-results"), "captures")  # honours QA_RUN_DIR
++pytestmark = pytest.mark.capture
+ WIDTHS = [(1440, 900), (1024, 768)]
+ 
+ 
++_HELD = []
++
++
+ @pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
++def _out_dir():
+     os.makedirs(OUT, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", "/mnt/data/ai-control-tower/qa/T-19b-run4")
++    yield
++    release()
++
++
++def release():
++    """Let held (slow) requests through."""
++    while _HELD:
++        try:
++            _HELD.pop().continue_()
++        except Exception:
++            pass  # page/context closed
+ 
+ 
+ def _cap(page, name, setup):
+     for w, h in WIDTHS:
+         page.set_viewport_size({"width": w, "height": h})
+         setup()
+-        page.wait_for_timeout(400)
++        settle(page)
+         page.screenshot(path=f"{OUT}/{name}-{w}.png", full_page=True)
+ 
+ 
+@@ -39,11 +52,8 @@ def _longest_run(page, seeded):
+ 
+ 
+ def _slow(route):
+-    time.sleep(3)
+-    try:
+-        route.continue_()
+-    except Exception:
+-        pass
++    """Hold the request (loading state) until release() / the end of the test."""
++    _HELD.append(route)
+ 
+ 
+ def test_cap_agent_tier1_findings(page, seeded):
+@@ -115,7 +125,7 @@ def test_cap_run_from_finding_span(page, seeded):
+         page.goto(f"./#/agents/{seeded['treasury_id']}")
+         page.get_by_test_id("finding-timeline-link").first.click()
+         expect(page.get_by_test_id("timeline-event").first).to_be_visible()
+-        page.wait_for_timeout(600)
++        settle(page)
+     _cap(page, "run-from-finding-span", s)
+ 
+ 
+@@ -196,7 +206,7 @@ def test_cap_fleet_long_list_scrolled(page, seeded):
+         expect(page.get_by_test_id("fleet-row")).to_have_count(60)
+         page.mouse.move(600, 500)
+         page.mouse.wheel(0, 1500)
+-        page.wait_for_timeout(400)
++        settle(page)
+     for w, h in WIDTHS:
+         page.set_viewport_size({"width": w, "height": h})
+         s()
+@@ -242,7 +252,7 @@ def test_cap_fleet_banner_scrolled(page, demo_url, seeded, base_url):
+         expect(page.get_by_test_id("fleet-row")).to_have_count(60)
+         page.mouse.move(600, 500)
+         page.mouse.wheel(0, 1500)
+-        page.wait_for_timeout(400)
++        settle(page)
+         page.screenshot(path=f"{OUT}/fleet-banner-scrolled-{w}.png", full_page=False)
+ 
+ 
+diff --git a/tests/e2e/test_t39_settings.py b/tests/e2e/test_t39_settings.py
+index 4fb56c8..8f882fa 100644
+--- a/tests/e2e/test_t39_settings.py
++++ b/tests/e2e/test_t39_settings.py
+@@ -1,7 +1,7 @@
+ """T-39 e2e: Settings page (ST-1..ST-7).
+ 
+-Own apps: A on 9893 (owner = DOMINO_PROJECT_OWNER "owner.user", generated secret key file, LLM_GATEWAY_URL set as a project
+-variable, demo off) and B on 9894 (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39-run3/.
++Own apps: A on a free port (owner = DOMINO_PROJECT_OWNER "owner.user", generated secret key file, LLM_GATEWAY_URL set as a project
++variable, demo off) and B on a free port (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39-run3/.
+ Identity: owner signs in with X-Domino-User "owner.user"; a non-admin with "plain.user".
+ data-testid / role contract (role/label/text locators are primary):
+   settings-page        page root at #/settings; h1 "Settings"; primary nav link "Settings" (every visitor, T-48 SR-1)
+@@ -30,20 +30,14 @@ import urllib.request
+ import pytest
+ from playwright.sync_api import expect
+ 
++from _waits import settle
++
+ ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
+-PORT_A, PORT_B, PORT_C = "9893", "9894", "9895"
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-39-run3"
+ OWNER = {"X-Domino-User-Id": "owner-1", "X-Domino-User": "owner.user"}
+ PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
+ SECRET = "s3cr3t-VALUE-9f8e7d6c"
+ 
+ 
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+-
+ # Every env var that names a setting the page manages: stripped so results do not depend on the workspace.
+ def _managed_env():
+     """Every env name declared by backend/settings.py (derived so it cannot drift), plus legacy unprefixed names."""
+@@ -59,73 +53,25 @@ def _managed_env():
+ _MANAGED_ENV = _managed_env()
+ 
+ 
+-def _start(tmp, port, extra):
+-    if shutil.which("fuser"):
+-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
+-    time.sleep(1)
+-    env = {k: v for k, v in os.environ.items()
+-           if not k.startswith(("ACT_DEMO", "ACT_SECRET", "LLM_GATEWAY")) and k not in _MANAGED_ENV}
+-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0", "ACT_DB": str(tmp / "act.db"),
+-                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": "owner.user",
+-                "ACT_WORKSPACE_OWNER_MODE": "0"})  # explicit: a Workspace would otherwise auto-enable owner mode
+-    env.update(extra)
+-    log = tmp / "app.log"
+-    logf = open(log, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+-    url, deadline = None, time.time() + 300
+-    while time.time() < deadline and url is None and proc.poll() is None:
+-        m = re.search(r"APP_URL=(\S+)", log.read_text())
+-        if m:
+-            url = m.group(1)
+-        else:
+-            time.sleep(0.5)
+-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
+-
+-    def ok(u):
+-        try:
+-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-        except Exception:
+-            return False
+-    for _ in range(30):
+-        if ok(url):
+-            break
+-        time.sleep(1)
+-    else:
+-        url = f"http://localhost:{port}/"
+-    return proc, logf, url
+-
+-
+-def _stop(proc, logf):
+-    try:
+-        os.killpg(proc.pid, signal.SIGTERM)
+-    except ProcessLookupError:
+-        pass
+-    try:
+-        proc.wait(timeout=20)
+-    except Exception:
+-        os.killpg(proc.pid, signal.SIGKILL)
+-    logf.close()
++def _app(apps, extra):
++    # owner mode pinned off explicitly: a Workspace would otherwise auto-enable it
++    return apps(external=False, strip_env=_MANAGED_ENV | {"LLM_GATEWAY_URL"},
++                extra_env={"DOMINO_PROJECT_OWNER": "owner.user", "ACT_WORKSPACE_OWNER_MODE": "0", **extra}).url
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app_a(tmp_path_factory):
+-    p = _start(tmp_path_factory.mktemp("t39a"), PORT_A, {"LLM_GATEWAY_URL": "http://gateway.invalid/"})
+-    yield p[2]
+-    _stop(p[0], p[1])
++def app_a(apps):
++    return _app(apps, {"LLM_GATEWAY_URL": "http://gateway.invalid/"})
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app_b(tmp_path_factory):
+-    p = _start(tmp_path_factory.mktemp("t39b"), PORT_B, {"ACT_SECRET_KEY": "e2e-test-secret-key-0123456789abcdef"})
+-    yield p[2]
+-    _stop(p[0], p[1])
++def app_b(apps):
++    return _app(apps, {"ACT_SECRET_KEY": "e2e-test-secret-key-0123456789abcdef"})
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app_c(tmp_path_factory):
+-    p = _start(tmp_path_factory.mktemp("t39c"), PORT_C, {"ACT_DEMO_MODE": "1"})
+-    yield p[2]
+-    _stop(p[0], p[1])
++def app_c(apps):
++    return _app(apps, {"ACT_DEMO_MODE": "1"})
+ 
+ 
+ @pytest.fixture(scope="module")
+@@ -331,16 +277,13 @@ def test_st7_plain_field_saved_confirmation_and_persists(page, shot, owner):
+ 
+ 
+ def test_st7_loading_state(page, shot, owner):
+-    def slow(route):
+-        time.sleep(1.5)
+-        try:
+-            route.continue_()
+-        except Exception:
+-            pass  # target closed
+-    page.route(re.compile(r"/api/settings$"), slow)
++    held = []  # hold the settings response until the loading state has been asserted
++    page.route(re.compile(r"/api/settings$"), lambda r: held.append(r))
+     page.goto("./#/settings")
+     expect(page.get_by_role("status").filter(has_text=re.compile("loading", re.I)).first).to_be_visible()
+     shot("then")
++    for route in held:
++        route.continue_()
+ 
+ 
+ def test_st7_error_states(page, shot, owner):
+@@ -382,7 +325,7 @@ CONTRAST_JS = """() => {
+ def test_st7_no_hscroll_and_contrast(page, shot, owner, w, h):
+     page.set_viewport_size({"width": w, "height": h})
+     _open(page)
+-    page.wait_for_timeout(300)
++    settle(page)
+     assert page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+     bad = page.evaluate(CONTRAST_JS)
+     assert not bad, bad[:10]
+diff --git a/tests/e2e/test_t48_settings_reachable.py b/tests/e2e/test_t48_settings_reachable.py
+index bce5214..4e5ecf5 100644
+--- a/tests/e2e/test_t48_settings_reachable.py
++++ b/tests/e2e/test_t48_settings_reachable.py
+@@ -9,7 +9,7 @@
+     holding its label and help text; env-set values read "set by environment variable <ENV>" and are read-only.
+   Access: setting-admins editable; data-testid=admins-fixed-owner shows the project owner as a fixed admin.
+   Clear: secret fields' confirm button is exactly "Clear key"; non-secret fields' is exactly "Clear value".
+-Apps: W (workspace owner mode, no headers = owner.user) on 9896, N (owner mode off) on 9897, D (demo on, owner mode) on 9898.
++Apps: W (workspace owner mode, no headers = owner.user), N (owner mode off), D (demo on, owner mode); each on a free port, started once per run (conftest registry).
+ """
+ import os
+ import pathlib
+@@ -28,84 +28,29 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+ sys.path.insert(0, str(ROOT))
+ from backend.settings import DEFS  # noqa: E402
+ 
+-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-48-run1"
+ PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
+ OWNER_NAME = "owner.user"
+ SECRET = "s3cr3t-VALUE-48aa"
+ _MANAGED = {d["env"] for d in DEFS.values()} | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "DOMINO_RUN_HOST_PATH"}
+ 
+ 
+-@pytest.fixture(autouse=True)
+-def _qa_dir(monkeypatch):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
+-
+-
+-def _start(tmp, port, extra):
+-    if shutil.which("fuser"):
+-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
+-    time.sleep(1)
+-    env = {k: v for k, v in os.environ.items() if k not in _MANAGED and not k.startswith("ACT_")}
+-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0", "ACT_DB": str(tmp / "act.db"),
+-                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": OWNER_NAME})
+-    env.update(extra)
+-    log = tmp / "app.log"
+-    logf = open(log, "w")
+-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+-    url, deadline = None, time.time() + 300
+-    while time.time() < deadline and url is None and proc.poll() is None:
+-        m = re.search(r"APP_URL=(\S+)", log.read_text())
+-        if m:
+-            url = m.group(1)
+-        else:
+-            time.sleep(0.5)
+-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
+-
+-    def ok(u):
+-        try:
+-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
+-        except Exception:
+-            return False
+-    for _ in range(30):
+-        if ok(url):
+-            break
+-        time.sleep(1)
+-    else:
+-        url = f"http://localhost:{port}/"
+-    return proc, logf, url
+-
+-
+-def _stop(proc, logf):
+-    try:
+-        os.killpg(proc.pid, signal.SIGTERM)
+-    except ProcessLookupError:
+-        pass
+-    try:
+-        proc.wait(timeout=20)
+-    except Exception:
+-        os.killpg(proc.pid, signal.SIGKILL)
+-    logf.close()
+-
+-
+-def _app(tmp_path_factory, name, port, extra):
+-    p = _start(tmp_path_factory.mktemp(name), port, extra)
+-    yield p[2]
+-    _stop(p[0], p[1])
++def _app(apps, extra):
++    return apps(external=False, strip_env=_MANAGED, extra_env={"DOMINO_PROJECT_OWNER": OWNER_NAME, **extra}).url
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app_w(tmp_path_factory):
+-    yield from _app(tmp_path_factory, "t48w", "9896", {"ACT_WORKSPACE_OWNER_MODE": "1", "LLM_GATEWAY_URL": "http://gateway.invalid/"})
++def app_w(apps):
++    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "LLM_GATEWAY_URL": "http://gateway.invalid/"})
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app_n(tmp_path_factory):
+-    yield from _app(tmp_path_factory, "t48n", "9897", {"ACT_WORKSPACE_OWNER_MODE": "0"})
++def app_n(apps):
++    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "0"})
+ 
+ 
+ @pytest.fixture(scope="module")
+-def app_d(tmp_path_factory):
+-    yield from _app(tmp_path_factory, "t48d", "9898", {"ACT_WORKSPACE_OWNER_MODE": "1", "ACT_DEMO_MODE": "1"})
++def app_d(apps):
++    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "ACT_DEMO_MODE": "1"})
+ 
+ 
+ @pytest.fixture

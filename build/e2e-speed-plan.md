@@ -62,3 +62,11 @@ Also: code review and design review keep running in parallel with the UI run (th
 - Fixed waits: test_cap_agent_loading 36.3 s (x3 files), test_t15 test_d10_off_by_default 35.8 s, cap_run_loading ~6.5 s (x3).
 - Other files: t39 126.2, t19b pages 111.9, t19a shell 96.7, t15 83.9, t18 56.7, t19a p2 36.2, t10 31.4, t9 18.4, t12 17.8, t13 8.5, t14 0.9.
 Expected after B-E: drop ~500 s of captures, ~6 x 36 s of app starts, ~150 s of fixed waits -> about 5-6 min serial on Small. Raw output: qa/e2e-baseline/{run.txt,full.txt}.
+
+## After T-47 (111aa6a, serial, Small, 2026-11-12)
+| | Pass count | Wall time |
+|---|---|---|
+| main 46da0a2, captures excluded | 175 | 674.7 s |
+| T-47 default (captures excluded) | 177 (175 + 2 guard tests) | 126-128 s (3 runs) |
+| T-47 `-m smoke` | 15 | 16.7 s |
+Biggest single cause, not in the original plan: start_app polled the Domino proxy URL (APP_URL), unreachable from inside the workspace, 30 times -> ~33 s per app start. Now waits on localhost + one 3 s proxy probe: 2-4 s per start. App starts per run 13 -> 9 (seeded, unseeded, demo, 3 x T-39 env, 3 x T-48 env).
