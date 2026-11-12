@@ -491,3 +491,4 @@ Two sequential parts, two builders:
   - env: ACT_PUBLIC_URL = the App URL (for the provider return links); the existing ACT_* vars from the workspace that the app needs (names only); no secrets printed
   - the App serves the real DB on the dataset
   Then smoke-check the App URL (health, #/connections, #/fleet). Record the App id + URL in STATUS.md and plan.md. If publishing needs a choice that isn't Nick's standing rule (e.g. visibility), use the most private option and report.
+- PO-6 r2 b129d5c + r3 f75b358 (final round): design items fixed (per-scope counts sum, full-opacity rows, why-panel padding, manual vs scheduled sync labels); 51 e2e + 19 backend + 24 smoke pass. MERGED a3732bc. 9100 preview restarted on main. Worktree removed.
