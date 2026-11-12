@@ -103,7 +103,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
   const setLine = !entry.locked && !unreadable && entry.is_set
     ? `Set · changed by ${entry.changed_by} on ${when(entry.changed_at)}` : ''
   let badge = null
-  if (entry.locked) badge = <Badge tone="lock">Set by project variable</Badge>
+  if (entry.locked) badge = <Badge tone="lock">Set by environment variable {entry.env}</Badge>
   else if (unreadable) badge = <Badge tone="warn">Re-enter</Badge>
   else if (entry.is_set && layout === 'row') badge = <Badge tone="ok">Set</Badge>
   else if (!entry.is_set && layout === 'row') badge = <Badge>Not set</Badge>
@@ -193,6 +193,15 @@ function DemoCard({ entry, onChange }) {
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
   const on = !!entry.value
+  const [realN, setRealN] = React.useState(null)
+  const openAsk = () => {
+    setAsk(true)
+    if (on) { setRealN(null); settingsApi.realAgentCount().then((r) => setRealN(r.real_agent_count)).catch(() => setRealN(undefined)) }
+  }
+  const offBody = realN === null ? 'Checking your real data…'
+    : realN === undefined ? 'The app goes back to your real database. Demo data stays in its own database.'
+    : realN > 0 ? `You'll see your ${realN} real agent${realN === 1 ? '' : 's'}. The app goes back to your real database; demo data stays in its own database.`
+    : 'No real agents yet: Fleet will be empty until you register or import agents. Demo data stays in its own database.'
   const flip = async () => {
     setAsk(false); setBusy(true); setErr('')
     try {
@@ -209,12 +218,12 @@ function DemoCard({ entry, onChange }) {
       <div className="st-demo" data-testid="setting-demo_mode">
         <div className="st-ctl">
           <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-h" aria-describedby="st-demo-help"
-                  className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
-          {entry.locked && <Badge tone="lock">Set by project variable</Badge>}
+                  className="st-switch" disabled={entry.locked || busy} onClick={openAsk}><span className="st-knob" /></button>
+          {entry.locked && <Badge tone="lock">Set by environment variable {entry.env}</Badge>}
           <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
         </div>
         <div id="st-demo-help" className={err ? 'st-hint st-hint-error' : 'st-hint'} role={err ? 'alert' : undefined}>
-          {err ? <>{Icon.err}<span>{err}</span> <Button onClick={() => setAsk(true)}>Retry</Button></> : <>
+          {err ? <>{Icon.err}<span>{err}</span> <Button onClick={openAsk}>Retry</Button></> : <>
             <span className="st-help st-help-strong">{on ? 'Demo mode is on. You are seeing simulated data.' : 'Demo mode is off. You are seeing your real data.'}</span>
             <span className="st-help">{entry.help} Turning it on switches to a separate demo database with simulated agents, runs and approver. Your real data is never changed.</span>
             {entry.locked && <span className="st-help st-env">Set by environment variable <code>{entry.env}</code>. Change it there.</span>}
@@ -224,7 +233,7 @@ function DemoCard({ entry, onChange }) {
       {ask && (
         <ConfirmDialog
           title={on ? 'Turn demo mode off?' : 'Turn demo mode on?'}
-          body={on ? 'The app goes back to your real database. If no real data is loaded yet, Fleet will be empty until you register or import agents. Demo data stays in its own database.'
+          body={on ? offBody
             : 'The app switches to a separate demo database with simulated agents, runs and a simulated approver. Your real database is not touched.'}
           onConfirm={flip} onCancel={() => setAsk(false)} />
       )}

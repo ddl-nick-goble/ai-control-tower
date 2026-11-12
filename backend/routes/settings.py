@@ -2,7 +2,9 @@
 import os
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from .. import settings
+from sqlalchemy import func, select
+
+from .. import db, settings
 from ..domino_identity import User, require_user
 
 router = APIRouter()
@@ -21,6 +23,13 @@ def access(user: User = Depends(require_user)):
     return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured(),
             "user": user.username, "via": user.via,
             "owner": (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()}
+
+
+@router.get("/api/settings/real-agent-count")
+def real_agent_count(_user: User = Depends(require_admin)):
+    """Agents in the real (non-demo) DB, so the demo-off confirm can say what will be shown."""
+    with db.real_engine.connect() as cx:
+        return {"real_agent_count": cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0}
 
 
 @router.get("/api/settings")
