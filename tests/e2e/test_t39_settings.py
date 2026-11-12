@@ -1,7 +1,7 @@
 """T-39 e2e: Settings page (ST-1..ST-7).
 
-Own apps: A on 9893 (owner = DOMINO_PROJECT_OWNER "owner.user", generated secret key file, LLM_GATEWAY_URL set as a project
-variable, demo off) and B on 9894 (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39-run3/.
+Own apps: A on a free port (owner = DOMINO_PROJECT_OWNER "owner.user", generated secret key file, LLM_GATEWAY_URL set as a project
+variable, demo off) and B on a free port (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39-run3/.
 Identity: owner signs in with X-Domino-User "owner.user"; a non-admin with "plain.user".
 data-testid / role contract (role/label/text locators are primary):
   settings-page        page root at #/settings; h1 "Settings"; primary nav link "Settings" (every visitor, T-48 SR-1)
