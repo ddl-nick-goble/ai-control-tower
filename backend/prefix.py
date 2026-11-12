@@ -35,7 +35,7 @@ class ProxyPrefixMiddleware:
                 await send({"type": "http.response.body", "body": b""})
                 return
             rest = "/"
-        scope = dict(scope, path=rest)
+        scope = dict(scope, path=rest, root_path=prefix)
         if scope.get("raw_path"):
             scope["raw_path"] = rest.encode("latin-1", "ignore")
         await self.app(scope, receive, send)

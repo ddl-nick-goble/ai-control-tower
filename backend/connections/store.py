@@ -3,6 +3,7 @@
 States: draft -> waiting -> trusted -> verified | partial -> connected, plus needs_attention | failed, and
 disconnected (DELETE keeps the row and its agents). Always read db.engine at call time so the demo-mode DB switch works.
 """
+import copy
 import os
 import secrets
 import time
@@ -76,13 +77,12 @@ def _tree_ids(nodes):
 
 
 def scope_tree(row) -> list:
-    """The scope tree with `selected` filled in (everything by default). Live trees come from the provider adapter
-    (PO-3); until then a live connection has none."""
-    if not row["sample"]:
-        tree = _adapter_scopes(row)
-    else:
-        tree = sample.tree(row["provider"])
-    chosen = (row["scopes"] or {}).get("selected")
+    """The scope tree with `selected` filled in (everything by default). Sample tenants come from fixtures; live
+    trees are the one cached in the connection's scopes JSON by refresh_tree() (never computed here, so GET
+    list/view stay cheap and offline)."""
+    scopes = row["scopes"] or {}
+    tree = sample.tree(row["provider"]) if row["sample"] else copy.deepcopy(scopes.get("tree") or [])
+    chosen = scopes.get("selected")
 
     def mark(nodes):
         for n in nodes:
@@ -92,18 +92,51 @@ def scope_tree(row) -> list:
     return mark(tree)
 
 
-def _adapter(provider):
+NOT_LIVE = {"name": "Live account", "detail": "", "required": True, "ok": False,
+            "fix": "ACT is not connected to a live account yet. Finish the setup step so ACT can sign in, "
+                   "or use a sample connection to walk the flow now."}
+
+
+def _live_context(row):
+    """-> (adapter, creds, problem). `problem` is a checklist item when the adapter or credentials are missing."""
+    from adapters import get_adapter
+    from . import federation
+    adapter = get_adapter(row["provider"])
+    if adapter is None:
+        return None, None, {"name": "Provider adapter", "detail": "", "required": True, "ok": False,
+                            "fix": f"Live access checks for {row['provider']} arrive with its adapter. "
+                                   "Use a sample connection to walk the flow now."}
+    cfg = dict(row["config"] or {})
+    if row["provider"] == "aws" and not cfg.get("role_arn"):
+        cfg["role_arn"] = cfg.get("aws_role_arn") or cfg.get("role")
+    needed = {"aws": "role_arn", "google": "audience", "microsoft": "tenant_id", "databricks": "host",
+              "snowflake": "account"}[row["provider"]]
+    if row["provider"] == "google" and not cfg.get("audience") and cfg.get("gcp_wif_provider"):
+        cfg["audience"] = "//iam.googleapis.com/" + cfg["gcp_wif_provider"].lstrip("/")
+    if not cfg.get(needed):
+        return adapter, None, NOT_LIVE
     try:
-        import importlib
-        return importlib.import_module(f"adapters.{provider}")
-    except ImportError:
-        return None
+        return adapter, federation.exchange(row["provider"], cfg), None
+    except Exception as e:  # noqa: BLE001 - shown to the user as a fix, never a traceback
+        return adapter, None, {"name": "Sign in to the provider", "detail": str(e)[:200], "required": True,
+                               "ok": False, "fix": "ACT could not get a credential from the provider. "
+                               "Check the trust setup and try again."}
 
 
-def _adapter_scopes(row) -> list:
-    mod = _adapter(row["provider"])
-    fn = getattr(mod, "list_scopes", None)
-    return fn(row["config"] or {}) if fn else []
+def refresh_tree(cx, row, ctx=None):
+    """Compute the live scope tree through the adapter and cache it in scopes JSON. Called from /scopes and /check
+    only. Returns the fresh row."""
+    if row["sample"]:
+        return row
+    adapter, creds, problem = ctx or _live_context(row)
+    if problem is None:
+        try:
+            tree = adapter.list_scopes(row["config"] or {}, creds)
+        except NotImplementedError:
+            return row
+        _set(cx, row["id"], scopes={**(row["scopes"] or {}), "tree": tree})
+        return _row(cx, row["id"])
+    return row
 
 
 def view(cx, row) -> dict:
@@ -169,6 +202,9 @@ def use_callback(token: str, extra: dict):
         if row is None:
             return False, ("ACT doesn't recognise that setup link. Go back to ACT, start the connection again "
                            "and use the new link."), None
+        if row["state"] in TRUSTED_OR_LATER:
+            return True, (f"This setup link was already used and {row['provider']} is already trusted, so there is "
+                          "nothing more to do. You can close this tab."), dict(row)
         if row["token_used"] or row["state"] not in ("draft", "waiting"):
             return False, ("This setup link was already used. Go back to ACT; "
                            "if the connection isn't ready, start it again for a fresh link."), None
@@ -219,7 +255,7 @@ def run_check(cid, actor):
                 db.connection_checks.c.connection_id == cid)).scalar() or 0
             perms = sample.permissions(row["provider"], recheck=before > 0)
         else:
-            perms = _live_check(row)
+            perms = _live_check(cx, row)
         required_missing = any(not p["ok"] and p.get("required") for p in perms)
         state = "needs_attention" if required_missing and not row["sample"] else \
             "verified" if all(p["ok"] for p in perms) else "partial"
@@ -233,14 +269,18 @@ def run_check(cid, actor):
                 "last_check": ts}
 
 
-def _live_check(row) -> list:
-    fn = getattr(_adapter(row["provider"]), "test_connection", None)
-    if fn is None:
-        return [{"name": "Provider adapter", "detail": "", "required": True, "ok": False,
-                 "fix": f"Live access checks for {row['provider']} arrive with its adapter. "
-                        "Use a sample connection to walk the flow now."}]
+def _live_check(cx, row) -> list:
+    adapter, creds, problem = _live_context(row)
+    if problem is not None:
+        return [problem]
+    try:
+        items = adapter.test_connection(row["config"] or {}, creds)
+    except NotImplementedError:
+        items = [{"name": "Provider adapter", "ok": False, "required": True,
+                  "fix": f"Live access checks for {row['provider']} arrive with its adapter."}]
+    refresh_tree(cx, row, (adapter, creds, None))
     return [{"name": p.get("name"), "detail": p.get("detail", ""), "required": bool(p.get("required")),
-             "ok": bool(p.get("ok")), "fix": p.get("fix")} for p in fn(row["config"] or {})]
+             "ok": bool(p.get("ok")), "fix": p.get("fix")} for p in items]
 
 
 def save_scopes(cid, selected: list):
@@ -252,7 +292,7 @@ def save_scopes(cid, selected: list):
         unknown = [s for s in selected if s not in valid]
         if unknown:
             raise ConnectionError_(f"Unknown scope: {unknown[0]}", 400)
-        _set(cx, cid, scopes={"selected": list(dict.fromkeys(selected))})
+        _set(cx, cid, scopes={**(row["scopes"] or {}), "selected": list(dict.fromkeys(selected))})
         return scope_tree(_row(cx, cid))
 
 
@@ -268,9 +308,14 @@ def disconnect(cid, actor):
 
 
 def tree_for(cid):
+    """/scopes: refreshes a live connection's cached tree first."""
     with db.engine.begin() as cx:
         row = _row(cx, cid)
-        return None if row is None else scope_tree(row)
+        if row is None:
+            return None
+        if not row["sample"] and row["state"] in TRUSTED_OR_LATER:
+            row = refresh_tree(cx, row)
+        return scope_tree(row)
 
 
 def provider_of(cid):

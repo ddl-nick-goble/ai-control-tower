@@ -42,6 +42,8 @@ available it serves the existing build without failing. **A published Domino App
 | Second approver | Control is real; the demo uses a simulated second user | Sign in as a second Domino user |
 | External agent cards | Fixture card served from localhost | `ACT_EXTERNAL_ALLOW_HOSTS`, `ACT_TRUSTED_JWKS_PATH` |
 
+**`ACT_PUBLIC_URL`**: the App's public base URL (no trailing slash), used for the setup links in "Connect a provider". Set it for a published App, e.g. `https://<domino-host>/apps/<app-id>`. When unset, ACT builds it from `X-Forwarded-Host` / `X-Forwarded-Proto` plus the Domino proxy prefix (this also works in the workspace App Preview).
+
 Details and go-live steps are in [docs/INTEGRATION.md](docs/INTEGRATION.md).
 
 ## Tests

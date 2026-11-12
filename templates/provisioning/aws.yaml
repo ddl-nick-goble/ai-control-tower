@@ -26,12 +26,12 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/se-demo.domino.tech/auth/realms/DominoRealm"
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/{{ISSUER_HOSTPATH}}"
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
-                "se-demo.domino.tech/auth/realms/DominoRealm:aud": "{{AUDIENCE}}"
-                "se-demo.domino.tech/auth/realms/DominoRealm:sub": "{{SUBJECT}}"
+                "{{ISSUER_HOSTPATH}}:aud": "{{AUDIENCE}}"
+                "{{ISSUER_HOSTPATH}}:sub": "{{SUBJECT}}"
       Policies:
         - PolicyName: ACT-ReadOnly
           PolicyDocument:

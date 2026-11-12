@@ -12,14 +12,25 @@ from ..domino_identity import User, require_user
 router = APIRouter()
 
 
+def _first(value: str) -> str:
+    return (value or "").split(",")[0].strip()
+
+
 def _public_base(request: Request) -> str:
-    """The App's public URL, no trailing slash: ACT_PUBLIC_URL, else the request URL plus the Domino run path."""
+    """The App's public URL, no trailing slash. ACT_PUBLIC_URL wins (set it for a published App). Otherwise the
+    forwarded host and proto (X-Forwarded-Host / X-Forwarded-Proto, else Host and the request scheme) plus the
+    proxy prefix the middleware stripped (scope root_path, which covers the workspace preview
+    .../notebookSession/<id>/proxy/<port>). With no prefix seen, DOMINO_RUN_HOST_PATH is appended."""
     explicit = (os.environ.get("ACT_PUBLIC_URL") or "").strip().rstrip("/")
     if explicit:
         return explicit
-    base = str(request.base_url).rstrip("/")
-    path = (os.environ.get("DOMINO_RUN_HOST_PATH") or "").rstrip("/")
-    return base if not path or base.endswith(path) else base + path
+    h = request.headers
+    proto = _first(h.get("x-forwarded-proto")) or request.url.scheme
+    host = _first(h.get("x-forwarded-host")) or h.get("host") or request.url.netloc
+    path = (request.scope.get("root_path") or "").rstrip("/")
+    if not path:
+        path = (os.environ.get("DOMINO_RUN_HOST_PATH") or "").rstrip("/")
+    return f"{proto}://{host}{path}"
 
 
 def _guard(fn, *a):
@@ -50,8 +61,10 @@ def list_connections(_user: User = Depends(require_user)):
 
 @router.get("/api/connections/callback")
 def callback(request: Request, state: str = ""):
-    """The return link from the cloud step. Open to any tab: the single-use state token is the proof.
-    Extra query values (role, project, account...) are kept on the connection."""
+    """The API behind the UI's callback page (the setup artifact's link lands on the SPA hash route, which calls this).
+    Open to any tab: the single-use state token is the proof. STATE CHANGE ON GET: a valid, unused token moves the
+    connection to trusted and stores the extra query values (role, project, account...) on it. A repeat with the
+    same token on an already-trusted connection answers ok with a note and changes nothing."""
     ok, message, row = store.use_callback(state, {k: v for k, v in request.query_params.items()})
     return {"ok": ok, "message": message, "connection_id": row["id"] if row else None,
             "provider": row["provider"] if row else None, "state": row["state"] if row else None}

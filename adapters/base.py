@@ -60,6 +60,26 @@ class AdapterBase:
     def list_runs(self, native_id: str, since=None) -> list:
         return []
 
+    # ---- Connections contract (PO-3 implements these per provider) ----
+    # `cfg` is the connection's config dict; `creds` is what backend.connections.federation.exchange() returned
+    # (a fresh provider credential, never stored).
+    def auth_methods(self) -> list:
+        """The ways ACT can authenticate to this provider, e.g. ["workload_identity"]."""
+        return ["workload_identity"]
+
+    def test_connection(self, cfg: dict, creds: dict) -> list:
+        """-> [{name, detail, required, ok, fix}], one item per permission or reachability check."""
+        return [{"name": "Provider access check", "detail": "", "required": True, "ok": False,
+                 "fix": f"Live access checks for {self.platform or 'this provider'} are not available yet."}]
+
+    def list_scopes(self, cfg: dict, creds: dict) -> list:
+        """-> scope tree [{id, name, kind, children: [...]}] (accounts, projects, workspaces...)."""
+        raise NotImplementedError
+
+    def discover(self, cfg: dict, creds: dict, scopes: list, progress=None) -> list:
+        """-> [SourceAgent] found in the selected scope ids. `progress(done, total, message)` is optional."""
+        raise NotImplementedError
+
 
 def fixtures_dir() -> Path:
     return Path(os.environ.get("ACT_FIXTURES_DIR") or ROOT / "fixtures")
