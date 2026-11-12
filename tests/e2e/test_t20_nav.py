@@ -11,7 +11,7 @@ from playwright.sync_api import expect
 from _waits import settle
 
 ORDER = ["Home", "Fleet", "Findings", "Policies", "Connections", "Audit"]
-PLACEHOLDERS = ["home", "findings", "policies", "connections", "audit"]
+PLACEHOLDERS = ["home", "findings", "policies", "audit"]  # Connections is the PO-5 gallery, not a placeholder
 
 
 @pytest.fixture(scope="module")
@@ -176,7 +176,7 @@ def test_n4_narrow_nav_wraps_or_scrolls_inside(page, shot, width):
 
 
 # ---------------------------------------------------------------- N-5
-@pytest.mark.parametrize("route", PLACEHOLDERS + ["register"])
+@pytest.mark.parametrize("route", PLACEHOLDERS + ["connections", "register"])
 def test_n5_deep_links_relative(page, shot, route):
     bad = []
     page.on("response", lambda r: bad.append((r.url, r.status)) if r.status >= 400 else None)
@@ -186,9 +186,12 @@ def test_n5_deep_links_relative(page, shot, route):
     expect(page.get_by_role("heading", level=1)).to_be_visible()
     page.reload()
     expect(page.get_by_role("heading", level=1)).to_be_visible()
-    if route != "register":
+    if route == "connections":
+        expect(page.get_by_test_id("provider-gallery")).to_be_visible()
+    elif route != "register":
         expect(page.get_by_test_id("page-title")).to_be_visible()
-    assert page.url.endswith(f"#/{route}")
+    # /register redirects to /connections/add-by-url (PO-5.1)
+    assert page.url.endswith("#/connections/add-by-url" if route == "register" else f"#/{route}")
     html = page.content()
     assert not re.search(r'(?:src|href)="/(?!/)', html), "root-absolute asset URL breaks the proxy prefix"
     assert not bad, bad

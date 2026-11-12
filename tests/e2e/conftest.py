@@ -143,6 +143,7 @@ SMOKE = {
     "test_t19b_agent_run_pages": {"test_s3_header_name_chip_tier_status_actions_right",
                                   "test_s4_header_run_id_copy_agent_link_range_count",
                                   "test_s6_existing_testids_on_agent_and_run"},
+    "test_po5_connect_wizard": {"test_po52_gallery_six_cards_plus_other", "test_po53_aws_sample_walk"},
     "test_t48_settings_reachable": {"test_sr1_owner_nav_link_with_gear", "test_sr4_lists_exactly_defs_grouped"},
 }
 
