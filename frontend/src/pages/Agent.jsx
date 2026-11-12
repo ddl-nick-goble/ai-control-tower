@@ -413,7 +413,6 @@ function AgentView({ id }) {
           <Validation id={id} />
           <Governance gov={gov.data} error={gov.error} onRetry={() => setRev((r) => r + 1)} />
           <Dependencies id={id} />
-          <div id="evidence-pack-slot" data-slot="evidence-pack" className="ag-ord-5"><EvidencePack pack={pack} /></div>
         </div>
         <div className="ag-side">
           <Overview a={a} />
@@ -422,6 +421,7 @@ function AgentView({ id }) {
           <Manifest agent={a} />
         </div>
       </div>
+      <div id="evidence-pack-slot" data-slot="evidence-pack" className="ag-evidence-row"><EvidencePack pack={pack} /></div>
     </div>
   )
 }
