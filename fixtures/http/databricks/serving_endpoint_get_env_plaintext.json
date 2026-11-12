@@ -1,0 +1,55 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "name": "agents_bank_prod-agents-collections_notes",
+    "id": "2b8e5f1c9a3d4e7b8c0d1f2a3b4c5d6e",
+    "creator": "collections-dev@example-bank.com",
+    "creation_timestamp": 1760000000000,
+    "last_updated_timestamp": 1793500000000,
+    "description": "Summarises collections call notes.",
+    "state": {
+      "ready": "READY",
+      "config_update": "UPDATE_FAILED"
+    },
+    "tags": [],
+    "permission_level": "CAN_VIEW",
+    "config": {
+      "config_version": 2,
+      "traffic_config": {
+        "routes": [
+          {
+            "served_model_name": "collections_notes-1",
+            "traffic_percentage": 100
+          }
+        ]
+      },
+      "served_entities": [
+        {
+          "name": "collections_notes-1",
+          "entity_name": "bank_prod.agents.collections_notes",
+          "entity_version": "1",
+          "environment_vars": {
+            "DATABRICKS_TOKEN": "plaintext-credential-9c1e4f7a2b6d8035",
+            "VECTOR_INDEX": "{{secrets/collections/index_name}}"
+          },
+          "workload_size": "Small",
+          "scale_to_zero_enabled": true,
+          "state": {
+            "deployment": "DEPLOYMENT_FAILED"
+          }
+        }
+      ]
+    },
+    "ai_gateway": {
+      "inference_table_config": {
+        "catalog_name": "bank_prod",
+        "schema_name": "agents",
+        "table_name_prefix": "collections_notes",
+        "enabled": true
+      }
+    }
+  }
+}

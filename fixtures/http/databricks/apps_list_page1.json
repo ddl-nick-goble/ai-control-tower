@@ -1,0 +1,64 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "apps": [
+      {
+        "name": "kyc-review-agent",
+        "id": "a1f09c2e-5b7d-4e3a-8f61-0c2d4e6a8b10",
+        "description": "Reviews KYC cases with an LLM.",
+        "url": "https://kyc-review-agent-1111111111111111.aws.databricksapps.com",
+        "app_status": {
+          "state": "RUNNING",
+          "message": "App has status: App is running"
+        },
+        "compute_status": {
+          "state": "ACTIVE",
+          "message": "App compute is active."
+        },
+        "creator": "kyc-ops@example-bank.com",
+        "create_time": "2026-08-02T10:11:00Z",
+        "update_time": "2026-10-28T16:42:10Z",
+        "updater": "kyc-ops@example-bank.com",
+        "service_principal_id": 8812345678901234,
+        "service_principal_client_id": "9a1e4c7b-2d36-4f80-a5b9-6c0e1d2f3a47",
+        "service_principal_name": "app-kyc-review-agent",
+        "user_api_scopes": [
+          "serving.serving-endpoints",
+          "sql"
+        ],
+        "effective_user_api_scopes": [
+          "serving.serving-endpoints",
+          "sql"
+        ],
+        "resources": [
+          {
+            "name": "llm",
+            "serving_endpoint": {
+              "name": "databricks-claude-sonnet",
+              "permission": "CAN_QUERY"
+            }
+          },
+          {
+            "name": "cases",
+            "uc_securable": {
+              "securable_full_name": "bank_prod.kyc.cases",
+              "securable_type": "TABLE",
+              "permission": "SELECT"
+            }
+          }
+        ],
+        "active_deployment": {
+          "deployment_id": "01f0b2c3d4e5f6a7b8c9d0e1f2a3b4c5",
+          "source_code_path": "/Workspace/Users/kyc-ops/kyc-review-agent",
+          "status": {
+            "state": "SUCCEEDED"
+          }
+        }
+      }
+    ],
+    "next_page_token": "tok-apps-page-2"
+  }
+}

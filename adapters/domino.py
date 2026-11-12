@@ -99,12 +99,14 @@ class DominoAdapter(AdapterBase):
         proj = it.get("project")
         return it.get("projectId") or (proj.get("id") if isinstance(proj, dict) else None)
 
-    def _fetch_apps(self):
+    def _fetch_apps(self, project_id=None):
         seen, out = set(), []
         types = ["AISYSTEM"] + (["STANDARD"] if os.environ.get("ACT_DOMINO_INCLUDE_APPS") == "1" else [])
         cap = int(os.environ.get("ACT_DOMINO_MAX_AGENTS", "25"))
         pid = None
-        if os.environ.get("ACT_DOMINO_SCOPE") != "all":
+        if project_id:
+            pid = project_id
+        elif os.environ.get("ACT_DOMINO_SCOPE") != "all":
             pid = os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
             if not pid:
                 raise RuntimeError("domino adapter: no project id (set ACT_DOMINO_PROJECT_ID or DOMINO_PROJECT_ID, "
@@ -237,6 +239,59 @@ class DominoAdapter(AdapterBase):
         agents = [] if demo.enabled() else [self._to_agent(it) for it in self._fetch_apps()]  # errors propagate to intake
         have = {a.native_id for a in agents}
         return agents + [a for a in self._local_agents() if a.native_id not in have]
+
+    # -- connections contract -------------------------------------------------------------------------
+    @staticmethod
+    def _current_project():
+        return os.environ.get("ACT_DOMINO_PROJECT_ID") or os.environ.get("DOMINO_PROJECT_ID")
+
+    def auth_methods(self):
+        return ["none"]  # the Domino API proxy adds the token
+
+    def test_connection(self, cfg, creds):
+        name, detail = "Domino API reachable", "the Domino API proxy answers"
+        if not (os.environ.get("DOMINO_API_PROXY") or os.environ.get("DOMINO_API_HOST")):
+            return [{"name": name, "detail": "neither DOMINO_API_PROXY nor DOMINO_API_HOST is set", "required": True,
+                     "ok": False, "fix": "ACT is not running inside Domino. Run it as a Domino App or Workspace so "
+                                         "Domino's API proxy is available."}]
+        pid = self._current_project()
+        path = f"/api/projects/v1/projects/{pid}" if pid else "/api/projects/v1/projects"
+        try:
+            self._call("GET", path, None if pid else {"limit": 1}, strict=True)
+        except Exception as e:  # never raises: the checklist reports it
+            return [{"name": name, "detail": f"Domino API did not answer: {e}", "required": True, "ok": False,
+                     "fix": "Domino's API proxy did not answer. Restart the ACT app, and check that the project "
+                            "still exists and the app's owner can read it."}]
+        return [{"name": name, "detail": detail, "required": True, "ok": True, "fix": None}]
+
+    def list_scopes(self, cfg, creds):
+        pid = self._current_project()
+        if not pid:
+            raise RuntimeError("domino adapter: no project id (set DOMINO_PROJECT_ID)")
+        proj = self._call("GET", f"/api/projects/v1/projects/{pid}")
+        label = (proj or {}).get("name") if isinstance(proj, dict) else None
+        return [{"id": f"domino:project:{pid}", "label": label or pid, "selected": True, "children": []}]
+
+    def discover(self, cfg, creds, scopes, progress=None):
+        pids = []
+        for s in scopes or []:
+            if str(s).startswith("domino:project:") and str(s)[15:] not in pids:
+                pids.append(str(s)[15:])
+        if not pids:
+            pids = [None]  # default scope: the current project (or ACT_DOMINO_SCOPE=all)
+        agents, seen = [], set()
+        if not demo.enabled():
+            for i, pid in enumerate(pids):
+                for it in self._fetch_apps(pid):
+                    a = self._to_agent(it)
+                    if a.native_id not in seen:
+                        seen.add(a.native_id)
+                        agents.append(a)
+                if progress:
+                    progress(i + 1, len(pids), f"Read Domino project {pid or 'current'}")
+        elif progress:
+            progress(len(pids), len(pids), "Demo mode: no live listing")
+        return agents + [a for a in self._local_agents() if a.native_id not in seen]
 
     def get_agent(self, native_id):
         if demo.enabled():

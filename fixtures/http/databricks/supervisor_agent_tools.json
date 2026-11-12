@@ -1,0 +1,35 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "tools": [
+      {
+        "name": "lookup_exception",
+        "tool_type": "uc_function",
+        "description": "Fetch one payment exception.",
+        "uc_function": {
+          "name": "bank_prod.payments.lookup_exception"
+        }
+      },
+      {
+        "name": "exceptions_table",
+        "tool_type": "table",
+        "description": "Open payment exceptions.",
+        "table": {
+          "name": "bank_prod.payments.exceptions"
+        }
+      },
+      {
+        "name": "ops_genie",
+        "tool_type": "genie_space",
+        "description": "Ask questions about payment operations.",
+        "genie_space": {
+          "id": "01ef8a7b6c5d4e3f"
+        }
+      }
+    ],
+    "next_page_token": ""
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "functions": [
+      {
+        "name": "lookup_exception",
+        "full_name": "bank_prod.payments.lookup_exception",
+        "catalog_name": "bank_prod",
+        "schema_name": "payments",
+        "owner": "payments-ops@example-bank.com",
+        "comment": "Fetch one payment exception by id.",
+        "routine_body": "SQL",
+        "data_type": "STRING",
+        "created_at": 1759000000000,
+        "routine_definition": "CREATE FUNCTION lookup_exception(lookup_key STRING) RETURNS STRING\n-- gateway auth Bearer shared-gateway-credential-7f3a91c2e8b4 shared with the payments gateway\nSELECT status_code, reason_text, raised_at FROM exceptions_view WHERE id = lookup_key"
+      },
+      {
+        "name": "release_hold",
+        "full_name": "bank_prod.payments.release_hold",
+        "catalog_name": "bank_prod",
+        "schema_name": "payments",
+        "owner": "payments-ops@example-bank.com",
+        "comment": "Release a payment hold.",
+        "routine_body": "SQL",
+        "data_type": "BOOLEAN",
+        "created_at": 1759100000000,
+        "routine_definition": "CREATE FUNCTION release_hold(hold_ref STRING) RETURNS BOOLEAN\nUPDATE holds_staging SET released_flag = true WHERE reference = hold_ref"
+      }
+    ]
+  }
+}

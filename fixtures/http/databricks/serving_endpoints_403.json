@@ -1,0 +1,10 @@
+{
+  "status": 403,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "error_code": "PERMISSION_DENIED",
+    "message": "User does not have CAN_VIEW permission on any serving endpoint."
+  }
+}

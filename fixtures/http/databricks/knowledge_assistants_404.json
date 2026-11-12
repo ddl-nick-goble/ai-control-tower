@@ -1,0 +1,10 @@
+{
+  "status": 404,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "error_code": "NOT_IMPLEMENTED",
+    "message": "Agent Bricks is not available in this workspace."
+  }
+}

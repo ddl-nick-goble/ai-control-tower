@@ -1,0 +1,23 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "knowledge_assistants": [
+      {
+        "name": "knowledge-assistants/9d3c1f20-6a4b-4c8e-b1f5-2a7e9c0d4b61",
+        "id": "9d3c1f20-6a4b-4c8e-b1f5-2a7e9c0d4b61",
+        "display_name": "policy-handbook-assistant",
+        "description": "Answers questions from the HR and conduct policy handbook.",
+        "instructions": "Answer only from the handbook.",
+        "creator": "hr-ops@example-bank.com",
+        "create_time": "2026-05-20T14:05:00Z",
+        "endpoint_name": "ka-3c9d1f20-endpoint",
+        "experiment_id": "4120398712345678",
+        "state": "ACTIVE"
+      }
+    ],
+    "next_page_token": "tok-ka-page-2"
+  }
+}

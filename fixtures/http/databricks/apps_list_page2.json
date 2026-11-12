@@ -1,0 +1,27 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "apps": [
+      {
+        "name": "ops-status-dashboard",
+        "id": "b7c60d1e-3f4a-4b5c-9d8e-7f6a5b4c3d21",
+        "description": "Operations status board.",
+        "url": "https://ops-status-dashboard-1111111111111111.aws.databricksapps.com",
+        "app_status": {
+          "state": "RUNNING",
+          "message": "App has status: App is running"
+        },
+        "compute_status": {
+          "state": "ACTIVE",
+          "message": "App compute is active."
+        },
+        "creator": "ops-platform@example-bank.com",
+        "create_time": "2026-06-14T08:00:00Z",
+        "update_time": "2026-09-30T12:30:00Z"
+      }
+    ]
+  }
+}

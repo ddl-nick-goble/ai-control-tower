@@ -1,98 +1,29 @@
 {
   "agent_services": [
     {
-      "name": "liquidity-forecast-agent",
-      "full_name": "bank_prod.agents.liquidity_forecast_agent",
-      "agent_service_id": "a7e1d2c4-3b5f-4a6d-8c9e-0f1a2b3c4d51",
-      "catalog_name": "bank_prod",
-      "schema_name": "agents",
+      "name": "agent-services/bank_prod.agents.liquidity-forecast-agent",
+      "agent_service_type": "AGENT_SERVICE_TYPE_EXTERNAL",
       "comment": "Forecasts intraday and 30-day liquidity from cash flow tables.",
-      "owner": "treasury-analytics@example-bank.com",
-      "created_at": 1759395600000,
-      "updated_at": 1793603733000,
-      "updated_by": "treasury-analytics@example-bank.com",
-      "endpoint_name": "agents_liquidity_forecast_agent",
-      "identity": {
-        "type": "service_principal",
-        "principal": "sp-liquidity-forecast",
-        "application_id": "15d4c3b2-a1f0-4e9c-86a4-f5b34c2d1e7a",
-        "distinct": true
-      },
-      "tags": [
-        {
-          "key": "owner",
-          "value": "treasury-analytics@example-bank.com"
+      "created_by": "treasury-analytics@example-bank.com",
+      "config": {
+        "source_connection": {
+          "name": "connections/bank_prod.agents.liquidity_forecast_agent_conn"
         },
-        {
-          "key": "criteria_autonomy",
-          "value": "autonomous"
-        }
-      ],
-      "properties": {
-        "owner": "treasury-analytics@example-bank.com",
-        "tools": [
-          "query_cash_flows",
-          "run_forecast_model",
-          "publish_forecast"
-        ],
-        "data_scopes": [
-          "treasury.cash_flows",
-          "market.rates"
-        ],
-        "systems": [
-          "Databricks-lakehouse",
-          "TMS"
-        ],
-        "criteria": {
-          "autonomy": "autonomous",
-          "consequence": "internal_report",
-          "human_in_loop": false
-        }
+        "base_path": "/v1/chat",
+        "system_prompt": "You are the liquidity-forecast-agent."
       }
     },
     {
-      "name": "model-risk-doc-agent",
-      "full_name": "bank_prod.agents.model_risk_doc_agent",
-      "agent_service_id": "b8f2e3d5-4c60-4b7e-9daf-1a2b3c4d5e62",
-      "catalog_name": "bank_prod",
-      "schema_name": "agents",
+      "name": "agent-services/bank_prod.agents.model-risk-doc-agent",
+      "agent_service_type": "AGENT_SERVICE_TYPE_EXTERNAL",
       "comment": "Drafts model validation documentation from the model inventory.",
-      "owner": "model-risk-mgmt@example-bank.com",
-      "created_at": 1759395600000,
-      "updated_at": 1793102991000,
-      "updated_by": "model-risk-mgmt@example-bank.com",
-      "endpoint_name": "agents_model_risk_doc_agent",
-      "identity": {
-        "type": "none",
-        "note": "runs as the creating user's identity"
-      },
-      "tags": [
-        {
-          "key": "owner",
-          "value": "model-risk-mgmt@example-bank.com"
+      "created_by": "model-risk-mgmt@example-bank.com",
+      "config": {
+        "source_connection": {
+          "name": "connections/bank_prod.agents.model_risk_doc_agent_conn"
         },
-        {
-          "key": "criteria_autonomy",
-          "value": "assistive"
-        }
-      ],
-      "properties": {
-        "owner": "model-risk-mgmt@example-bank.com",
-        "tools": [
-          "fetch_model_inventory",
-          "draft_validation_doc"
-        ],
-        "data_scopes": [
-          "mrm.inventory"
-        ],
-        "systems": [
-          "MRM-system"
-        ],
-        "criteria": {
-          "autonomy": "assistive",
-          "consequence": "internal_draft",
-          "human_in_loop": true
-        }
+        "base_path": "/v1/chat",
+        "system_prompt": "You are the model-risk-doc-agent."
       }
     }
   ]

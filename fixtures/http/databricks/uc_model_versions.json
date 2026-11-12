@@ -1,0 +1,68 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "model_versions": [
+      {
+        "version": 3,
+        "status": "READY",
+        "model_name": "payments_exception",
+        "catalog_name": "bank_prod",
+        "schema_name": "agents",
+        "created_at": 1793000000000,
+        "created_by": "ops-platform@example-bank.com",
+        "model_version_dependencies": {
+          "dependencies": [
+            {
+              "function": {
+                "function_full_name": "bank_prod.payments.lookup_exception"
+              }
+            },
+            {
+              "table": {
+                "table_full_name": "bank_prod.payments.exceptions"
+              }
+            },
+            {
+              "table": {
+                "table_full_name": "bank_prod.payments.counterparties"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "version": 2,
+        "status": "READY",
+        "model_name": "payments_exception",
+        "catalog_name": "bank_prod",
+        "schema_name": "agents",
+        "created_at": 1780000000000,
+        "created_by": "ops-platform@example-bank.com",
+        "model_version_dependencies": {
+          "dependencies": [
+            {
+              "function": {
+                "function_full_name": "bank_prod.payments.lookup_exception"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "version": 1,
+        "status": "READY",
+        "model_name": "payments_exception",
+        "catalog_name": "bank_prod",
+        "schema_name": "agents",
+        "created_at": 1770000000000,
+        "created_by": "ops-platform@example-bank.com",
+        "model_version_dependencies": {
+          "dependencies": []
+        }
+      }
+    ]
+  }
+}
