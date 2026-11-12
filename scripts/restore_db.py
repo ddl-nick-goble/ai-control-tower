@@ -2,7 +2,11 @@
 
 Dry run by default; --apply moves the existing DB aside (never deletes) and installs the copy.
 Stop the app before using --apply.
-    python scripts/restore_db.py --from /path/good.db [--to /path/act.db] [--apply]
+    python scripts/restore_db.py --from /path/good.db [--to /path/act.db] [--apply] [--force]
+
+--force moves the dest and its -wal/-shm/-journal aside (to .broken-*) even when the dest cannot be
+opened (corrupt) or has a hot -journal left by a stopped app. It never overrides a busy database:
+if another process holds a lock, the restore is refused with or without --force.
 """
 import argparse
 import fcntl
@@ -56,31 +60,38 @@ def _is_sqlite(p: Path) -> bool:
         return False
 
 
-def dest_in_use(dest: Path) -> str:
-    """Reason string if something else is using the dest DB, else ''."""
+def dest_in_use(dest: Path):
+    """Return (kind, message): kind is "" (free), "busy" (another process holds a lock; --force cannot
+    override), or "unopenable" (corrupt, or a hot -journal; --force may move it aside).
+    Never mutates the dest: lock checks first, then a read-only open (no exclusive transaction, which could
+    checkpoint or remove -wal/-shm)."""
+    for suffix in SIBLINGS:
+        p = str(dest) + suffix
+        if os.path.exists(p) and _locked(p):
+            return "busy", f"{p} is locked by another process"
+    names = ", ".join(str(dest) + s for s in SIBLINGS if os.path.exists(str(dest) + s))
+    hint = (f"Files involved: {names}. Move them aside yourself, or re-run with --force to move them aside "
+            "(to .broken-*) and restore.")
     jr = Path(str(dest) + "-journal")
     if _is_sqlite(dest) and jr.exists() and jr.stat().st_size > 0:
-        # A non-empty rollback journal means a write is in flight or a crash left it behind; either way the
-        # DB must not be swapped out from under it (and probing it would roll it back).
-        return f"{jr} is a non-empty rollback journal (a write is in progress or was interrupted)"
-    if _is_sqlite(dest):
+        # Probing would roll the hot journal back, so do not open the DB at all.
+        return "unopenable", f"{jr} is a non-empty rollback journal (hot journal left by a stopped app). {hint}"
+    if dest.exists() and dest.stat().st_size >= 100:  # shorter than a SQLite header: nothing to protect
+        if not _is_sqlite(dest):
+            return "unopenable", f"{dest} is not a readable SQLite database. {hint}"
         try:
-            c = sqlite3.connect(str(dest), timeout=0.5, isolation_level=None)
+            c = sqlite3.connect(f"file:{dest}?mode=ro", uri=True, timeout=0.5)
             try:
-                c.execute("BEGIN EXCLUSIVE")
-                c.execute("ROLLBACK")
+                c.execute("SELECT count(*) FROM sqlite_master").fetchall()
             finally:
                 c.close()
         except sqlite3.OperationalError as e:
             if "lock" in str(e).lower() or "busy" in str(e).lower():
-                return f"{dest} is locked ({e})"
-        except sqlite3.Error:
-            pass  # unusable database: that is what we are replacing
-    for suffix in SIBLINGS:
-        p = str(dest) + suffix
-        if os.path.exists(p) and _locked(p):
-            return f"{p} is locked by another process"
-    return ""
+                return "busy", f"{dest} is in use ({e})"
+            return "unopenable", f"{dest} cannot be opened ({e}). {hint}"
+        except sqlite3.Error as e:
+            return "unopenable", f"{dest} cannot be opened ({e}). {hint}"
+    return "", ""
 
 
 def unique_stamp(dest: Path) -> str:
@@ -127,6 +138,9 @@ def main() -> int:
     ap.add_argument("--from", dest="src", required=True)
     ap.add_argument("--to", dest="dest", default=None)
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="move an unopenable/corrupt dest (or hot -journal) and its -wal/-shm/-journal aside "
+                         "anyway; never overrides a busy (locked) database")
     a = ap.parse_args()
     src = Path(a.src)
     dest = Path(a.dest or db.DB_PATH).expanduser()
@@ -156,11 +170,14 @@ def main() -> int:
             return 0
 
         dest.parent.mkdir(parents=True, exist_ok=True)
-        busy = dest_in_use(dest)
-        if busy:
-            print(f"error: {busy}. Stop the ACT app (and anything else using the database), then re-run. "
-                  "Nothing was changed.", file=sys.stderr)
+        kind, busy = dest_in_use(dest)
+        if kind == "busy":
+            print(f"error: {busy}. Stop the ACT app (and anything else using the database), then re-run "
+                  "(--force does not override this). Nothing was changed.", file=sys.stderr)
             return 3
+        if kind and not a.force:
+            print(f"error: {busy} Nothing was changed.", file=sys.stderr)
+            return 4
         stamp = unique_stamp(dest)
         tmp_dest = Path(str(dest) + f".restore-{os.getpid()}.tmp")
         if tmp_dest.exists():
@@ -199,7 +216,8 @@ def main() -> int:
     finally:
         conn.close()
     if res != [("ok",)]:
-        print(f"error: restored {dest} failed integrity_check: {res[:5]}", file=sys.stderr)
+        print(f"error: restored {dest} failed integrity_check: {res[:5]}. The previous files were moved "
+              f"aside as {dest}{stamp}* (e.g. {dest}{stamp}); move them back to undo.", file=sys.stderr)
         return 1
     eng = db._make_engine(str(dest))
     try:

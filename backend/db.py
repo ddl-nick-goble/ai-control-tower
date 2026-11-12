@@ -38,7 +38,8 @@ def _unescape_mount(s: str) -> str:
     return s
 
 
-def _read_mounts() -> list:
+def _read_mounts():
+    """Mount table as [(mountpoint, fstype)], or None when /proc/mounts is unreadable."""
     out = []
     try:
         with open("/proc/mounts") as f:
@@ -47,14 +48,16 @@ def _read_mounts() -> list:
                 if len(parts) >= 3:
                     out.append((_unescape_mount(parts[1]), parts[2]))
     except OSError as e:
-        log.warning("cannot read /proc/mounts (%s); treating the DB filesystem as local", e)
+        log.warning("cannot read /proc/mounts (%s); cannot tell the DB filesystem type, "
+                    "falling back to the safe DELETE journal mode", e)
+        return None
     return out
 
 
 def fs_type(path, mounts=None) -> str:
     """Filesystem type of `path`: longest-prefix match of its resolved path against the mount table."""
     if mounts is None:
-        mounts = _read_mounts()
+        mounts = _read_mounts() or []
     p = str(Path(path).expanduser().resolve())
     best, best_len = "unknown", -1
     for mp, fst in mounts:
@@ -75,6 +78,10 @@ def journal_mode_for(path, mounts=None) -> str:
         if override.strip().upper() in ("WAL", "DELETE"):
             return override.strip().upper()
         log.warning("ignoring ACT_DB_JOURNAL_MODE=%r (must be WAL or DELETE)", override)
+    if mounts is None:
+        mounts = _read_mounts()
+        if mounts is None:  # unreadable mount table: the safe mode, not WAL
+            return "DELETE"
     return "DELETE" if is_network_fs(path, mounts) else "WAL"
 
 
