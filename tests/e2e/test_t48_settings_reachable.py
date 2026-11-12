@@ -203,7 +203,7 @@ def test_sr3_demo_card_first_and_confirm_off(page, shot, app_w):
         shot("then")
         dlg.first.get_by_role("button", name="Cancel").click()
     finally:
-        page.request.delete("./api/settings/demo_mode")
+        page.request.delete(app_w.rstrip("/") + "/api/settings/demo_mode")
 
 
 def test_sr3_banner_link_admins_only(page, context, shot, app_d):
@@ -297,7 +297,7 @@ def test_sr5_admins_editable_owner_fixed(page, context, shot, app_w):
         shot("then")
     finally:
         context.set_extra_http_headers({})
-        page.request.delete("./api/settings/admins")
+        page.request.delete(app_w.rstrip("/") + "/api/settings/admins")
 
 
 # ---------------------------------------------------------------- SF-4
