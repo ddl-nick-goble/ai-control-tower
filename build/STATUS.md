@@ -16,7 +16,7 @@ The workspace is on hardware tier **Small: 1 core, 4 GiB**. Each resume started 
 Standing rule from Nick: a design agent (visual-reviewer) produces a design brief before and a review after every frontend build.
 
 ## Decision needed: real database (2026-11-12)
-The real DB on the dataset (/mnt/data/ai-control-tower/act/act.db) won't open: the dataset is an NFS mount and SQLite's WAL mode (which the handoff prescribes) is unsafe on NFS; a crash left a stale shared-memory file. Nothing is lost: the live DB is an empty schema; the 12 registered agents are intact in act.db.stale-202611100020. Proposed T-50: journal_mode=DELETE on NFS, smaller pool, clear error, then restore the 12 agents. Needs Nick's OK because it changes Section 4.7.
+The real DB on the dataset (/mnt/data/ai-control-tower/act/act.db) won't open: the dataset is an NFS mount and SQLite's WAL mode (which the handoff prescribes) is unsafe on NFS; a crash left a stale shared-memory file. Nothing is lost: the live DB is an empty schema; the 12 registered agents are intact in act.db.stale-202611100020. T-50 MERGED (809b262). Restore pending: the script's safety guard refuses because the stale files make act.db unopenable; needs the three broken files moved aside first (asked Nick).
 
 ## Waiting on Nick (live and manual steps; not build work)
 1. LLM Gateway consent: open https://apps.se-demo.domino.tech/apps/llmgateway/ once and accept, then set `LLM_GATEWAY_URL` and `ACT_LLM_PROVIDER=gateway` (or enter them on the Settings page once T-39 merges).
