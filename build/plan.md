@@ -448,3 +448,4 @@ Shared files nobody touches in PB: adapters/base.py, backend/normalize.py, jobs/
 - PO-3a post-merge (c394b05) 852 pass / 3 skip. Worktree removed. PO-3a DONE.
 - PB end-of-wave on main: code 941 pass / 3 skip; e2e 228 pass (2:36). PO-3b, PO-3c worktrees removed. Wave PB DONE. Starting PC (PO-4, PO-5).
 - PO-4 test baseline db0e1d9 (18 red). Builder running.
+- PO-5 test baseline f9d8dfa (30 red; test_t20_nav.py updated: connections is no longer a placeholder, /register -> #/connections/add-by-url). Builder running.
