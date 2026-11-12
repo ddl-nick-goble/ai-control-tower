@@ -1,5 +1,5 @@
 {
-  "_note": "ACT-side hints the Google APIs do not carry (data scopes, systems, value limits, criteria, owner), keyed by Agent Registry agentId.",
+  "_note": "ACT-side hints the Google APIs do not carry (owner, tools beyond skills, data scopes, systems, value limits, criteria), keyed by Agent Registry agentId.",
   "overlay": {
     "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:122077102645": {
       "owner": "fraud-analytics@example-bank.com",

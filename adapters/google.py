@@ -422,7 +422,6 @@ class GoogleAdapter(AdapterBase):
             ids = [n["id"] for n in self._flat(self.list_scopes(cfg, creds))]
             return self.discover(cfg, creds, ids)
         agents = load_fixture("google/agent-registry-agents.json").get("agents", [])
-        binds = load_fixture("google/agent-registry-bindings.json").get("bindings", [])
         overlay = load_fixture("google/act-overlay.json").get("overlay", {})
         out = []
         for a in agents:
@@ -431,7 +430,6 @@ class GoogleAdapter(AdapterBase):
             principal = ((a.get("attributes") or {}).get(RT_IDENT) or {}).get("principal")
             ident = ov.get("identity") or _identity_from(principal)
             iface = ((a.get("protocols") or [{}])[0].get("interfaces") or [{}])[0].get("url")
-            mine = [b for b in binds if (b.get("source") or {}).get("identifier") == a["agentId"]]
             out.append(SourceAgent(
                 platform="google", native_id=_short(ref) or a["agentId"], name=a["displayName"],
                 description=a.get("description") or "", version=a.get("version") or "1", owner=ov.get("owner") or "unknown",
@@ -440,7 +438,7 @@ class GoogleAdapter(AdapterBase):
                 data_scopes=list(ov.get("data_scopes") or []), systems=list(ov.get("systems") or []),
                 value_limits=dict(ov.get("value_limits") or {}), criteria=dict(ov.get("criteria") or {}), identity=dict(ident),
                 versions=[{"version": a.get("version") or "1", "created": a.get("createTime")}],
-                extra={"surfaces": ["registry"], "registry_agent": a["name"], "bindings": len(mine)}, raw=a))
+                extra={"surfaces": ["registry"], "registry_agent": a["name"]}, raw=a))
         return out
 
     @staticmethod

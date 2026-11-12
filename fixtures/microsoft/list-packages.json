@@ -23,27 +23,6 @@
       "lastModifiedDateTime": "2026-10-30T11:20:44Z"
     },
     {
-      "id": "P_b2e4d0a35c8f",
-      "displayName": "credit-memo-drafter",
-      "type": "custom",
-      "shortDescription": "Drafts corporate credit memos from financials and ratings.",
-      "isBlocked": false,
-      "supportedHosts": [
-        "Copilot"
-      ],
-      "publisher": "Example Bank IT",
-      "version": "1.2.0",
-      "platform": "Copilot",
-      "elementTypes": [
-        "DeclarativeAgent"
-      ],
-      "manifestId": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
-      "agentIdentityId": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
-      "governanceMetadata": "PromptAgent",
-      "createdDateTime": "2026-09-29T10:00:00Z",
-      "lastModifiedDateTime": "2026-11-04T15:03:18Z"
-    },
-    {
       "id": "P_c3f5e1b46d90",
       "displayName": "branch-ops-assistant",
       "type": "custom",

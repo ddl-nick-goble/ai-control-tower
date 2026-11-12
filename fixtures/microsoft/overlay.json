@@ -1,5 +1,5 @@
 {
-  "_note": "ACT-side hints the Graph catalog does not carry (owner, tools, data scopes, systems, criteria), keyed by package id.",
+  "_note": "ACT-side hints the Graph APIs do not carry (owner, tools, data scopes, systems, criteria, identity), keyed by package id or agent identity id.",
   "overlay": {
     "P_a1f3c9d24b7e": {
       "native_id": "a1f3c9d2-4b7e-4e1a-9c55-0d2e6f8a1b01",
@@ -23,14 +23,13 @@
         "human_in_loop": true
       },
       "identity": {
-        "type": "managed_identity",
         "clientId": "0c7d1e34-5a2b-4c88-b1f0-7e9a3d4c5b02",
+        "distinct": true,
         "principalId": "20b5c4d3-a9e7-4f1b-88c4-b2a543e1d7c0",
-        "distinct": true
-      },
-      "display_name": "Relationship Manager Copilot"
+        "type": "managed_identity"
+      }
     },
-    "P_b2e4d0a35c8f": {
+    "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11": {
       "native_id": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
       "owner": "corporate-credit@example-bank.com",
       "tools": [
@@ -51,13 +50,14 @@
         "consequence": "internal_draft",
         "human_in_loop": true
       },
-      "identity": {
-        "type": "managed_identity",
-        "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
-        "principalId": "31c6d5e4-baf8-4a2a-99d4-c3b654f2e8d1",
-        "distinct": true
-      },
-      "display_name": "Credit Memo Drafter"
+      "name": "credit-memo-drafter",
+      "description": "Drafts corporate credit memos from financials and ratings.",
+      "version": "1.2.0",
+      "provider": "Example Bank IT",
+      "last_updated": "2026-11-04T15:03:18Z",
+      "hosts": [
+        "Copilot"
+      ]
     },
     "P_c3f5e1b46d90": {
       "native_id": "c3f5e1b4-6d90-4a3c-9e77-2f4a8bac3d21",
@@ -79,10 +79,9 @@
         "human_in_loop": true
       },
       "identity": {
-        "type": "none",
-        "note": "uses the shared Copilot Studio connection identity"
-      },
-      "display_name": "Branch Ops Assistant"
+        "note": "uses the shared Copilot Studio connection identity",
+        "type": "none"
+      }
     }
   }
 }

@@ -1,0 +1,19 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#servicePrincipals/microsoft.graph.agentIdentity(id,accountEnabled,servicePrincipalType,agentIdentityBlueprintId,createdByAppId,createdDateTime)",
+  "value": [
+    {
+      "id": "b2e4d0a3-5c8f-4f2b-8d66-1e3f7a9b2c11",
+      "accountEnabled": true,
+      "servicePrincipalType": "ServiceIdentity",
+      "agentIdentityBlueprintId": "7f1d0c2e-3a44-4b6e-9d21-5c8a1e0b9f33",
+      "createdByAppId": "0736f41a-0425-4b46-bdb5-1563eff02385",
+      "createdDateTime": "2026-09-29T10:00:00Z",
+      "identity": {
+        "clientId": "1d8e2f45-6b3c-4d99-a2a1-8fab4e5d6c13",
+        "distinct": true,
+        "principalId": "31c6d5e4-baf8-4a2a-99d4-c3b654f2e8d1",
+        "type": "managed_identity"
+      }
+    }
+  ]
+}

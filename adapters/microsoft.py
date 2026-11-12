@@ -548,21 +548,31 @@ class MicrosoftAdapter(AdapterBase):
             creds = {"access_token": os.environ.get("ACT_MICROSOFT_TOKEN", "")}
             ids = [n["id"] for n in self._flat(self.list_scopes(cfg, creds))]
             return self.discover(cfg, creds, ids)
-        overlay = load_fixture("microsoft/act-overlay.json").get("overlay", {})
+        overlay = load_fixture("microsoft/overlay.json").get("overlay", {})
+        pkgs = load_fixture("microsoft/list-packages.json").get("value", [])
+        idents = load_fixture("microsoft/entra-agent-identities.json").get("value", [])
+        have = {p.get("agentIdentityId") for p in pkgs}
+        rows = [(p["id"], p, None) for p in pkgs] + [(i["id"], None, i) for i in idents if i["id"] not in have]
+        order = list(overlay)
+        rows.sort(key=lambda r: order.index(r[0]) if r[0] in order else len(order))
         out = []
-        for p in load_fixture("microsoft/list-packages.json").get("value", []):
-            ov = overlay.get(p["id"], {})
+        for key, p, ident in rows:
+            ov = overlay.get(key, {})
+            src = p or {}
+            created = src.get("createdDateTime") or (ident or {}).get("createdDateTime")
+            version = str(src.get("version") or ov.get("version") or "1")
             out.append(SourceAgent(
-                platform="microsoft", native_id=ov.get("native_id") or p.get("agentIdentityId") or p["id"],
-                name=p.get("displayName") or p["id"], description=p.get("shortDescription") or "",
-                version=str(p.get("version") or "1"), owner=ov.get("owner") or "unknown",
-                status="BLOCKED" if p.get("isBlocked") else "AVAILABLE", last_updated=p.get("lastModifiedDateTime"),
-                provider=p.get("publisher") or "Microsoft", tools=list(ov.get("tools") or []),
+                platform="microsoft", native_id=ov.get("native_id") or src.get("agentIdentityId") or key,
+                name=src.get("displayName") or ov.get("name") or key,
+                description=src.get("shortDescription") or ov.get("description") or "", version=version,
+                owner=ov.get("owner") or "unknown", status="BLOCKED" if src.get("isBlocked") else "AVAILABLE",
+                last_updated=src.get("lastModifiedDateTime") or ov.get("last_updated"),
+                provider=src.get("publisher") or ov.get("provider") or "Microsoft", tools=list(ov.get("tools") or []),
                 data_scopes=list(ov.get("data_scopes") or []), systems=list(ov.get("systems") or []), value_limits={},
-                criteria=dict(ov.get("criteria") or {}), identity=dict(ov.get("identity") or {}),
-                versions=[{"version": str(p.get("version") or "1"), "created": p.get("createdDateTime")}],
-                extra={"source": ["agent365"], "package_id": p["id"], "display_name": ov.get("display_name"),
-                       "hosts": p.get("supportedHosts")}, raw=p))
+                criteria=dict(ov.get("criteria") or {}), identity=dict(ov.get("identity") or (ident or {}).get("identity") or {}),
+                versions=[{"version": version, "created": created}],
+                extra={"source": ["agent365" if p else "entra_agent_id"], "package_id": src.get("id"),
+                       "hosts": src.get("supportedHosts") or ov.get("hosts")}, raw=p or ident))
         return out
 
     @staticmethod
