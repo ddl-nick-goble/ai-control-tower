@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACT: Connect a provider (prototype)</title>
+<style>
+/* ===== Tokens copied from frontend/src/design.css (unchanged) ===== */
+:root {
+  --ds-accent: #543fde; --ds-accent-hover: #4533c0; --ds-accent-soft: #efedfc;
+  --ds-ink: #14181f; --ds-text: #2b3340; --ds-muted: #596273; --ds-faint: #5f6673;
+  --ds-bg: #f5f6f8; --ds-surface: #ffffff; --ds-surface-2: #eceff3; --ds-line: #dfe3e8; --ds-line-strong: #b9c0ca;
+  --ds-danger: #b42318; --ds-danger-bg: #fef3f2; --ds-danger-line: #fda29b;
+  --ds-s1: 8px; --ds-s2: 16px; --ds-s3: 24px; --ds-s4: 32px; --ds-s5: 40px; --ds-s6: 48px;
+  --ds-radius: 8px; --ds-radius-sm: 6px; --ds-radius-lg: 12px;
+  --ds-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .04);
+  --ds-ring: 0 0 0 2px #fff, 0 0 0 4px var(--ds-accent);
+  --ds-font: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+/* ===== New tokens (proposed for design.css) ===== */
+  --ds-ok: #067647; --ds-ok-bg: #ecfdf3; --ds-ok-line: #abefc6;
+  --ds-warn: #6b4a00; --ds-warn-bg: #fff7e6; --ds-warn-line: #f0c36d;
+  --ds-info: #175cd3; --ds-info-bg: #eff8ff; --ds-info-line: #b2ddff;
+  --ds-tier-1: #c62828; --ds-tier-2: #8a5300; --ds-tier-3: #0d47a1; --ds-tier-4: #2e7d32;
+  --ds-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ds-code-bg: #161b26; --ds-code-text: #e4e7ec;
+  --ds-sample-stripe: repeating-linear-gradient(135deg, #f0c36d 0 6px, #fff7e6 6px 12px);
+  --ds-dur-1: 120ms; --ds-dur-2: 200ms; --ds-dur-3: 320ms; --ds-ease: cubic-bezier(.2, 0, 0, 1);
+}
+* { box-sizing: border-box }
+html { scroll-padding-bottom: 104px }
+body { margin: 0; font: 14px/1.5 var(--ds-font); -webkit-font-smoothing: antialiased; background: var(--ds-bg); color: var(--ds-text) }
+a { color: var(--ds-accent); text-decoration: none } a:hover { text-decoration: underline }
+:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px }
+code { font-family: var(--ds-mono); font-size: 12px; color: var(--ds-ink); background: #eef0f4; padding: 1px 5px; border-radius: 4px }
+.ds-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
+
+/* ----- shell (from design.css) ----- */
+.ds-shell-inner { max-width: 1280px; margin-inline: auto; padding-inline: var(--ds-s3) }
+.ds-topbar { background: var(--ds-surface); border-bottom: 1px solid var(--ds-line); box-shadow: var(--ds-shadow) }
+.ds-topbar-row { display: flex; align-items: center; gap: var(--ds-s2); height: 56px }
+.ds-brand { display: inline-flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 650; color: var(--ds-ink); white-space: nowrap }
+.ds-brand:hover { text-decoration: none }
+.ds-subtitle { color: var(--ds-muted); font-size: 13px; padding-left: var(--ds-s2); border-left: 1px solid var(--ds-line); line-height: 20px; white-space: nowrap }
+.ds-nav { margin-left: auto; margin-right: -12px; display: flex; gap: 4px; align-self: stretch }
+.ds-nav a { position: relative; display: flex; align-items: center; padding: 0 12px; color: var(--ds-text); font-size: 14px; font-weight: 500; border-radius: var(--ds-radius-sm); white-space: nowrap }
+.ds-nav a:hover { color: var(--ds-ink); background: #f0f2f5; text-decoration: none }
+.ds-nav a[aria-current] { color: var(--ds-accent); font-weight: 600 }
+.ds-nav a[aria-current]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: 0; height: 2px; background: var(--ds-accent); border-radius: 2px 2px 0 0 }
+.ds-nav a:focus-visible { outline-offset: -2px }
+.ds-skip { position: absolute; left: 8px; top: 8px; z-index: 100; padding: 8px 16px; background: var(--ds-surface); color: var(--ds-accent); font: inherit; font-weight: 600; border: 0; border-radius: var(--ds-radius); box-shadow: var(--ds-shadow), 0 0 0 2px var(--ds-accent); transform: translateY(-200%) }
+.ds-skip:focus { transform: none }
+.content { max-width: 1280px; margin: 0 auto; padding: var(--ds-s3) var(--ds-s3) 120px }
+#main:focus { outline: none }
+.ds-container { width: 100%; max-width: 1232px; margin-inline: auto }
+.proto-bar { background: #1f2430; color: #c9ced8; font-size: 12px }
+.proto-bar .ds-shell-inner { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; min-height: 30px; padding-block: 4px }
+.proto-bar a { color: #d6d0ff } .proto-bar strong { color: #fff; font-weight: 600 }
+
+/* ----- page header, cards, type, buttons (from design.css) ----- */
+.ds-page-header { margin-bottom: var(--ds-s3) }
+.ds-breadcrumb ol { display: flex; gap: var(--ds-s1); list-style: none; margin: 0 0 var(--ds-s2); padding: 0; font-size: 13px; color: var(--ds-muted) }
+.ds-breadcrumb li + li::before { content: "/"; margin-right: var(--ds-s1); color: var(--ds-line-strong) }
+.ds-breadcrumb [aria-current] { color: var(--ds-ink); font-weight: 500 }
+.ds-page-header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--ds-s2); flex-wrap: wrap }
+.ds-title { font-size: 28px; line-height: 36px; font-weight: 650; letter-spacing: -.01em; color: var(--ds-ink); margin: 0 }
+.ds-title:focus { outline: none }
+.ds-description { margin: var(--ds-s1) 0 0; font-size: 15px; line-height: 24px; color: var(--ds-muted); max-width: 72ch }
+.ds-card { background: var(--ds-surface); border: 1px solid var(--ds-line); border-radius: var(--ds-radius-lg); box-shadow: var(--ds-shadow) }
+.ds-section-title { font-size: 17px; line-height: 28px; font-weight: 600; color: var(--ds-ink); margin: 0 }
+.ds-label { display: block; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
+.ds-helper { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+.ds-input { width: 100%; font: inherit; font-size: 15px; color: var(--ds-ink); background: var(--ds-surface); border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius); height: 44px; padding: 0 var(--ds-s2); transition: border-color var(--ds-dur-1), box-shadow var(--ds-dur-1) }
+.ds-input:hover { border-color: #8a94a3 }
+.ds-input:focus-visible { outline: none; border-color: var(--ds-accent); box-shadow: 0 0 0 3px rgba(84, 63, 222, .25) }
+.ds-input[aria-invalid="true"] { border-color: var(--ds-danger) }
+.ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; padding: 0 var(--ds-s3); border-radius: var(--ds-radius); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; border: 1px solid var(--ds-line-strong); background: var(--ds-surface); color: var(--ds-ink); white-space: nowrap; transition: background var(--ds-dur-1), border-color var(--ds-dur-1) }
+.ds-btn:hover:not(:disabled) { background: #f0f2f5; text-decoration: none }
+.ds-btn-primary { background: var(--ds-accent); border-color: var(--ds-accent); color: #fff }
+.ds-btn-primary:hover:not(:disabled) { background: var(--ds-accent-hover) }
+.ds-btn:disabled { background: #e6e9ee; border-color: #d5d9e0; color: #4b5563; cursor: not-allowed }
+.ds-btn-ghost { background: transparent; border-color: transparent; color: var(--ds-accent); padding: 0 12px }
+.ds-btn-ghost:hover:not(:disabled) { background: var(--ds-accent-soft) }
+.ds-btn-sm { height: 32px; padding: 0 12px; font-size: 13px }
+.ds-btn-danger { color: var(--ds-danger) } .ds-btn-danger:hover:not(:disabled) { background: var(--ds-danger-bg) }
+.ds-alert { display: flex; gap: 12px; padding: var(--ds-s2); border-radius: var(--ds-radius); border: 1px solid; font-size: 14px; line-height: 20px }
+.ds-alert p { margin: 2px 0 0 } .ds-alert svg { flex: none; margin-top: 2px }
+.ds-alert-error { background: var(--ds-danger-bg); border-color: var(--ds-danger-line); color: #912018 }
+.ds-alert-warn { background: var(--ds-warn-bg); border-color: var(--ds-warn-line); color: var(--ds-warn) }
+.ds-alert-info { background: var(--ds-info-bg); border-color: var(--ds-info-line); color: #1849a9 }
+.ds-alert-ok { background: var(--ds-ok-bg); border-color: var(--ds-ok-line); color: var(--ds-ok) }
+.ds-alert .ds-alert-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px }
+.ds-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 14px }
+.ds-table th { text-align: left; padding: 10px 12px; background: #f8f9fb; color: var(--ds-muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--ds-line); white-space: nowrap }
+.ds-table td { padding: 8px 12px; border-bottom: 1px solid var(--ds-line); background: var(--ds-surface); vertical-align: middle }
+.ds-table tbody tr:last-child td { border-bottom: 0 }
+.ds-trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; line-height: 18px; color: #fff; background: #6b7280; white-space: nowrap }
+.tier-1 { background: var(--ds-tier-1) } .tier-2 { background: var(--ds-tier-2) } .tier-3 { background: var(--ds-tier-3) } .tier-4 { background: var(--ds-tier-4) }
+
+/* ===== Provider onboarding (po-*) : proposed frontend/src/connect.css ===== */
+.po-mark { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: var(--ds-radius); background: var(--ds-surface-2); border: 1px solid var(--ds-line); color: var(--ds-ink); font-size: 11px; font-weight: 700; letter-spacing: .02em }
+.po-mark-lg { width: 48px; height: 48px; font-size: 13px }
+.po-mark-domino { background: var(--ds-accent-soft); color: var(--ds-accent); border-color: #d9d3fa }
+.po-st { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid transparent }
+.po-st svg { flex: none }
+.po-st-idle { background: var(--ds-surface-2); color: var(--ds-text) }
+.po-st-ok { background: var(--ds-ok-bg); color: var(--ds-ok); border-color: var(--ds-ok-line) }
+.po-st-warn { background: var(--ds-warn-bg); color: var(--ds-warn); border-color: var(--ds-warn-line) }
+.po-st-err { background: var(--ds-danger-bg); color: #912018; border-color: var(--ds-danger-line) }
+.po-st-busy { background: var(--ds-accent-soft); color: #3b2ba8 }
+.po-sample { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 4px; border-radius: 11px; font-size: 12px; font-weight: 700; color: #5c3f00; background: #fff7e6; border: 1px solid #b07a00; white-space: nowrap }
+.po-sample::before { content: ""; width: 12px; height: 12px; border-radius: 6px; background: var(--ds-sample-stripe) }
+
+/* gallery */
+.po-domino { display: flex; align-items: center; gap: var(--ds-s2); padding: var(--ds-s2) var(--ds-s3); margin-bottom: var(--ds-s3) }
+.po-domino-text { flex: 1; min-width: 0 }
+.po-domino-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--ds-ink) }
+.po-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ds-s2) }
+@media (max-width: 899px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+.po-card { display: flex; flex-direction: column; gap: 12px; padding: 20px; min-width: 0; transition: border-color var(--ds-dur-1), box-shadow var(--ds-dur-1) }
+.po-card:hover { border-color: var(--ds-line-strong); box-shadow: 0 2px 8px rgba(16, 24, 40, .08) }
+.po-card-head { display: flex; gap: 12px; align-items: flex-start }
+.po-card-titles { flex: 1; min-width: 0 }
+.po-card-title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ds-ink) }
+.po-card-products { margin: 2px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+.po-card-meta { margin: 0; font-size: 13px; line-height: 20px; display: grid; gap: 2px }
+.po-card-meta div { display: flex; gap: 6px; color: var(--ds-muted) } .po-card-meta dt { flex: none } .po-card-meta dd { margin: 0; color: var(--ds-text); min-width: 0 }
+.po-card-actions { margin-top: auto; padding-top: 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.po-card-other { background: transparent; border-style: dashed; box-shadow: none }
+.po-section-h { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 0 0 12px }
+.po-section-h h2 { margin: 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ds-muted) }
+
+/* step rail */
+.po-rail { list-style: none; margin: 0 0 var(--ds-s3); padding: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; counter-reset: s }
+.po-rail li { position: relative; min-width: 0 }
+.po-rail-item { display: flex; align-items: center; gap: 8px; padding: 8px 4px 10px 0; font-size: 13px; font-weight: 500; color: var(--ds-muted); border-bottom: 2px solid var(--ds-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.po-rail a.po-rail-item:hover { color: var(--ds-ink); text-decoration: none; border-bottom-color: var(--ds-line-strong) }
+.po-rail-num { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--ds-surface-2); color: var(--ds-text) }
+.po-rail [aria-current="step"] { color: var(--ds-accent); font-weight: 600; border-bottom-color: var(--ds-accent) }
+.po-rail [aria-current="step"] .po-rail-num { background: var(--ds-accent); color: #fff }
+.po-rail .is-done { color: var(--ds-ink); border-bottom-color: var(--ds-ok) }
+.po-rail .is-done .po-rail-num { background: var(--ds-ok-bg); color: var(--ds-ok) }
+
+/* wizard layout */
+.po-wiz { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ds-s3); align-items: start }
+@media (min-width: 1200px) { .po-wiz { grid-template-columns: minmax(0, 1fr) 340px } .po-aside { position: sticky; top: var(--ds-s3) } }
+.po-main { display: flex; flex-direction: column; gap: var(--ds-s2); min-width: 0 }
+.po-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px var(--ds-s3); border-bottom: 1px solid var(--ds-line) }
+.po-panel-head h2 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ds-ink) }
+.po-panel-body { padding: 20px var(--ds-s3) var(--ds-s3) }
+.po-aside .po-panel-body { padding: 16px 20px 20px }
+.po-aside h3 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ds-muted) }
+.po-aside h3:first-child { margin-top: 0 }
+.po-list { margin: 0; padding: 0; list-style: none; font-size: 13px; line-height: 20px }
+.po-list li { display: flex; gap: 8px; padding: 3px 0 } .po-list svg { flex: none; margin-top: 3px }
+.po-yes svg { color: var(--ds-ok) } .po-no svg { color: var(--ds-muted) }
+
+/* choice cards (radio) */
+.po-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 8px 0 0 }
+.po-choice { position: relative; display: flex; gap: 10px; padding: 12px 14px; border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius); cursor: pointer; background: var(--ds-surface) }
+.po-choice:has(input:checked) { border-color: var(--ds-accent); box-shadow: 0 0 0 1px var(--ds-accent); background: #faf9ff }
+.po-choice:has(input:focus-visible) { outline: 2px solid var(--ds-accent); outline-offset: 2px }
+.po-choice input { margin: 3px 0 0; accent-color: var(--ds-accent) }
+.po-choice strong { display: block; color: var(--ds-ink); font-size: 14px }
+.po-choice span { display: block; font-size: 13px; color: var(--ds-muted); line-height: 20px }
+.po-check-row { display: flex; gap: 10px; align-items: flex-start; margin-top: 16px; font-size: 14px }
+.po-check-row input { margin-top: 3px; accent-color: var(--ds-accent); width: 16px; height: 16px }
+fieldset.po-fs { border: 0; margin: 0; padding: 0; min-width: 0 }
+fieldset.po-fs legend { padding: 0 }
+
+/* handshake panel */
+.po-hs-steps { margin: 0 0 20px; padding: 0; list-style: none; counter-reset: h; display: grid; gap: 10px }
+.po-hs-steps li { counter-increment: h; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; font-size: 14px; line-height: 22px }
+.po-hs-steps li::before { content: counter(h); width: 24px; height: 24px; border-radius: 50%; background: var(--ds-surface-2); color: var(--ds-ink); font-size: 12px; font-weight: 600; display: grid; place-items: center }
+.po-hs-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.po-cmd { position: relative; margin: 16px 0 0; border-radius: var(--ds-radius); background: var(--ds-code-bg); color: var(--ds-code-text) }
+.po-cmd pre { margin: 0; padding: 14px 112px 14px 16px; font: 13px/20px var(--ds-mono); white-space: pre-wrap; word-break: break-all; max-height: 104px; overflow: auto; background: transparent; color: inherit }
+.po-cmd .po-copy { position: absolute; top: 8px; right: 8px; height: 32px; padding: 0 12px; font-size: 13px; background: #2a3242; border-color: #3b4558; color: #fff }
+.po-cmd .po-copy:hover:not(:disabled) { background: #343e52 }
+.po-cmd-cap { margin: 6px 0 0; font-size: 12px; color: var(--ds-muted) }
+details.po-more { margin-top: 12px; font-size: 13px }
+details.po-more summary { cursor: pointer; font-weight: 600; color: var(--ds-accent); width: fit-content; border-radius: 4px }
+details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflow: auto; font: 12px/18px var(--ds-mono); background: #f8f9fb; border: 1px solid var(--ds-line); border-radius: var(--ds-radius); white-space: pre-wrap }
+.po-listen { display: flex; gap: 12px; align-items: center; margin-top: 20px; padding: 14px 16px; border-radius: var(--ds-radius); border: 1px solid var(--ds-line); background: #fafbfc; font-size: 14px; line-height: 20px }
+.po-listen-text { flex: 1; min-width: 0 } .po-listen-text strong { color: var(--ds-ink); font-weight: 600 }
+.po-listen-time { font-variant-numeric: tabular-nums; color: var(--ds-muted); font-size: 13px }
+.po-listen.is-live { border-color: #c9c1f7; background: #faf9ff }
+.po-listen.is-ok { border-color: var(--ds-ok-line); background: var(--ds-ok-bg); color: var(--ds-ok) }
+.po-listen.is-ok strong { color: var(--ds-ok) }
+.po-pulse { position: relative; flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--ds-accent) }
+.po-listen.is-idle .po-pulse { background: var(--ds-line-strong) }
+.po-listen.is-live .po-pulse::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--ds-accent); opacity: 0; animation: po-pulse 1.8s var(--ds-ease) infinite }
+@keyframes po-pulse { 0% { transform: scale(.5); opacity: .7 } 100% { transform: scale(1.4); opacity: 0 } }
+.po-divider { display: flex; align-items: center; gap: 12px; margin: 24px 0 16px; font-size: 12px; color: var(--ds-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em }
+.po-divider::before, .po-divider::after { content: ""; flex: 1; height: 1px; background: var(--ds-line) }
+.po-paste-row { display: flex; gap: 8px }
+.po-paste-row .ds-input { font-family: var(--ds-mono); font-size: 13px }
+.po-parse { margin-top: 8px; min-height: 0 }
+.po-parse:empty { display: none }
+.po-parse-card { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border-radius: var(--ds-radius); border: 1px solid var(--ds-ok-line); background: var(--ds-ok-bg); color: var(--ds-ok); font-size: 13px }
+.po-parse-card strong { color: var(--ds-ok) } .po-parse-card .po-parse-text { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere }
+.po-parse-err { margin: 0; font-size: 13px; color: var(--ds-danger); font-weight: 500 }
+.po-parse-hint { margin: 0; font-size: 13px; color: var(--ds-warn) }
+
+/* permission checklist */
+.po-checks { list-style: none; margin: 0; padding: 0 }
+.po-checks li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px 0; border-top: 1px solid var(--ds-line); align-items: start }
+.po-checks li:first-child { border-top: 0; padding-top: 0 }
+.po-checks .po-ico { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: var(--ds-surface-2); color: var(--ds-muted) }
+.po-checks .is-ok .po-ico { background: var(--ds-ok-bg); color: var(--ds-ok); animation: po-pop var(--ds-dur-2) var(--ds-ease) }
+.po-checks .is-miss .po-ico { background: var(--ds-danger-bg); color: var(--ds-danger) }
+.po-checks .is-warn .po-ico { background: var(--ds-warn-bg); color: var(--ds-warn) }
+.po-checks .is-skip .po-ico { background: var(--ds-surface-2); color: var(--ds-muted) }
+@keyframes po-pop { from { transform: scale(.6) } to { transform: scale(1) } }
+.po-check-label { font-weight: 600; color: var(--ds-ink); font-size: 14px; line-height: 24px }
+.po-check-detail { grid-column: 2; font-size: 13px; color: var(--ds-muted); line-height: 20px; overflow-wrap: anywhere }
+.po-check-state { font-size: 13px; color: var(--ds-muted); line-height: 24px; white-space: nowrap }
+.po-check-fix { grid-column: 2 / -1; margin-top: 6px; padding: 10px 12px; border-radius: var(--ds-radius); background: var(--ds-danger-bg); border: 1px solid var(--ds-danger-line); color: #912018; font-size: 13px; line-height: 20px }
+.po-check-fix.warn { background: var(--ds-warn-bg); border-color: var(--ds-warn-line); color: var(--ds-warn) }
+.po-check-fix .ds-alert-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px }
+.po-req { font-size: 11px; font-weight: 600; color: var(--ds-muted); border: 1px solid var(--ds-line); border-radius: 4px; padding: 0 5px; margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; vertical-align: 2px }
+
+/* scope tree */
+.po-tree, .po-tree ul { list-style: none; margin: 0; padding: 0 }
+.po-tree ul { padding-left: 28px }
+.po-node { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 0; border-bottom: 1px solid var(--ds-line) }
+.po-node input { width: 16px; height: 16px; accent-color: var(--ds-accent); flex: none }
+.po-node label { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: baseline; cursor: pointer }
+.po-node-name { font-weight: 600; color: var(--ds-ink) } .po-node-sub { font-size: 13px; color: var(--ds-muted) }
+.po-count { font-size: 12px; font-weight: 600; background: var(--ds-surface-2); color: var(--ds-text); border-radius: 12px; padding: 1px 8px; font-variant-numeric: tabular-nums }
+.po-count-hi { background: var(--ds-accent-soft); color: #3b2ba8 }
+.po-node.is-dim .po-node-name { color: var(--ds-muted); font-weight: 500 }
+.po-toggle { width: 24px; height: 24px; border: 0; background: transparent; border-radius: 4px; cursor: pointer; color: var(--ds-muted); display: grid; place-items: center; flex: none }
+.po-toggle:hover { background: var(--ds-surface-2) }
+.po-toggle[aria-expanded="false"] svg { transform: rotate(-90deg) }
+.po-toggle svg { transition: transform var(--ds-dur-1) }
+.po-tree-bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; margin-bottom: 8px }
+
+/* scan */
+.po-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: var(--ds-s2) }
+@media (max-width: 1100px) { .po-stats { grid-template-columns: repeat(3, minmax(0, 1fr)) } }
+.po-stat { padding: 12px 16px; display: flex; flex-direction: column; gap: 2px }
+.po-stat span { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted) }
+.po-stat strong { font-size: 28px; line-height: 36px; font-weight: 650; color: var(--ds-ink); font-variant-numeric: tabular-nums }
+.po-progress { height: 6px; border-radius: 3px; background: var(--ds-surface-2); overflow: hidden; margin: 12px 0 4px }
+.po-progress i { display: block; height: 100%; background: var(--ds-accent); border-radius: 3px; transition: width var(--ds-dur-3) var(--ds-ease) }
+.po-scan-cols { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: var(--ds-s2); align-items: start }
+@media (max-width: 1100px) { .po-scan-cols { grid-template-columns: minmax(0, 1fr) } }
+.po-scopes-l { list-style: none; margin: 0; padding: 0 }
+.po-scopes-l li { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 20px; border-top: 1px solid var(--ds-line); font-size: 13px }
+.po-scopes-l li:first-child { border-top: 0 }
+.po-scopes-l .po-sname { color: var(--ds-ink); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.po-scopes-l .po-sstate { color: var(--ds-muted); white-space: nowrap; font-variant-numeric: tabular-nums }
+.po-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #d9d3fa; border-top-color: var(--ds-accent); animation: po-spin .9s linear infinite }
+@keyframes po-spin { to { transform: rotate(360deg) } }
+.po-feed { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto }
+.po-feed li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 20px; border-top: 1px solid var(--ds-line); animation: po-in var(--ds-dur-2) var(--ds-ease) }
+.po-feed li:first-child { border-top: 0 }
+@keyframes po-in { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: none } }
+.po-feed .po-fname { font-weight: 600; color: var(--ds-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.po-feed .po-fsub { grid-column: 1; font-size: 12px; color: var(--ds-muted) }
+.po-job { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 12px 16px; margin-top: var(--ds-s2); border-radius: var(--ds-radius); background: var(--ds-surface); border: 1px solid var(--ds-line); font-size: 13px; color: var(--ds-muted) }
+
+/* change badges, flags, diff */
+.po-chg { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 11px; font-size: 12px; font-weight: 600; white-space: nowrap }
+.po-chg-new { background: var(--ds-accent-soft); color: #3b2ba8 }
+.po-chg-changed { background: #fff4d6; color: #6b4a00 }
+.po-chg-unchanged { background: var(--ds-surface-2); color: var(--ds-text) }
+.po-chg-missing { background: var(--ds-danger-bg); color: #912018 }
+.po-flags { display: flex; flex-wrap: wrap; gap: 4px }
+.po-flag { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 4px; font-size: 12px; font-weight: 500; background: #fff1e6; color: #7a2e0e; white-space: nowrap }
+.po-flag-high { background: var(--ds-danger-bg); color: #912018 }
+.po-diff { list-style: none; margin: 0; padding: 0; font: 12px/18px var(--ds-mono) }
+.po-diff li { padding: 2px 8px; border-radius: 4px; margin-top: 2px; overflow-wrap: anywhere }
+.po-diff .add { background: var(--ds-ok-bg); color: var(--ds-ok) } .po-diff .del { background: var(--ds-danger-bg); color: #912018 } .po-diff .mod { background: #fff4d6; color: #6b4a00 }
+
+/* review */
+.po-toolbar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; justify-content: space-between; margin-bottom: 12px }
+.po-seg { display: inline-flex; flex-wrap: wrap; padding: 2px; gap: 2px; background: var(--ds-surface-2); border: 1px solid var(--ds-line); border-radius: var(--ds-radius) }
+.po-seg button { height: 30px; padding: 0 12px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; color: var(--ds-text); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap }
+.po-seg button:hover { background: #dfe3e9 }
+.po-seg button[aria-pressed="true"] { background: var(--ds-surface); color: var(--ds-ink); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .15) }
+.po-seg b { font-weight: 600; color: var(--ds-muted); margin-left: 4px; font-variant-numeric: tabular-nums }
+.po-search { width: 240px; height: 36px; font-size: 14px }
+.po-rt col.c-cb { width: 44px } .po-rt col.c-chg { width: 128px } .po-rt col.c-own { width: 168px } .po-rt col.c-tier { width: 168px } .po-rt col.c-flags { width: 25% } .po-rt col.c-why { width: 76px }
+@media (max-width: 1100px) { .po-rt col.c-own { width: 148px } .po-rt col.c-tier { width: 150px } .po-rt col.c-flags { width: 21% } }
+.po-rt td { height: 56px }
+.po-rt input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--ds-accent); margin: 0 }
+.po-rt .po-aname { display: block; font-weight: 600; color: var(--ds-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.po-rt .po-asub { display: block; font-size: 12px; color: var(--ds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.po-rt tr.is-risk td:first-child { box-shadow: inset 3px 0 0 var(--ds-danger) }
+.po-rt tr.is-off td { background: #fafbfc } .po-rt tr.is-off .po-aname { color: var(--ds-muted) }
+.po-rt tr.po-detail td { height: auto; padding: 0; background: #fbfbfe }
+.po-own { width: 100%; height: 32px; font: inherit; font-size: 13px; padding: 0 28px 0 8px; border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius-sm); background: var(--ds-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23596273' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center; appearance: none; color: var(--ds-ink) }
+.po-own.is-none { border-color: var(--ds-danger-line); color: #912018; background-color: var(--ds-danger-bg) }
+.po-own-src { display: block; font-size: 11px; color: var(--ds-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.po-tiercell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap }
+.po-tierdelta { font-size: 12px; color: var(--ds-muted) } .po-tierdelta.up { color: var(--ds-danger); font-weight: 600 }
+.po-tiernote { display: block; font-size: 11px; color: var(--ds-muted); margin-top: 2px }
+.po-why-btn { height: 28px; padding: 0 8px; font-size: 13px }
+.po-why-btn[aria-expanded="true"] { background: var(--ds-accent-soft) }
+.po-xp { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--ds-s3); padding: 16px 20px 20px 56px; border-bottom: 1px solid var(--ds-line) }
+@media (max-width: 1100px) { .po-xp { grid-template-columns: minmax(0, 1fr); padding-left: 20px } }
+.po-xp h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted) }
+.po-crit { list-style: none; margin: 0; padding: 0 }
+.po-crit li { display: grid; grid-template-columns: 150px 28px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-top: 1px solid var(--ds-line); font-size: 13px; line-height: 20px; align-items: baseline }
+.po-crit li:first-child { border-top: 0 }
+.po-crit .k { color: var(--ds-text); font-weight: 500 } .po-crit .v { font-weight: 700; color: var(--ds-ink); font-variant-numeric: tabular-nums; text-align: right } .po-crit .why { color: var(--ds-muted) }
+.po-crit .v.hi { color: var(--ds-danger) }
+.po-ovr { margin-top: 12px; padding: 12px; border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: var(--ds-surface) }
+.po-ovr .ds-input { height: 36px; font-size: 14px }
+.po-tierpick { display: inline-grid; grid-template-columns: repeat(4, 64px); gap: 2px; padding: 2px; background: var(--ds-surface-2); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); margin: 6px 0 10px }
+.po-tierpick button { height: 28px; border: 0; border-radius: var(--ds-radius-sm); background: transparent; font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; color: var(--ds-text) }
+.po-tierpick button[aria-checked="true"] { background: var(--ds-accent); color: #fff; font-weight: 600 }
+.po-footer { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-height: 72px; padding: 12px 0; margin-top: var(--ds-s2); background: var(--ds-bg); border-top: 1px solid var(--ds-line); box-shadow: 0 -8px 8px -8px rgba(16, 24, 40, .12) }
+.po-footer-l { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 14px }
+.po-footer-l strong { color: var(--ds-ink); font-variant-numeric: tabular-nums }
+.po-footer .po-own { width: 180px; height: 36px }
+.po-footer-r { display: flex; gap: 8px; align-items: center }
+
+/* banners */
+.po-banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px 12px 20px; margin-bottom: var(--ds-s2); border-radius: var(--ds-radius); border: 1px solid #b07a00; background: #fff7e6; color: #5c3f00; font-size: 14px; position: relative; overflow: hidden }
+.po-banner::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--ds-sample-stripe) }
+.po-banner strong { color: #3d2a00 }
+
+/* summary + detail */
+.po-sum-hero { display: flex; gap: 16px; align-items: flex-start; padding: var(--ds-s3) }
+.po-sum-ico { flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--ds-ok-bg); color: var(--ds-ok) }
+.po-sum-hero h2 { margin: 0; font-size: 20px; line-height: 28px; color: var(--ds-ink) }
+.po-kv { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--ds-line) }
+@media (max-width: 899px) { .po-kv { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+.po-kv div { padding: 16px var(--ds-s3); border-right: 1px solid var(--ds-line) } .po-kv div:last-child { border-right: 0 }
+.po-kv dt { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted) }
+.po-kv dd { margin: 2px 0 0; font-size: 24px; line-height: 32px; font-weight: 650; color: var(--ds-ink); font-variant-numeric: tabular-nums }
+.po-kv dd small { display: block; font-size: 13px; font-weight: 400; color: var(--ds-muted); line-height: 18px }
+.po-radios { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px }
+.po-radios label { display: inline-flex; gap: 8px; align-items: center; height: 36px; padding: 0 14px; border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius); font-size: 14px; cursor: pointer; background: var(--ds-surface) }
+.po-radios label:has(input:checked) { border-color: var(--ds-accent); box-shadow: 0 0 0 1px var(--ds-accent); background: #faf9ff; color: var(--ds-ink); font-weight: 600 }
+.po-radios label:has(input:focus-visible) { outline: 2px solid var(--ds-accent); outline-offset: 2px }
+.po-radios input { accent-color: var(--ds-accent); margin: 0 }
+.po-detail-head { display: flex; gap: 16px; align-items: center; flex-wrap: wrap }
+.po-detail-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; margin-top: 6px; font-size: 13px; color: var(--ds-muted) }
+.po-dl { margin: 0; font-size: 14px }
+.po-dl > div { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 8px; padding: 8px 0; border-top: 1px solid var(--ds-line) }
+.po-dl > div:first-child { border-top: 0; padding-top: 0 }
+.po-dl dt { color: var(--ds-muted); font-size: 13px } .po-dl dd { margin: 0; color: var(--ds-ink); font-weight: 500; overflow-wrap: anywhere }
+.po-mono { font-family: var(--ds-mono); font-size: 12px }
+.po-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--ds-s2); align-items: start }
+@media (max-width: 1100px) { .po-two { grid-template-columns: minmax(0, 1fr) } }
+.po-tbl-wrap { overflow: hidden; border-radius: 0 0 var(--ds-radius-lg) var(--ds-radius-lg) }
+dialog.po-dialog { border: 0; border-radius: var(--ds-radius-lg); padding: 0; width: min(520px, calc(100vw - 32px)); box-shadow: 0 20px 48px rgba(16, 24, 40, .24); color: var(--ds-text) }
+dialog.po-dialog::backdrop { background: rgba(20, 24, 31, .45) }
+.po-dialog-body { padding: 24px }
+.po-dialog-body h2 { margin: 0 0 8px; font-size: 18px; color: var(--ds-ink) }
+.po-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--ds-line); background: #fafbfc; border-radius: 0 0 var(--ds-radius-lg) var(--ds-radius-lg) }
+.po-proto { border: 1px dashed #8a94a3; border-radius: var(--ds-radius); padding: 8px 12px; font-size: 12px; color: var(--ds-muted); margin-top: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+.po-empty { text-align: center; padding: 40px 24px; color: var(--ds-muted) }
+.po-empty h3 { margin: 0 0 4px; font-size: 16px; color: var(--ds-ink) }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0s !important; animation-iteration-count: 1 !important; transition-duration: 0s !important }
+  .po-listen.is-live .po-pulse::after { display: none }
+  .po-spin { border-top-color: var(--ds-accent); border-color: var(--ds-accent) }
+}
+@media (max-width: 1100px) { .ds-subtitle { display: none } }
+</style>
+</head>
+<body>
+<button class="ds-skip" type="button" data-act="skip">Skip to content</button>
+<div class="proto-bar" role="note" aria-label="Prototype navigation">
+  <div class="ds-shell-inner">
+    <strong>Prototype</strong>
+    <span>Screens:</span>
+    <a href="#gallery">gallery</a><a href="#aws-1">aws-1</a><a href="#aws-1-waiting">aws-1-waiting</a><a href="#aws-1-failed">aws-1-failed</a><a href="#aws-2">aws-2</a><a href="#aws-2-partial">aws-2-partial</a><a href="#aws-3">aws-3</a><a href="#aws-4">aws-4</a><a href="#aws-5">aws-5</a><a href="#aws-5-why">aws-5-why</a><a href="#aws-6">aws-6</a><a href="#google-1">google-1</a><a href="#microsoft-1">microsoft-1</a><a href="#databricks-1">databricks-1</a><a href="#snowflake-1">snowflake-1</a><a href="#other">other</a><a href="#connection-aws">connection-aws</a><a href="#connection-google">connection-google</a><a href="#sample-review">sample-review</a><a href="#fleet">fleet</a>
+  </div>
+</div>
+<header class="ds-topbar" data-testid="app-topbar">
+  <div class="ds-shell-inner ds-topbar-row">
+    <a href="#fleet" class="ds-brand"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="6" fill="#543fde"/><path d="M7 15.5l5-8 5 8" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>Agent Control Tower</a>
+    <span class="ds-subtitle">Agent system of record</span>
+    <nav aria-label="Primary" class="ds-nav" id="nav">
+      <a href="#fleet" data-nav="fleet" data-testid="nav-fleet">Fleet</a>
+      <a href="#gallery" data-nav="connections" data-testid="nav-connections">Connections</a>
+      <a href="#gallery" data-nav="settings" data-testid="nav-settings" aria-disabled="true" title="Not part of this prototype">Settings</a>
+    </nav>
+  </div>
+</header>
+<main class="content" id="main" tabindex="-1"><div id="app" class="ds-container"></div></main>
+<div id="live" class="ds-sr" aria-live="polite" aria-atomic="true"></div>
+<dialog class="po-dialog" id="disconnect-dialog" data-testid="disconnect-dialog" aria-labelledby="dc-h">
+  <div class="po-dialog-body">
+    <h2 id="dc-h">Disconnect AWS?</h2>
+    <p>ACT stops reading from AWS and cancels the daily sync. The 19 agents already in ACT stay, with their history, and are marked <strong>Source disconnected</strong>.</p>
+    <p class="ds-helper">The ACT-ReadOnly role stays in your AWS accounts until you delete the ACT-ReadOnly stack in CloudFormation.</p>
+  </div>
+  <div class="po-dialog-foot">
+    <button class="ds-btn" type="button" data-act="dc-cancel" data-testid="disconnect-cancel">Keep connection</button>
+    <button class="ds-btn ds-btn-primary" style="background:var(--ds-danger);border-color:var(--ds-danger)" type="button" data-act="dc-confirm" data-testid="disconnect-confirm">Disconnect AWS</button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+'use strict';
+const $ = (s, r) => (r || document).querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const RM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const app = $('#app');
+let timers = [];
+const later = (fn, ms) => { const t = setTimeout(fn, RM ? Math.min(ms, 400) : ms); timers.push(t); return t; };
+const every = (fn, ms) => { const t = setInterval(fn, ms); timers.push(t); return t; };
+const clearTimers = () => { timers.forEach((t) => { clearTimeout(t); clearInterval(t); }); timers = []; };
+const say = (msg) => { const l = $('#live'); l.textContent = ''; setTimeout(() => { l.textContent = msg; }, 60); };
+
+/* ---------- icons ---------- */
+const I = {
+  check: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  x: '<svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  alert: '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5l7 12.5H1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v3.5M8 11.5v.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  info: '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4.5M8 4.6v.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  dash: '<svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  ext: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2h5v5M14 2L7 9M12 9.5V14H2V4h4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  copy: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M3 11V3a1 1 0 011-1h7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  chev: '<svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  lock: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  up: '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  clock: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
+};
+
+/* ---------- providers ---------- */
+const P = {
+  aws: { name: 'AWS', mono: 'AWS', products: 'Bedrock AgentCore · Bedrock Agents · Agent Registry', setup: 'CloudFormation stack, about 2 minutes', who: 'An AWS admin who can create IAM roles', scopes: 'accounts and Regions' },
+  google: { name: 'Google Cloud', mono: 'GC', products: 'Vertex AI Agent Runtime · Gemini Enterprise · Agent Registry', setup: 'Cloud Shell command, about 1 minute', who: 'A Google Cloud admin who can grant IAM roles', scopes: 'organization, folders and projects' },
+  microsoft: { name: 'Microsoft', mono: 'MS', products: 'Azure AI Foundry · Entra Agent ID · Agent 365', setup: 'Azure Cloud Shell command, about 2 minutes', who: 'An Azure admin; a Privileged Role Admin for Entra', scopes: 'subscriptions and Foundry projects' },
+  databricks: { name: 'Databricks', mono: 'DB', products: 'Agent endpoints · Apps · Agent Bricks · Unity Catalog', setup: 'Setup script and connection code, about 3 minutes', who: 'A Databricks account admin', scopes: 'workspaces and catalogs' },
+  snowflake: { name: 'Snowflake', mono: 'SF', products: 'Cortex Agents · Snowflake Intelligence', setup: 'SQL worksheet, about 1 minute', who: 'A Snowflake ACCOUNTADMIN', scopes: 'databases and schemas' }
+};
+
+/* ---------- state ---------- */
+const S = { mode: 'org', traces: false, awsConnected: false, schedule: 'daily', filter: 'all', q: '', open: null, ovrOpen: null, ovrTier: null, sel: new Set(), owners: {}, tiers: {}, reasons: {}, excluded: new Set(), scanDone: false, sample: false, scopeOff: new Set(['acct-7770']) };
+
+/* ---------- agents (sample tenant used by the prototype) ---------- */
+const ACCTS = { 'payments-prod': '1234 5678 9012', 'retail-prod': '2109 8765 4321', 'data-science-dev': '5550 0011 1122' };
+const CRIT = [['decision_impact', 'Decision impact'], ['financial_exposure', 'Financial exposure'], ['customer_impact', 'Customer impact'], ['autonomy', 'Autonomy'], ['data_sensitivity', 'Data sensitivity'], ['reversibility', 'Reversibility'], ['regulatory_exposure', 'Regulatory exposure']];
+const USERS = ['j.alvarez', 'm.chen', 'p.okafor', 's.rao', 'l.becker'];
+// id, name, kind, account, region, change, owner, ownerSrc, tier, prevTier, flags, scores, evidence{d,m,w,c,a,x,r}, diff
+const A = [
+  ['a01', 'payments-dispute-agent', 'AgentCore Runtime', 'payments-prod', 'us-east-1', 'new', 'j.alvarez', 'tag owner', 1, null, ['Moves money', 'No human approval'], '4545454', { d: 'Decides provisional credit on card disputes', m: 'payments.issue_credit', c: 'Credits customer accounts directly', a: 0, x: 'Reads card transactions and customer PII (dynamodb: disputes-prod)', r: 'Reg E dispute timelines apply' }],
+  ['a02', 'card-fraud-triage', 'AgentCore Runtime', 'payments-prod', 'us-east-1', 'new', 'm.chen', 'Agent Registry record', 1, null, ['Shared identity', 'Writes customer data'], '5345434', { d: 'Blocks or releases cards flagged for fraud', w: 'cards.set_block', c: 'Can block a customer’s card', a: 0, x: 'Reads card transactions (s3://fraud-signals-prod)', r: 'Fraud decisions are open to regulator review' }],
+  ['a03', 'treasury-fx-quote', 'Bedrock Agent (classic)', 'payments-prod', 'us-east-1', 'changed', 'p.okafor', 'tag owner', 1, 2, ['Risk went up', 'Moves money'], '4534443', { d: 'Quotes, and now executes, FX trades', m: 'fx.execute_trade', c: 'Corporate treasury clients', a: 0, x: 'Reads client positions (rds: treasury)', r: 'Trade reporting rules apply' }, [['add', '+ tool fx.execute_trade (action group: trading)'], ['del', '− guardrail fx-limits-v2']]],
+  ['a04', 'chargeback-letter-drafter', 'AgentCore harness', 'payments-prod', 'us-east-1', 'new', 'j.alvarez', 'creator (CloudTrail)', 2, null, ['Customer-facing'], '3232333', { d: 'Drafts chargeback letters for analyst sign-off', w: 'docs.send_letter', c: 'Letters go to customers after approval', a: 1, x: 'Reads dispute case files', r: 'Customer communications rules apply' }],
+  ['a05', 'sepa-exceptions-helper', 'AgentCore Runtime', 'payments-prod', 'eu-west-1', 'new', 'l.becker', 'tag owner', 2, null, ['PII access'], '3333433', { d: 'Suggests repairs for rejected SEPA payments', c: 'Internal payment operations only', a: 1, x: 'Reads payer and payee details (PII)', r: 'GDPR applies to payer data' }],
+  ['a06', 'swift-repair-agent', 'AgentCore Runtime', 'payments-prod', 'us-east-1', 'new', 's.rao', 'Agent Registry record', 1, null, ['Moves money', 'Shared identity'], '5525444', { d: 'Repairs and resubmits failed SWIFT messages', m: 'swift.resubmit', c: 'Affects corporate client payments', a: 0, x: 'Reads payment messages', r: 'Sanctions screening applies' }],
+  ['a07', 'branch-faq-assistant', 'Bedrock Agent (classic)', 'retail-prod', 'us-east-1', 'unchanged', 'm.chen', 'tag owner', 4, null, [], '1131111', { d: 'Answers branch staff policy questions', c: 'Internal staff only', a: 1, x: 'Reads the policy knowledge base', r: 'None identified' }],
+  ['a08', 'loan-intake-summarizer', 'AgentCore harness', 'retail-prod', 'us-east-1', 'changed', 'p.okafor', 'tag owner', 3, 3, [], '3122312', { d: 'Summarizes loan applications for underwriters', c: 'Indirect: underwriters decide', a: 1, x: 'Reads application documents (PII)', r: 'Fair lending review applies' }, [['mod', '~ model anthropic.claude-sonnet-4 → anthropic.claude-sonnet-4-5']]],
+  ['a09', 'collections-outreach', 'AgentCore Runtime', 'retail-prod', 'us-east-1', 'new', 's.rao', 'tag owner', 2, null, ['Customer-facing', 'No human approval'], '3245333', { d: 'Chooses when and how to contact customers in arrears', w: 'comms.send_sms', c: 'Messages customers directly', a: 0, x: 'Reads account balances and contact details', r: 'Debt collection rules apply' }],
+  ['a10', 'kyc-document-reviewer', 'AgentCore harness', 'retail-prod', 'us-east-1', 'new', null, 'no owner tag or creator found', 2, null, ['No owner', 'PII access'], '4223523', { d: 'Flags KYC documents as accepted or needing review', c: 'Can delay account opening', a: 1, x: 'Reads identity documents (PII)', r: 'KYC and AML rules apply' }],
+  ['a11', 'mortgage-rate-explainer', 'Bedrock Agent (classic)', 'retail-prod', 'us-east-1', 'unchanged', 'l.becker', 'tag owner', 4, null, [], '1121111', { d: 'Explains published mortgage rates', c: 'Customer-facing, information only', a: 1, x: 'Reads public rate tables', r: 'None identified' }],
+  ['a12', 'card-limit-advisor', 'AgentCore Runtime', 'retail-prod', 'us-east-1', 'new', 'm.chen', 'tag owner', 2, null, ['Customer-facing'], '3333333', { d: 'Recommends credit limit changes for staff to approve', c: 'Advises staff on customer limits', a: 1, x: 'Reads credit history', r: 'Fair lending review applies' }],
+  ['a13', 'wealth-portfolio-explainer', 'AgentCore Runtime', 'retail-prod', 'us-west-2', 'new', 'l.becker', 'tag owner', 3, null, ['Customer-facing'], '2132322', { d: 'Explains portfolio performance to clients', c: 'Client-facing, information only', a: 1, x: 'Reads client holdings', r: 'Suitability rules may apply' }],
+  ['a14', 'complaints-classifier', 'AgentCore harness', 'retail-prod', 'us-west-2', 'new', 'j.alvarez', 'creator (CloudTrail)', 3, null, [], '3121322', { d: 'Routes complaints to teams', c: 'Indirect', a: 1, x: 'Reads complaint text', r: 'Complaint handling rules apply' }],
+  ['a15', 'aml-alert-narrator', 'AgentCore Runtime', 'data-science-dev', 'us-east-1', 'new', 'p.okafor', 'tag owner', 2, null, ['PII access'], '4112424', { d: 'Drafts AML alert narratives for investigators', c: 'Internal investigators only', a: 1, x: 'Reads transaction and customer data (PII)', r: 'AML reporting obligations apply' }],
+  ['a16', 'hr-policy-helper', 'Bedrock Agent (classic)', 'data-science-dev', 'us-east-1', 'new', 's.rao', 'tag owner', 4, null, [], '1121211', { d: 'Answers HR policy questions', c: 'Employees only', a: 1, x: 'Reads the HR policy library', r: 'None identified' }],
+  ['a17', 'model-doc-writer', 'AgentCore harness', 'data-science-dev', 'us-east-1', 'new', null, 'no owner tag or creator found', 4, null, ['No owner'], '2111111', { d: 'Drafts model documentation', c: 'Internal only', a: 1, x: 'Reads model metadata', r: 'Supports model risk documentation' }],
+  ['a18', 'it-ticket-router', 'AgentCore Runtime', 'data-science-dev', 'us-east-1', 'unchanged', 'm.chen', 'tag owner', 4, null, [], '1131111', { d: 'Routes IT tickets', w: 'jira.assign', c: 'Internal only', a: 0, x: 'Reads ticket text', r: 'None identified' }],
+  ['a19', 'credit-memo-assistant', 'AgentCore Runtime', 'data-science-dev', 'us-west-2', 'changed', 'j.alvarez', 'tag owner', 2, 3, ['Risk went up', 'PII access'], '4313433', { d: 'Drafts credit memos and now updates limits', w: 'crm.update_limit', c: 'Affects customer credit limits', a: 1, x: 'Reads s3://credit-bureau-raw (new)', r: 'Fair lending review applies' }, [['add', '+ tool crm.update_limit'], ['add', '+ data scope s3://credit-bureau-raw']]],
+  ['a20', 'legacy-mortgage-bot', 'Bedrock Agent (classic)', 'retail-prod', 'us-east-1', 'missing', 'l.becker', 'record in ACT', 3, null, [], '2122222', { d: 'Retired mortgage pre-qualification bot', c: 'Customer-facing', a: 1, x: 'Read applicant data', r: 'Fair lending review applied' }]
+].map((r) => ({ id: r[0], name: r[1], kind: r[2], acct: r[3], region: r[4], change: r[5], owner: r[6], ownerSrc: r[7], tier: r[8], prev: r[9], flags: r[10], scores: r[11].split('').map(Number), ev: r[12], diff: r[13] || [] }));
+const byId = Object.fromEntries(A.map((a) => [a.id, a]));
+function whyFor(a, k) {
+  const e = a.ev;
+  switch (k) {
+    case 'decision_impact': return e.d;
+    case 'financial_exposure': return e.m ? `Tool ${e.m} can move or commit funds` : 'No tool found that moves or commits money';
+    case 'customer_impact': return e.c;
+    case 'autonomy': return e.a ? 'Write tools require human confirmation' : 'No human-approval step before write tools';
+    case 'data_sensitivity': return e.x;
+    case 'reversibility': return (e.m || e.w) ? `Writes through ${e.m || e.w}; no undo API found` : 'Read-only tools; nothing to undo';
+    default: return e.r;
+  }
+}
+function resetSelection() { S.sel = new Set(A.filter((a) => a.change === 'new' || a.change === 'changed').map((a) => a.id)); }
+resetSelection();
+const ownerOf = (a) => (a.id in S.owners ? S.owners[a.id] : a.owner);
+const tierOf = (a) => (a.id in S.tiers ? S.tiers[a.id] : a.tier);
+const isRisk = (a) => tierOf(a) === 1 || !ownerOf(a) || a.flags.includes('Shared identity');
+
+/* ---------- shared fragments ---------- */
+const mark = (k, lg) => `<span class="po-mark${lg ? ' po-mark-lg' : ''}${k === 'domino' ? ' po-mark-domino' : ''}" aria-hidden="true">${k === 'domino' ? 'DOM' : k === 'other' ? 'A2A' : P[k].mono}</span>`;
+const tierBadge = (t) => `<span class="badge tier-${t}" data-testid="tier-badge" data-tier="${t}">Tier ${t}</span>`;
+const chg = (c) => `<span class="po-chg po-chg-${c}">${{ new: 'New', changed: 'Changed', unchanged: 'Unchanged', missing: 'Missing' }[c]}</span>`;
+const flag = (f) => `<span class="po-flag${['Moves money', 'No owner', 'Shared identity', 'Risk went up'].includes(f) ? ' po-flag-high' : ''}">${esc(f)}</span>`;
+const st = (kind, text, tid) => `<span class="po-st po-st-${kind}"${tid ? ` data-testid="${tid}"` : ''}>${kind === 'ok' ? I.check : kind === 'warn' || kind === 'err' ? I.alert : kind === 'busy' ? '<span class="po-spin" aria-hidden="true"></span>' : ''}${text}</span>`;
+const sampleBadge = () => '<span class="po-sample" data-testid="sample-badge">Sample data</span>';
+const sampleBanner = (p) => `<div class="po-banner" role="note" data-testid="sample-banner"><span><strong>Sample data.</strong> These agents are fictional and were not read from ${esc(p)}. Imported records are marked Sample data in Fleet and are excluded from evidence packs.</span></div>`;
+function header(o) {
+  return `<div class="ds-page-header">
+    ${o.crumbs ? `<nav class="ds-breadcrumb" aria-label="Breadcrumb"><ol>${o.crumbs.map((c, i) => i === o.crumbs.length - 1 ? `<li aria-current="page">${c[0]}</li>` : `<li><a href="${c[1]}">${c[0]}</a></li>`).join('')}</ol></nav>` : ''}
+    <div class="ds-page-header-row"><div style="min-width:0;flex:1 1 480px">
+      <h1 class="ds-title" id="view-h" tabindex="-1" data-testid="step-heading">${o.title}</h1>
+      ${o.desc ? `<p class="ds-description">${o.desc}</p>` : ''}</div>
+      ${o.actions ? `<div style="display:flex;gap:8px;flex-wrap:wrap">${o.actions}</div>` : ''}
+    </div></div>`;
+}
+const STEPS = ['Connect', 'Check access', 'Choose scope', 'Scan', 'Review', 'Import'];
+function rail(p, n) {
+  return `<ol class="po-rail" aria-label="Setup steps" data-testid="step-rail">${STEPS.map((s, i) => {
+    const k = i + 1; const done = k < n; const cur = k === n;
+    const inner = `<span class="po-rail-num">${done ? I.check : k}</span><span>${s}</span>${done ? '<span class="ds-sr"> (done)</span>' : ''}`;
+    const link = done && p === 'aws' && k > 1;
+    return `<li data-testid="step-rail-item-${k}">${link ? `<a class="po-rail-item is-done" href="#aws-${k}">${inner}</a>` : `<span class="po-rail-item${done ? ' is-done' : ''}"${cur ? ' aria-current="step"' : ''}>${inner}</span>`}</li>`;
+  }).join('')}</ol>`;
+}
+function wizTop(p, n, title, desc) {
+  return header({ crumbs: [['Connections', '#gallery'], [`Connect ${P[p].name}`]], title, desc: desc + `<span class="ds-sr"> Step ${n} of 6.</span>` }) + rail(p, n);
+}
+function aside(p) {
+  const can = {
+    aws: ['Agent runtimes, harnesses and classic Bedrock agents', 'Gateways, memory and identity settings (not their contents)', 'IAM policies attached to agent roles', 'Account and Region lists'],
+    google: ['Agent Runtime agents (Vertex AI)', 'Gemini Enterprise agents and apps', 'Agent Registry agents and MCP servers', 'Project and folder lists'],
+    microsoft: ['Foundry agents, deployments and connections', 'Entra agent identities', 'Agent 365 catalog (if licensed)', 'Subscription lists'],
+    databricks: ['Agent serving endpoints and Apps', 'Agent Bricks assistants and supervisors', 'Unity Catalog metadata and grants (no data)', 'Workspace lists'],
+    snowflake: ['Cortex Agent specs and versions', 'Agent usage history', 'Role grants', 'Database and schema lists']
+  }[p];
+  const cant = { aws: 'Read memory records, secrets or API keys', google: 'Query or invoke agents', microsoft: 'Change roles or apps in your tenant', databricks: 'Read table data', snowflake: 'Read prompts and responses (unless you opt in)' }[p];
+  return `<aside class="po-aside" aria-label="About this connection"><div class="ds-card"><div class="po-panel-body">
+    <h3>ACT will be able to read</h3><ul class="po-list po-yes">${can.map((c) => `<li>${I.check}<span>${c}</span></li>`).join('')}</ul>
+    <h3>ACT can’t</h3><ul class="po-list po-no"><li>${I.x}<span>Run, change or delete agents</span></li><li>${I.x}<span>${cant}</span></li><li>${I.x}<span>Write anything in ${P[p].name}</span></li></ul>
+    <h3>What ACT stores</h3><p class="ds-helper" style="margin:0">${p === 'aws' ? 'The role ARN and account IDs.' : 'IDs that point at the trust, nothing secret.'} No passwords, keys or tokens. ${P[p].name} trusts this Domino deployment’s sign-in instead.</p>
+    <h3>Who can do this</h3><p class="ds-helper" style="margin:0">${P[p].who}. Not you? Use <strong>Send to my cloud admin</strong>; this page updates when they finish.</p>
+  </div></div></aside>`;
+}
+
+/* ---------- paste-anything parser ---------- */
+function parseAnything(raw) {
+  const v = raw.trim(); if (!v) return null;
+  let m;
+  if ((m = v.match(/arn:aws(?:-us-gov)?:iam::(\d{12}):role\/([\w+=,.@\/-]+)/))) return { ok: true, p: 'aws', what: 'IAM role', text: `Role <strong>${esc(m[2])}</strong> in AWS account <strong>${m[1].replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3')}</strong>` };
+  if (/[#?&]role=arn/.test(v) || /connect\/aws\/callback/.test(v)) return { ok: true, p: 'aws', what: 'ReturnToACT link', text: 'ReturnToACT link from CloudFormation, with role <strong>ACT-ReadOnly</strong>' };
+  if (/connect\/google\/(finish|done)\?cfg=/.test(v)) return { ok: true, p: 'google', what: 'Finish link', text: 'Finish in ACT link from Cloud Shell' };
+  if (/connect\/microsoft\/callback/.test(v)) return { ok: true, p: 'microsoft', what: 'Return link', text: 'Return to ACT link from Azure' };
+  if (/connect\/snowflake\/finish/.test(v)) return { ok: true, p: 'snowflake', what: 'Finish link', text: 'Finish in ACT link from Snowsight' };
+  if ((m = v.match(/app\.snowflake\.com\/([\w-]+)\/([\w-]+)/)) || (m = v.match(/([\w]+)-([\w]+)(?:\.privatelink)?\.snowflakecomputing\.com/i))) return { ok: true, p: 'snowflake', what: 'Account URL', text: `Snowflake account <strong>${esc((m[1] + '-' + m[2]).toUpperCase())}</strong>` };
+  if (/^[A-Za-z0-9+/=]{24,}$/.test(v)) {
+    try { const j = JSON.parse(atob(v)); if (j.account_id) return { ok: true, p: 'databricks', what: 'Connection code', text: `Databricks account <strong>…${esc(String(j.account_id).slice(-4))}</strong> on ${esc(j.cloud || 'unknown cloud')}, ${(j.workspaces || []).length} workspaces` }; } catch (e) { /* not a code */ }
+  }
+  if ((m = v.match(/https:\/\/([\w.-]+\.(?:cloud\.databricks\.com|azuredatabricks\.net|gcp\.databricks\.com))/))) return { ok: true, p: 'databricks', what: 'Workspace URL', text: `Databricks workspace <strong>${esc(m[1])}</strong>` };
+  if (/^\d{12}$/.test(v.replace(/[\s-]/g, ''))) return { ok: false, hint: true, msg: 'That looks like an AWS account ID. ACT needs the role too: paste the role ARN from the stack’s Outputs tab.' };
+  if (/agent-card\.json|\.well-known\/agent/.test(v)) return { ok: false, hint: true, msg: 'That is an A2A agent card URL. Add it from <a href="#other">Other: add an agent by URL</a>.' };
+  return { ok: false, msg: 'ACT couldn’t recognize that. Paste the role ARN (arn:aws:iam::…:role/ACT-ReadOnly), a Finish or Return link, a connection code, or an account URL.' };
+}
+function pasteBlock(p, hint) {
+  return `<div class="po-divider" aria-hidden="true">or paste</div>
+  <label class="ds-label" for="paste">${hint.label}</label>
+  <p class="ds-helper" id="paste-help" style="margin:0 0 8px">${hint.help}</p>
+  <div class="po-paste-row"><input class="ds-input" id="paste" data-testid="paste-anything-input" autocomplete="off" spellcheck="false" aria-describedby="paste-help paste-result" placeholder="${hint.ph}" data-provider="${p}"></div>
+  <div class="po-parse" id="paste-result" data-testid="paste-anything-result" aria-live="polite"></div>`;
+}
+
+/* ---------- views ---------- */
+const V = {};
+
+V.gallery = () => {
+  const card = (k, state) => {
+    const p = P[k];
+    const sts = {
+      none: st('idle', 'Not connected', `provider-card-${k}-status`),
+      ok: st('ok', 'Connected · 19 agents', `provider-card-${k}-status`),
+      attention: st('warn', 'Needs attention', `provider-card-${k}-status`),
+      pending: st('busy', 'Waiting for connection code', `provider-card-${k}-status`),
+      sample: `<span data-testid="provider-card-${k}-status">${sampleBadge()}</span>`
+    }[state];
+    const meta = {
+      none: `<div><dt>Setup:</dt><dd>${p.setup}</dd></div><div><dt>Needs:</dt><dd>${p.who}</dd></div>`,
+      ok: '<div><dt>Last scan:</dt><dd>2 hours ago · 3 awaiting import</dd></div><div><dt>Sync:</dt><dd>Daily at 02:00</dd></div>',
+      attention: '<div><dt>Problem:</dt><dd>Google rejected ACT’s sign-in. Scans are paused.</dd></div><div><dt>Last good scan:</dt><dd>2 days ago · 12 agents</dd></div>',
+      pending: '<div><dt>Started:</dt><dd>Today 09:12 by m.chen</dd></div><div><dt>Next:</dt><dd>Paste the code the setup script prints</dd></div>',
+      sample: '<div><dt>Source:</dt><dd>Fictional sample tenant, not read from Snowflake</dd></div><div><dt>Agents:</dt><dd>8 sample agents</dd></div>'
+    }[state];
+    const href = { aws: state === 'ok' ? '#connection-aws' : '#aws-1', google: '#connection-google', microsoft: '#microsoft-1', databricks: '#databricks-1', snowflake: '#snowflake-1' }[k];
+    const primary = { none: `Connect ${p.name}`, ok: 'Open connection', attention: 'Fix connection', pending: 'Resume setup', sample: `Connect real ${p.name}` }[state];
+    return `<article class="ds-card po-card" data-testid="provider-card-${k}" aria-labelledby="pc-${k}">
+      <div class="po-card-head">${mark(k)}<div class="po-card-titles"><h3 class="po-card-title" id="pc-${k}">${p.name}</h3><p class="po-card-products">${p.products}</p></div></div>
+      <div>${sts}</div>
+      <dl class="po-card-meta">${meta}</dl>
+      <div class="po-card-actions"><a class="ds-btn ${state === 'ok' ? '' : 'ds-btn-primary'} ds-btn-sm" href="${href}" data-testid="provider-card-${k}-connect" aria-describedby="pc-${k}">${primary}</a>
+      ${state === 'none' ? `<a class="ds-btn ds-btn-ghost ds-btn-sm" href="#sample-review" data-act="sample" data-testid="provider-card-${k}-sample" aria-describedby="pc-${k}">Explore sample data</a>` : ''}
+      ${state === 'sample' ? '<a class="ds-btn ds-btn-ghost ds-btn-sm" href="#gallery" data-testid="provider-card-snowflake-sample-remove">Remove sample data</a>' : ''}</div>
+    </article>`;
+  };
+  return header({ crumbs: null, title: 'Connections', desc: 'Connect the platforms where your agents run. ACT finds the agents, suggests a tier for each, and you choose what to import. ACT only reads: it never runs or changes an agent.' }) +
+  `<section class="ds-card po-domino" data-testid="domino-connection-card" aria-labelledby="dom-h">${mark('domino')}<div class="po-domino-text"><h2 class="po-domino-title" id="dom-h">Domino (this deployment)</h2><p class="ds-helper" style="margin:0">Connected automatically through ACT’s own Domino identity. Nothing to set up. Apps, agents and endpoints in projects you can see.</p></div>${st('ok', 'Connected · 7 agents', 'domino-connection-status')}<a class="ds-btn ds-btn-sm" href="#connection-aws" data-testid="domino-connection-open">Open</a></section>
+  <div class="po-section-h"><h2 id="cloud-h">Cloud platforms</h2><span class="ds-helper" style="margin:0">Each setup uses a one-time trust: no passwords or keys are stored.</span></div>
+  <div class="po-grid" data-testid="provider-gallery">
+    ${card('aws', S.awsConnected ? 'ok' : 'none')}
+    ${card('google', 'attention')}
+    ${card('microsoft', 'none')}
+    ${card('databricks', 'pending')}
+    ${card('snowflake', 'sample')}
+    <article class="ds-card po-card po-card-other" data-testid="provider-card-other" aria-labelledby="pc-other">
+      <div class="po-card-head">${mark('other')}<div class="po-card-titles"><h3 class="po-card-title" id="pc-other">Other</h3><p class="po-card-products">Any agent that publishes an A2A agent card</p></div></div>
+      <dl class="po-card-meta"><div><dt>Setup:</dt><dd>Paste the agent card URL, one agent at a time</dd></div><div><dt>Tier:</dt><dd>You score seven questions</dd></div></dl>
+      <div class="po-card-actions"><a class="ds-btn ds-btn-sm" href="#other" data-testid="provider-card-other-connect" aria-describedby="pc-other">Add an agent by URL</a></div>
+    </article>
+  </div>`;
+};
+
+function awsConnectBody(state) {
+  const listen = {
+    idle: `<div class="po-listen is-idle" data-testid="handshake-listener"><span class="po-pulse" aria-hidden="true"></span><div class="po-listen-text" data-testid="handshake-listener-status">ACT starts watching for the new role when you open the AWS console.</div></div>`,
+    waiting: `<div class="po-listen is-live" data-testid="handshake-listener"><span class="po-pulse" aria-hidden="true"></span><div class="po-listen-text" data-testid="handshake-listener-status" id="listen-text"><strong>Waiting for AWS…</strong> Finish the stack in the AWS tab, then click <strong>ReturnToACT</strong> on the Outputs tab. This page continues on its own.</div><span class="po-listen-time" id="elapsed" aria-hidden="true">0:00</span></div>`,
+    failed: `<div class="ds-alert ds-alert-error" role="alert" data-testid="handshake-error" style="margin-top:20px">${I.alert}<div><strong>AWS couldn’t create the ACT role.</strong><p>Your AWS user isn’t allowed to create IAM roles (AccessDenied on iam:CreateRole). Someone with IAM admin rights needs to create the stack. Send them the link; this page updates when they finish.</p><div class="ds-alert-actions"><button class="ds-btn ds-btn-sm" type="button" data-act="copy" data-copy="https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?stackName=ACT-ReadOnly" data-testid="handshake-send-admin">${I.copy}Copy link for my cloud admin</button><a class="ds-btn ds-btn-sm ds-btn-ghost" href="#aws-1-waiting" data-testid="handshake-retry">Open AWS console again</a></div></div></div>`
+  }[state];
+  return `<div class="po-wiz"><div class="po-main">
+    <section class="ds-card" aria-labelledby="opt-h"><div class="po-panel-head"><h2 id="opt-h">What should ACT read?</h2></div><div class="po-panel-body">
+      <fieldset class="po-fs"><legend class="ds-sr">Coverage</legend><div class="po-choices">
+        <label class="po-choice"><input type="radio" name="mode" value="account" data-act="mode" data-testid="aws-mode-account" ${S.mode === 'account' ? 'checked' : ''}><span><strong>This AWS account</strong><span>The account you sign in to.</span></span></label>
+        <label class="po-choice"><input type="radio" name="mode" value="org" data-act="mode" data-testid="aws-mode-org" ${S.mode === 'org' ? 'checked' : ''}><span><strong>My whole AWS Organization</strong><span>Sign in to the management account. Covers every account, including new ones.</span></span></label>
+      </div></fieldset>
+      <label class="po-check-row"><input type="checkbox" data-act="traces" data-testid="aws-traces" ${S.traces ? 'checked' : ''} aria-describedby="tr-help"><span><strong style="color:var(--ds-ink)">Also read traces from CloudWatch</strong><span class="ds-helper" id="tr-help" style="display:block;margin:0">Lets ACT confirm which models and tools agents actually use. Adds read access to logs and X-Ray. You can turn this on later.</span></span></label>
+    </div></section>
+    <section class="ds-card" aria-labelledby="hs-h" data-testid="handshake-panel"><div class="po-panel-head"><h2 id="hs-h">Create the ACT read-only role</h2><span class="ds-helper" style="margin:0">About 2 minutes in AWS</span></div><div class="po-panel-body">
+      <ol class="po-hs-steps">
+        <li><span>Open the AWS console. The CloudFormation stack is already filled in${S.mode === 'org' ? ' for your Organization' : ''}; sign in if AWS asks.</span></li>
+        <li><span>At the bottom, tick <strong>I acknowledge that AWS CloudFormation might create IAM resources with custom names</strong>, then click <strong>Create stack</strong>.</span></li>
+        <li><span>When the stack shows CREATE_COMPLETE (about a minute), open the <strong>Outputs</strong> tab and click <strong>ReturnToACT</strong>.</span></li>
+      </ol>
+      <div class="po-hs-actions">
+        <a class="ds-btn ds-btn-primary" href="#aws-1-waiting" data-act="open-cloud" data-testid="handshake-primary">Open AWS console${I.ext}<span class="ds-sr">(opens in a new tab)</span></a>
+        <button class="ds-btn" type="button" data-act="copy" data-copy="https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?stackName=ACT-ReadOnly" data-testid="handshake-send-admin">${I.copy}Send to my cloud admin</button>
+      </div>
+      ${listen}
+      ${pasteBlock('aws', { label: 'Already created the role? Paste it here', help: 'Paste the role ARN or the ReturnToACT link from the stack’s Outputs tab. ACT works out the rest.', ph: 'arn:aws:iam::123456789012:role/ACT-ReadOnly' })}
+      <details class="po-more" data-testid="other-ways"><summary data-testid="other-ways-toggle">Other ways to connect</summary>
+        <ul class="po-list" style="margin-top:8px">
+          <li>${I.info}<span><a href="#aws-1" data-testid="template-download">Download the template</a> or the <a href="#aws-1" data-testid="template-terraform">Terraform module</a> for change review. Both create the same read-only role.</span></li>
+          <li>${I.info}<span><a href="#aws-1" data-testid="fallback-externalid">Use External ID trust</a> if your security team doesn’t allow trust in Domino’s sign-in service.</span></li>
+          <li>${I.alert}<span><a href="#aws-1" data-testid="fallback-key">Use an access key</a>. Not recommended: ACT then stores a long-lived secret.</span></li>
+        </ul>
+        <pre aria-label="Permissions the role grants">ACT-ReadOnly (template v3), read-only:
+bedrock-agentcore: List/Get AgentRuntimes, Harnesses, Gateways, Memories, WorkloadIdentities
+agent-registry:    List/Get Registries, RegistryRecords
+bedrock:           List/Get Agents, AgentVersions, ActionGroups, KnowledgeBases, Guardrail
+iam:               GetRole, ListAttachedRolePolicies, GetRolePolicy, GetPolicyVersion
+organizations:     DescribeOrganization, ListAccounts   (Organization mode only)
+Excluded: memory records, API keys and OAuth tokens, InvokeAgent and every write action.</pre>
+      </details>
+    </div></section>
+    <p class="ds-helper"><a href="#gallery" data-testid="wizard-cancel">Cancel setup</a> · Nothing is created in ACT until you import agents.</p>
+  </div>${aside('aws')}</div>`;
+}
+V['aws-1'] = () => wizTop('aws', 1, 'Connect AWS', 'ACT reads Bedrock AgentCore runtimes and harnesses, classic Bedrock agents and the Agent Registry through a read-only role in your account.') + awsConnectBody('idle');
+V['aws-1-waiting'] = () => wizTop('aws', 1, 'Connect AWS', 'ACT reads Bedrock AgentCore runtimes and harnesses, classic Bedrock agents and the Agent Registry through a read-only role in your account.') + awsConnectBody('waiting') + '<div class="po-proto">Prototype: AWS “detects” the role after about 4 seconds.</div>';
+V['aws-1-failed'] = () => wizTop('aws', 1, 'Connect AWS', 'ACT reads Bedrock AgentCore runtimes and harnesses, classic Bedrock agents and the Agent Registry through a read-only role in your account.') + awsConnectBody('failed');
+
+const AWS_CHECKS = [
+  ['signin', 'Signed in to AWS', 'Assumed ACT-ReadOnly in account 1234 5678 9012 with Domino’s sign-in. No keys used.', 1],
+  ['agentcore', 'Read AgentCore runtimes and harnesses', 'ListAgentRuntimes, ListHarnesses, ListGateways, ListMemories', 1],
+  ['classic', 'Read classic Bedrock agents', 'ListAgents, ListAgentActionGroups, GetGuardrail', 1],
+  ['registry', 'Read the Agent Registry', 'ListRegistries, ListRegistryRecords. Adds display names and owners.', 0],
+  ['iam', 'Read IAM policies on agent roles', 'GetRole, ListAttachedRolePolicies. Used to find data scopes and write actions.', 0],
+  ['org', 'Read AWS Organization accounts', 'DescribeOrganization, ListAccounts. Found 4 accounts.', 0],
+  ['traces', 'Read CloudWatch traces', 'Not requested. Turn on “Also read traces” to add it.', 0]
+];
+function checksView(partial) {
+  return wizTop('aws', 2, 'Check access', 'ACT is confirming what the new role can read. Each check runs a single read-only call.') +
+  `<div class="po-wiz"><div class="po-main"><section class="ds-card" aria-labelledby="ck-h"><div class="po-panel-head"><h2 id="ck-h">Permissions</h2><span id="ck-sum" class="ds-helper" style="margin:0" data-testid="permission-summary">Checking…</span></div><div class="po-panel-body">
+    <ul class="po-checks" data-testid="permission-checklist" aria-describedby="ck-sum">${AWS_CHECKS.map((c) => `<li id="ck-${c[0]}" data-testid="permission-item-${c[0]}" data-key="${c[0]}" class="is-pending"><span class="po-ico"><span class="po-spin" aria-hidden="true"></span></span><span class="po-check-label">${c[1]}${c[3] ? '<span class="po-req">Required</span>' : ''}</span><span class="po-check-state" data-testid="permission-item-${c[0]}-status">Checking…</span><span class="po-check-detail">${c[2]}</span></li>`).join('')}</ul>
+  </div></section>
+  <div class="po-footer" style="margin-top:0"><div class="po-footer-l"><span id="ck-foot" class="ds-helper" style="margin:0">Required checks must pass before you continue.</span></div><div class="po-footer-r"><button class="ds-btn" type="button" data-act="recheck" data-testid="permission-recheck">Check again</button><a class="ds-btn ds-btn-primary" id="ck-next" href="#aws-3" aria-disabled="true" data-testid="permission-continue" tabindex="-1" style="pointer-events:none;opacity:.55">Continue to scope</a></div></div>
+  </div>${aside('aws')}</div>` + (partial ? '' : '<div class="po-proto">Prototype: see <a href="#aws-2-partial">#aws-2-partial</a> for a missing permission.</div>');
+}
+V['aws-2'] = () => checksView(false);
+V['aws-2-partial'] = () => checksView(true);
+
+function scopeTree() {
+  const regions = {};
+  A.filter((a) => a.change !== 'missing').forEach((a) => { const k = a.acct + '|' + a.region; regions[k] = (regions[k] || 0) + 1; });
+  const accts = Object.keys(ACCTS).map((acc) => {
+    const rs = Object.keys(regions).filter((k) => k.startsWith(acc + '|')).map((k) => [k.split('|')[1], regions[k]]);
+    const empty = acc === 'payments-prod' ? 14 : acc === 'retail-prod' ? 15 : 15;
+    const id = 'acct-' + acc;
+    const total = rs.reduce((s, r) => s + r[1], 0);
+    const onCount = rs.filter((r) => !S.scopeOff.has(id + '-' + r[0])).length;
+    return `<li><div class="po-node"><button class="po-toggle" type="button" aria-expanded="true" aria-controls="${id}-kids" data-act="tree-toggle" aria-label="Collapse ${acc}">${I.chev}</button>
+      <input type="checkbox" id="${id}" data-act="scope-acct" data-acct="${acc}" data-testid="scope-checkbox-${acc}" ${onCount === rs.length ? 'checked' : ''} ${onCount > 0 && onCount < rs.length ? 'data-mixed="1"' : ''}>
+      <label for="${id}"><span class="po-node-name">${acc}</span><span class="po-node-sub">${ACCTS[acc]}</span></label><span class="po-count po-count-hi" data-testid="scope-count-${acc}">${total} agents</span></div>
+      <ul id="${id}-kids">${rs.map((r) => `<li><div class="po-node"><span style="width:24px"></span><input type="checkbox" id="${id}-${r[0]}" data-act="scope-region" data-testid="scope-checkbox-${acc}-${r[0]}" ${S.scopeOff.has(id + '-' + r[0]) ? '' : 'checked'}><label for="${id}-${r[0]}"><span class="po-node-name">${r[0]}</span></label><span class="po-count">${r[1]}</span></div></li>`).join('')}
+      <li><div class="po-node is-dim"><span style="width:24px"></span><span style="width:16px"></span><span class="po-node-name" style="flex:1">${empty} Regions with no agents</span><span class="po-node-sub">Not scanned. New agents there are picked up by daily sync.</span></div></li></ul></li>`;
+  }).join('');
+  return `<ul class="po-tree" data-testid="scope-tree" aria-label="AWS accounts and Regions">
+    <li><div class="po-node"><span style="width:24px"></span><span style="width:16px"></span><span class="po-node-name" style="flex:1">Acme Bank Organization <span class="po-node-sub">o-a1b2c3d4e5 · management account 1234 5678 9012</span></span></div>
+    <ul>${accts}
+      <li><div class="po-node is-dim" data-testid="scope-node-sandbox"><span style="width:24px"></span><input type="checkbox" disabled aria-describedby="sbx"><span class="po-node-name" style="flex:1">sandbox <span class="po-node-sub">7770 2223 3334</span></span><span class="po-node-sub" id="sbx" style="display:inline-flex;gap:6px;align-items:center"><span class="po-spin" aria-hidden="true"></span>Waiting for the role to reach this account. Retrying every 5 minutes.</span></div></li>
+    </ul></li></ul>`;
+}
+V['aws-3'] = () => wizTop('aws', 3, 'Choose scope', 'ACT found these accounts and Regions. Everything with agents is selected. Counts come from a quick preview; the scan reads each agent in full.') +
+  `<div class="po-wiz"><div class="po-main"><section class="ds-card" aria-labelledby="sc-h"><div class="po-panel-head"><h2 id="sc-h">Accounts and Regions</h2><span class="ds-helper" style="margin:0" id="scope-summary" data-testid="scope-summary"></span></div><div class="po-panel-body">
+    <div class="po-tree-bar"><span class="ds-helper" style="margin:0">Unticking a scope skips it for this scan and for daily sync.</span><button class="ds-btn ds-btn-ghost ds-btn-sm" type="button" data-act="scope-all" data-testid="scope-select-all">Select all with agents</button></div>
+    <div id="tree">${scopeTree()}</div>
+  </div></section>
+  <div class="po-footer" style="margin-top:0"><div class="po-footer-l"><span class="ds-helper" style="margin:0">The scan runs as a Domino Job. You can close the page while it runs.</span></div><div class="po-footer-r"><a class="ds-btn" href="#aws-2">Back</a><a class="ds-btn ds-btn-primary" href="#aws-4" data-act="start-scan" data-testid="scope-continue" id="scan-btn">Start scan</a></div></div>
+  </div>${aside('aws')}</div>`;
+
+const SCAN_SCOPES = [['payments-prod', 'us-east-1'], ['payments-prod', 'eu-west-1'], ['retail-prod', 'us-east-1'], ['retail-prod', 'us-west-2'], ['data-science-dev', 'us-east-1'], ['data-science-dev', 'us-west-2']];
+V['aws-4'] = () => wizTop('aws', 4, 'Scanning AWS', 'ACT is reading each agent’s tools, identity, data access and owner tags. Nothing is imported until you review.') +
+  `<section class="ds-card" style="padding:16px 20px;margin-bottom:16px" aria-labelledby="scan-h" data-testid="scan-view">
+    <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline"><h2 id="scan-h" class="ds-section-title" style="font-size:15px">Acme Bank Organization · 6 Regions in 3 accounts</h2><span class="ds-helper" style="margin:0" id="scan-eta" data-testid="scan-status">Starting the scan job…</span></div>
+    <div class="po-progress" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax="6" aria-valuenow="0" id="scan-bar" data-testid="scan-progress"><i style="width:0%"></i></div>
+  </section>
+  <div class="po-stats">${[['found', 'Agents found'], ['new', 'New'], ['changed', 'Changed'], ['unchanged', 'Unchanged'], ['missing', 'Missing'], ['skipped', 'Skipped scopes']].map((s) => `<div class="ds-card po-stat"><span>${s[1]}</span><strong id="c-${s[0]}" data-testid="scan-counter-${s[0]}">0</strong></div>`).join('')}</div>
+  <div class="po-scan-cols">
+    <section class="ds-card" aria-labelledby="sl-h"><div class="po-panel-head"><h2 id="sl-h">Scopes</h2></div><ul class="po-scopes-l" id="scan-scopes">${SCAN_SCOPES.map((s, i) => `<li data-testid="scan-scope-row-${s[0]}-${s[1]}" id="ss-${i}"><span class="po-ico" aria-hidden="true">${I.clock}</span><span class="po-sname">${s[0]} / ${s[1]}</span><span class="po-sstate">Queued</span></li>`).join('')}<li data-testid="scan-scope-row-sandbox"><span aria-hidden="true">${I.dash}</span><span class="po-sname" style="color:var(--ds-muted)">sandbox</span><span class="po-sstate">Skipped: role not ready</span></li></ul></section>
+    <section class="ds-card" aria-labelledby="fd-h"><div class="po-panel-head"><h2 id="fd-h">Agents found</h2><span class="ds-helper" style="margin:0">Newest first</span></div><ul class="po-feed" id="feed" data-testid="scan-feed"><li class="po-empty" style="display:block;border:0" id="feed-empty"><span class="ds-helper">Agents appear here as each Region is read.</span></li></ul></section>
+  </div>
+  <div class="po-job" data-testid="scan-job"><span>${I.info} Running as Domino Job <a href="#aws-4" data-testid="scan-job-link">#4821</a>. You can close this page; ACT keeps scanning and the result waits on the AWS connection.</span><span style="display:flex;gap:8px"><a class="ds-btn ds-btn-sm" href="#connection-aws" data-testid="scan-leave">Leave and notify me</a><a class="ds-btn ds-btn-primary ds-btn-sm" href="#aws-5" id="scan-review" data-testid="scan-review" aria-disabled="true" tabindex="-1" style="pointer-events:none;opacity:.55">Review agents</a></span></div>`;
+
+/* review */
+function reviewCounts() {
+  const c = { all: A.length, new: 0, changed: 0, unchanged: 0, missing: 0, attention: 0 };
+  A.forEach((a) => { c[a.change]++; if (isRisk(a) && a.change !== 'unchanged' && a.change !== 'missing') c.attention++; });
+  return c;
+}
+function visible() {
+  return A.filter((a) => (S.filter === 'all' || (S.filter === 'attention' ? isRisk(a) && (a.change === 'new' || a.change === 'changed') : a.change === S.filter)) && (!S.q || (a.name + ' ' + a.acct + ' ' + a.kind).toLowerCase().includes(S.q.toLowerCase())));
+}
+function reviewRow(a) {
+  const sel = a.change === 'new' || a.change === 'changed';
+  const t = tierOf(a); const over = a.id in S.tiers;
+  const own = ownerOf(a);
+  const ownerCell = a.change === 'missing' || a.change === 'unchanged' ? `<span class="ds-trunc" style="display:block">${esc(own || '—')}</span>` :
+    `<label class="ds-sr" for="own-${a.id}">Owner for ${a.name}</label><select class="po-own${own ? '' : ' is-none'}" id="own-${a.id}" data-act="owner" data-id="${a.id}" data-testid="review-owner-${a.id}"><option value="">No owner</option>${USERS.map((u) => `<option ${u === own ? 'selected' : ''}>${u}</option>`).join('')}</select><span class="po-own-src" title="${esc(a.ownerSrc)}">${a.id in S.owners ? 'Set by you' : 'From ' + esc(a.ownerSrc)}</span>`;
+  const delta = a.prev && a.prev !== a.tier ? `<span class="po-tierdelta ${a.tier < a.prev ? 'up' : ''}">${a.tier < a.prev ? I.up + ' from Tier ' + a.prev : 'from Tier ' + a.prev}</span>` : '';
+  const flagsList = a.flags.filter((f) => f !== 'No owner' || !own);
+  if (!own && !flagsList.includes('No owner') && sel) flagsList.unshift('No owner');
+  const shown = flagsList.slice(0, 2); const more = flagsList.length - shown.length;
+  const missingNote = a.change === 'missing' ? '<span class="ds-helper" style="margin:0;font-size:12px">Not found in AWS. On import ACT raises a finding; the record stays.</span>' : '';
+  const sub = a.change === 'changed' ? `${a.diff.length} change${a.diff.length > 1 ? 's' : ''}` : '';
+  return `<tr id="row-${a.id}" class="${isRisk(a) && sel ? 'is-risk' : ''}${sel && !S.sel.has(a.id) ? ' is-off' : ''}" data-testid="review-row-${a.id}">
+    <td>${sel ? `<input type="checkbox" id="sel-${a.id}" data-act="sel" data-id="${a.id}" data-testid="review-select-${a.id}" ${S.sel.has(a.id) ? 'checked' : ''} aria-label="Import ${a.name}">` : ''}</td>
+    <td><span class="po-aname" title="${a.name}">${a.name}${S.sample ? ' ' + sampleBadge() : ''}</span><span class="po-asub" title="${a.kind} · ${a.acct} · ${a.region}">${a.kind} · ${a.acct} · ${a.region}</span></td>
+    <td data-testid="review-change-${a.id}">${chg(a.change)}${sub ? `<span class="po-asub">${sub}</span>` : ''}</td>
+    <td>${ownerCell}</td>
+    <td data-testid="review-tier-${a.id}"><div class="po-tiercell">${tierBadge(t)}${over ? '' : delta}</div>${over ? `<span class="po-tiernote">Set by you · suggested Tier ${a.tier}</span>` : `<span class="po-tiernote">${a.change === 'unchanged' || a.change === 'missing' ? 'Current tier' : 'Suggested'}</span>`}</td>
+    <td data-testid="review-flag-${a.id}">${missingNote || `<div class="po-flags">${shown.map(flag).join('')}${more > 0 ? `<span class="po-flag" title="${flagsList.slice(2).join(', ')}">+${more}</span>` : ''}${!flagsList.length ? '<span class="ds-helper" style="margin:0">None</span>' : ''}</div>`}</td>
+    <td><button class="ds-btn ds-btn-ghost po-why-btn" type="button" id="why-${a.id}" data-act="why" data-id="${a.id}" aria-expanded="${S.open === a.id}" aria-controls="xp-${a.id}" data-testid="review-why-${a.id}">Why<span class="ds-sr"> ${a.name} got Tier ${t}</span></button></td>
+  </tr>${S.open === a.id ? detailRow(a) : ''}`;
+}
+function detailRow(a) {
+  const t = tierOf(a);
+  return `<tr class="po-detail" id="xp-${a.id}" data-testid="intake-panel-${a.id}"><td colspan="7"><div class="po-xp">
+    <div><h4>Why Tier ${a.tier} is suggested</h4><ul class="po-crit">${CRIT.map(([k, n], i) => `<li data-testid="intake-criterion-${k}"><span class="k">${n}</span><span class="v${a.scores[i] >= 4 ? ' hi' : ''}">${a.scores[i]}</span><span class="why">${esc(whyFor(a, k))}</span></li>`).join('')}</ul>
+    <p class="ds-helper">Scores are 1 (low) to 5 (high), from the agent’s tools, role policies and tags. The weighted score sets the tier.</p></div>
+    <div>${a.diff.length ? `<h4>What changed since the last scan</h4><ul class="po-diff" data-testid="review-diff-${a.id}">${a.diff.map((d) => `<li class="${d[0]}">${esc(d[1])}</li>`).join('')}</ul>${a.prev && a.tier < a.prev ? '<p class="ds-helper">Risk went up, so this agent goes back to Pending review on import.</p>' : ''}<div style="height:12px"></div>` : ''}
+      <h4>Tier</h4>
+      ${S.ovrOpen === a.id ? `<div class="po-ovr" data-testid="intake-override">
+        <span class="ds-label" id="tp-l-${a.id}">Set tier</span>
+        <div class="po-tierpick" role="radiogroup" aria-labelledby="tp-l-${a.id}">${[1, 2, 3, 4].map((n) => `<button type="button" role="radio" tabindex="${(S.ovrTier || t) === n ? 0 : -1}" aria-checked="${(S.ovrTier || t) === n}" data-act="pick" data-n="${n}" data-testid="intake-override-tier-${n}">Tier ${n}</button>`).join('')}</div>
+        <label class="ds-label" for="rsn-${a.id}">Reason <span style="font-weight:400;color:var(--ds-muted)">(required, shown to the reviewer)</span></label>
+        <input class="ds-input" id="rsn-${a.id}" data-testid="intake-override-reason" placeholder="For example: payments tool is disabled in production by SCP" style="margin-top:6px" aria-describedby="rsn-err-${a.id}">
+        <p class="ds-helper" id="rsn-err-${a.id}" style="min-height:20px"></p>
+        <div style="display:flex;gap:8px"><button class="ds-btn ds-btn-primary ds-btn-sm" type="button" data-act="ovr-save" data-id="${a.id}" data-testid="intake-save">Save tier</button><button class="ds-btn ds-btn-sm" type="button" data-act="ovr-cancel" data-id="${a.id}">Cancel</button></div>
+      </div>` : `<p style="margin:0 0 8px">${tierBadge(t)} ${a.id in S.tiers ? `<span class="ds-helper">Set by you: “${esc(S.reasons[a.id])}”</span>` : '<span class="ds-helper">Suggested by ACT</span>'}</p>
+      ${a.change === 'new' || a.change === 'changed' ? `<button class="ds-btn ds-btn-sm" type="button" data-act="ovr-open" data-id="${a.id}" id="ovr-btn-${a.id}" data-testid="intake-override-open">Change tier</button>` : ''}`}
+    </div></div></td></tr>`;
+}
+function reviewTable() {
+  const rows = visible(); const c = reviewCounts();
+  const selectable = rows.filter((a) => a.change === 'new' || a.change === 'changed');
+  const allOn = selectable.length && selectable.every((a) => S.sel.has(a.id));
+  return `<div class="po-toolbar">
+    <div class="po-seg" role="group" aria-label="Filter by change">${[['all', 'All'], ['new', 'New'], ['changed', 'Changed'], ['attention', 'Needs attention'], ['unchanged', 'Unchanged'], ['missing', 'Missing']].map((f) => `<button type="button" id="f-${f[0]}" data-act="filter" data-f="${f[0]}" aria-pressed="${S.filter === f[0]}" data-testid="review-filter-${f[0]}">${f[1]}<b>${c[f[0]]}</b></button>`).join('')}</div>
+    <div><label class="ds-sr" for="q">Search agents</label><input class="ds-input po-search" id="q" type="search" placeholder="Search name, account or type" value="${esc(S.q)}" data-act="search" data-testid="review-search"></div>
+  </div>
+  <div class="ds-card" style="overflow:hidden"><table class="ds-table po-rt" data-testid="review-table" aria-describedby="rv-cap">
+    <caption class="ds-sr" id="rv-cap">Agents found in AWS. ${rows.length} shown. Rows with a red edge need attention.</caption>
+    <colgroup><col class="c-cb"><col><col class="c-chg"><col class="c-own"><col class="c-tier"><col class="c-flags"><col class="c-why"></colgroup>
+    <thead><tr><th scope="col">${selectable.length ? `<input type="checkbox" id="sel-all" data-act="sel-all" data-testid="review-select-all" ${allOn ? 'checked' : ''} aria-label="Select all shown agents that can be imported">` : ''}</th><th scope="col">Agent</th><th scope="col">Change</th><th scope="col">Owner</th><th scope="col">Tier</th><th scope="col">Risk flags</th><th scope="col"><span class="ds-sr">Details</span></th></tr></thead>
+    <tbody>${rows.length ? rows.map(reviewRow).join('') : `<tr><td colspan="7"><div class="po-empty" data-testid="review-empty"><h3>No agents match</h3><p>Try another filter or clear the search.</p><button class="ds-btn ds-btn-sm" type="button" data-act="clear-filter">Show all agents</button></div></td></tr>`}</tbody>
+  </table></div>`;
+}
+function reviewFooter() {
+  const n = S.sel.size;
+  const noOwner = [...S.sel].filter((id) => !ownerOf(byId[id])).length;
+  const missing = A.filter((a) => a.change === 'missing').length;
+  return `<div class="po-footer" data-testid="review-bulk-bar">
+    <div class="po-footer-l"><strong data-testid="review-selected-count">${n} selected</strong>
+      <label class="ds-sr" for="bulk-owner">Assign owner to selected</label><select class="po-own" id="bulk-owner" data-act="bulk-owner" data-testid="review-bulk-owner" ${n ? '' : 'disabled'}><option value="">Assign owner…</option>${USERS.map((u) => `<option>${u}</option>`).join('')}</select>
+      <button class="ds-btn ds-btn-sm" type="button" data-act="bulk-clear" data-testid="review-bulk-exclude" ${n ? '' : 'disabled'}>Clear selection</button>
+      <span class="ds-helper" style="margin:0">${noOwner ? `${noOwner} without an owner will import as <strong>Needs owner</strong>. ` : ''}${missing} missing agent raises a finding.</span></div>
+    <div class="po-footer-r"><button class="ds-btn ds-btn-primary" type="button" data-act="import" data-testid="review-import" ${n ? '' : 'disabled aria-describedby="imp-why"'}>${n ? `Import ${n} agent${n > 1 ? 's' : ''}${S.sample ? ' as sample data' : ''}` : 'Import'}</button>${n ? '' : '<span id="imp-why" class="ds-sr">Select at least one agent to import.</span>'}</div>
+  </div>`;
+}
+function reviewView(sample) {
+  S.sample = !!sample;
+  const c = reviewCounts();
+  const top = sample ? header({ crumbs: [['Connections', '#gallery'], ['Sample data']], title: 'Review sample agents', desc: 'A fictional AWS tenant, so you can see how intake works before connecting a real account.' }) + sampleBanner('AWS') :
+    wizTop('aws', 5, 'Review agents', `Scan finished: ${c.all - c.missing} agents found in 6 Regions. New and changed agents are selected. Check owners and tiers, then import. Imported agents start in Pending review.`);
+  return top + `<div id="review-region">${reviewTable()}</div><div id="footer-region">${reviewFooter()}</div>`;
+}
+V['aws-5'] = () => reviewView(false);
+V['aws-5-why'] = () => { S.open = 'a03'; S.ovrOpen = 'a03'; S.ovrTier = 2; return reviewView(false); };
+V['sample-review'] = () => reviewView(true);
+
+V['aws-6'] = () => {
+  S.awsConnected = true;
+  const imp = [...S.sel].map((id) => byId[id]);
+  const n = imp.filter((a) => a.change === 'new').length; const ch = imp.filter((a) => a.change === 'changed').length;
+  const up = imp.filter((a) => a.prev && tierOf(a) < a.prev).length; const no = imp.filter((a) => !ownerOf(a)).length;
+  const t1 = imp.filter((a) => tierOf(a) === 1).length;
+  return wizTop('aws', 6, 'Import complete', 'Every imported agent is in Pending review with an audit event: “Imported from AWS by m.chen, scan #4821”.') +
+  `<section class="ds-card" data-testid="import-summary" aria-labelledby="sum-h" style="margin-bottom:16px">
+    <div class="po-sum-hero"><span class="po-sum-ico" aria-hidden="true">${I.check}</span><div><h2 id="sum-h">${imp.length} agents imported from AWS</h2><p class="ds-helper" style="margin:2px 0 0">${t1} are Tier 1. Reviewers see them first in Fleet.</p></div></div>
+    <dl class="po-kv">
+      <div><dt>New</dt><dd data-testid="import-summary-count-new">${n}<small>Created in Pending review</small></dd></div>
+      <div><dt>Updated</dt><dd data-testid="import-summary-count-updated">${ch}<small>${up} went up in risk and are back in review</small></dd></div>
+      <div><dt>Need an owner</dt><dd data-testid="import-summary-count-no-owner">${no}<small>${no ? 'Assign before approval' : 'All have owners'}</small></dd></div>
+      <div><dt>Missing at source</dt><dd data-testid="import-summary-count-missing">1<small>Finding raised; record kept</small></dd></div>
+    </dl>
+  </section>
+  <div class="po-two">
+    <section class="ds-card" aria-labelledby="nx-h"><div class="po-panel-head"><h2 id="nx-h">Next</h2></div><div class="po-panel-body" style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+      <a class="ds-btn ds-btn-primary" href="#fleet" data-testid="summary-open-fleet">Open imported agents in Fleet</a>
+      ${no ? `<a class="ds-btn" href="#aws-5" data-act="filter-attn" data-testid="summary-assign-owners">Assign ${no} missing owner${no > 1 ? 's' : ''}</a>` : ''}
+      <a class="ds-btn ds-btn-ghost" href="#connection-aws" data-testid="summary-open-connection">View the AWS connection</a>
+    </div></section>
+    <section class="ds-card" aria-labelledby="sy-h"><div class="po-panel-head"><h2 id="sy-h">Keep AWS in sync</h2></div><div class="po-panel-body">
+      <fieldset class="po-fs"><legend class="ds-label">Scan for changes</legend><div class="po-radios">${[['off', 'Off'], ['daily', 'Daily at 02:00'], ['hourly', 'Hourly']].map((o) => `<label><input type="radio" name="sync" value="${o[0]}" data-act="sync" data-testid="sync-schedule-${o[0]}" ${S.schedule === o[0] ? 'checked' : ''}>${o[1]}</label>`).join('')}</div></fieldset>
+      <p class="ds-helper" style="margin:0 0 12px">Runs as a scheduled Domino Job. New agents wait in <strong>Awaiting import</strong>; ACT never imports them on its own. Changes and disappearances become findings.</p>
+      <button class="ds-btn" type="button" data-act="sync-save" data-testid="sync-save">Save schedule</button> <span class="ds-helper" role="status" id="sync-st" style="margin-left:8px"></span>
+    </div></section>
+  </div>`;
+};
+
+/* generic handshake for other providers */
+const HS = {
+  google: { title: 'Connect Google Cloud', desc: 'One connection covers Vertex AI Agent Runtime, Gemini Enterprise and the Agent Registry. A short command in Cloud Shell sets up a keyless trust between Google Cloud and this Domino deployment.', panel: 'Run the setup command in Cloud Shell', time: 'About 1 minute in Google Cloud',
+    steps: ['Click <strong>Copy command and open Cloud Shell</strong>. Cloud Shell opens in a new tab.', 'Paste the command (Ctrl+V or ⌘V) and press Enter. If Google asks, click <strong>Authorize</strong>.', 'Pick the organization or projects ACT should read and type <strong>Y</strong>.', 'Click the <strong>Finish in ACT</strong> link the script prints.'],
+    primary: 'Copy command and open Cloud Shell', cmd: "echo 'IyEvYmluL2Jhc2gKIyBBQ1QgKEFnZW50IENvbnRyb2wgVG93ZXIpIHJlYWQtb25seSBzZXR1cCBmb3IgR29vZ2xlIENsb3VkCnNldCAtZXVvIHBpcGVmYWlsCklTU1VFUj0iaHR0cHM6Ly9zZS1kZW1vLmRvbWluby50ZWNoL2F1dGgvcmVhbG1zL0RvbWlub1JlYWxtIgpQT09MPWFjdC1wb29sOyBQUk9WPWFjdC1kb21pbm8=' | base64 -d | bash", cap: 'Self-contained, idempotent and safe to re-run. Contains no secret.',
+    script: '# Creates: workload identity pool "act-pool", OIDC provider "act-domino" trusting\n#   https://se-demo.domino.tech/auth/realms/DominoRealm (pinned to ACT’s Domino identity)\n# Creates: custom role "ACT agent inventory reader" (list/get only; excludes reasoningEngines.query)\n# Grants it at the organization, folders or projects you pick.\n# Prints: Finish in ACT link with a one-time code.',
+    listen: 'Waiting for Google Cloud… Click <strong>Finish in ACT</strong> in Cloud Shell when the script ends. This page continues on its own.',
+    paste: { label: 'Have the Finish link? Paste it here', help: 'If the link doesn’t open, copy it from Cloud Shell and paste it here.', ph: 'https://…/#/connect/google/finish?cfg=…' },
+    other: ['<a href="#google-1" data-testid="signin-fallback">Sign in with Google</a> instead. Quicker, but ACT sees only what you can see and your org may require you to sign in again every few hours.', '<a href="#google-1" data-testid="template-terraform">Terraform module</a> for teams that require infrastructure as code.', '<a href="#google-1" data-testid="fallback-key">Upload a service account key</a>. Not recommended; most banks block key creation.'],
+    note: '<div class="ds-alert ds-alert-info" style="margin-bottom:16px">' + I.info + '<div><strong>Vertex AI and Gemini Enterprise share this connection.</strong><p>Agent Runtime (formerly Vertex AI Agent Engine), Gemini Enterprise (formerly Agentspace) and the Agent Registry are read with one trust and one role. Each gets its own access check.</p></div></div>' },
+  microsoft: { title: 'Connect Microsoft', desc: 'One connection covers Azure AI Foundry, Entra Agent ID and the Agent 365 catalog. A command in Azure Cloud Shell creates a managed identity that trusts this Domino deployment.', panel: 'Run the setup command in Azure Cloud Shell', time: 'About 2 minutes in Azure',
+    steps: ['Click <strong>Copy command and open Azure Cloud Shell</strong>.', 'Paste the command and press Enter. A Privileged Role Administrator must run it for Entra and Agent 365 access.', 'When the deployment finishes, click <strong>Return to ACT</strong> in the output.'],
+    primary: 'Copy command and open Azure Cloud Shell', cmd: 'az deployment mg create -m acme-root -l eastus --template-uri https://act-templates.example/act-microsoft-readonly-v1.json -p issuer=https://se-demo.domino.tech/auth/realms/DominoRealm subject=3f9c… audience=domino-play nonce=7KQ2…', cap: 'Creates a managed identity, a read-only custom role and Graph read permissions. Contains no secret.',
+    listen: 'Waiting for Azure… Click <strong>Return to ACT</strong> when the deployment finishes. This page continues on its own.',
+    paste: { label: 'Have the Return link? Paste it here', help: 'Copy it from the Cloud Shell output if it doesn’t open.', ph: 'https://…/#/connect/microsoft/callback?tenant=…' },
+    other: ['<a href="#microsoft-1" data-testid="signin-fallback">Just sign in with Microsoft</a> instead. Good for a pilot; the connection stops when your sign-in expires.', '<a href="#microsoft-1" data-testid="template-download">Download the Bicep template</a> for change review.'] },
+  databricks: { title: 'Connect Databricks', desc: 'A setup script creates a read-only service principal that trusts this Domino deployment, then prints a connection code. Paste the code here.', panel: 'Run the setup script', time: 'About 3 minutes; needs a Databricks account admin',
+    steps: ['Click <strong>Copy setup script</strong>, or send it to your Databricks account admin.', 'Run it in a terminal with the Databricks CLI (version 0.250 or later). It asks which workspaces ACT should read.', 'Paste the connection code it prints below.'],
+    primary: 'Copy setup script', cmd: 'databricks account service-principals create --display-name act-reader && databricks account service-principal-federation-policy create … # full script: 38 lines', cap: 'The code it prints holds the account ID and workspace list. It is not a secret.',
+    listen: null,
+    paste: { label: 'Connection code', help: 'Paste the code the script printed, or any Databricks URL from your browser.', ph: 'eyJjbG91ZCI6ImF3cyIsImFjY291bnRfaWQiOi…' },
+    other: ['On Azure Databricks: <a href="#databricks-1" data-testid="signin-fallback">Sign in with Microsoft</a> and ACT finds your workspaces with no code.', '<a href="#databricks-1" data-testid="signin-fallback-databricks">Sign in with Databricks</a>. ACT sees only what you can see.', '<a href="#databricks-1" data-testid="template-terraform">Terraform module</a>.'] },
+  snowflake: { title: 'Connect Snowflake', desc: 'A SQL worksheet creates a read-only role and a service user that trusts this Domino deployment. No password or key is created.', panel: 'Run the setup worksheet in Snowsight', time: 'About 1 minute; needs ACCOUNTADMIN',
+    steps: ['Click <strong>Copy SQL and open Snowsight</strong>.', 'Paste into a new SQL worksheet and click <strong>Run All</strong>.', 'Click the link in the last result row, <strong>Finish in ACT</strong>.'],
+    primary: 'Copy SQL and open Snowsight', cmd: '-- ACT read-only setup. Run as ACCOUNTADMIN with Run All. Idempotent.\nUSE ROLE ACCOUNTADMIN;\nCREATE ROLE IF NOT EXISTS ACT_READER COMMENT = \'ACT read-only inventory. setup:7KQ2…\';\n…  -- 34 lines', cap: 'Grants MONITOR on agents (read spec, cannot run them). Contains no secret.',
+    listen: 'Waiting for Snowflake… Click <strong>Finish in ACT</strong> in the last result row. This page continues on its own.',
+    paste: { label: 'Have the Finish link or account URL? Paste it here', help: 'The Finish link, or anything from your Snowsight address bar.', ph: 'https://app.snowflake.com/acme/prod/…' },
+    other: ['<a href="#snowflake-1" data-testid="signin-fallback">Sign in with Snowflake</a> (OAuth). Requires re-consent every 90 days.', '<a href="#snowflake-1" data-testid="fallback-key">Use a key pair</a> for Domino deployments Snowflake can’t reach.'] }
+};
+function hsView(p) {
+  const h = HS[p];
+  return wizTop(p, 1, h.title, h.desc) + `<div class="po-wiz"><div class="po-main">${h.note || ''}
+    <section class="ds-card" aria-labelledby="hs-h" data-testid="handshake-panel"><div class="po-panel-head"><h2 id="hs-h">${h.panel}</h2><span class="ds-helper" style="margin:0">${h.time}</span></div><div class="po-panel-body">
+      <ol class="po-hs-steps">${h.steps.map((s) => `<li><span>${s}</span></li>`).join('')}</ol>
+      <div class="po-hs-actions"><button class="ds-btn ds-btn-primary" type="button" data-act="copy-open" data-copy="${esc(h.cmd)}" data-testid="handshake-primary">${h.primary}${p === 'databricks' ? '' : I.ext + '<span class="ds-sr">(opens in a new tab)</span>'}</button><button class="ds-btn" type="button" data-act="copy" data-copy="${esc(h.cmd)}" data-testid="handshake-send-admin">${I.copy}Send to my cloud admin</button></div>
+      <div class="po-cmd"><pre data-testid="handshake-command" aria-label="Setup command">${esc(h.cmd)}</pre><button class="ds-btn po-copy" type="button" data-act="copy" data-copy="${esc(h.cmd)}" data-testid="handshake-copy">${I.copy}Copy</button></div>
+      <p class="po-cmd-cap">${h.cap}</p>
+      ${h.script ? `<details class="po-more"><summary data-testid="handshake-script-toggle">Read what the command does</summary><pre>${esc(h.script)}</pre></details>` : ''}
+      ${h.listen ? `<div class="po-listen is-live" data-testid="handshake-listener"><span class="po-pulse" aria-hidden="true"></span><div class="po-listen-text" id="listen-text" data-testid="handshake-listener-status">${h.listen}</div><span class="po-listen-time" id="elapsed" aria-hidden="true">0:00</span></div>` : ''}
+      ${pasteBlock(p, h.paste)}
+      <details class="po-more" data-testid="other-ways"><summary data-testid="other-ways-toggle">Other ways to connect</summary><ul class="po-list" style="margin-top:8px">${h.other.map((o) => `<li>${I.info}<span>${o}</span></li>`).join('')}</ul></details>
+    </div></section>
+    <div class="po-proto">Prototype: steps 2 to 6 for this provider match the AWS flow. <button class="ds-btn ds-btn-sm" type="button" data-act="sim-detect" data-p="${p}">Simulate return link</button></div>
+  </div>${aside(p)}</div>`;
+}
+V['google-1'] = () => hsView('google');
+V['microsoft-1'] = () => hsView('microsoft');
+V['databricks-1'] = () => hsView('databricks');
+V['snowflake-1'] = () => hsView('snowflake');
+
+V.other = () => header({ crumbs: [['Connections', '#gallery'], ['Add an agent by URL']], title: 'Add an agent by URL', desc: 'For agents on platforms ACT doesn’t connect to. ACT reads the agent’s A2A agent card once, checks its signature, and you score its consequences.' }) +
+  `<div class="po-wiz"><div class="po-main"><section class="ds-card" aria-labelledby="ou-h"><div class="po-panel-head"><h2 id="ou-h">Agent card</h2></div><div class="po-panel-body">
+    <label class="ds-label" for="card-url">Agent card URL</label><p class="ds-helper" id="cu-help" style="margin:0 0 8px">The full address of the card, usually ending in /.well-known/agent-card.json.</p>
+    <input class="ds-input" id="card-url" data-testid="card-url" type="url" inputmode="url" spellcheck="false" placeholder="https://agent.example.com/.well-known/agent-card.json" aria-describedby="cu-help">
+    <div class="ds-alert ds-alert-info" style="margin-top:16px">${I.info}<div>Is this agent on AWS, Google Cloud, Microsoft, Databricks or Snowflake? <a href="#gallery">Connect the platform</a> instead: ACT finds every agent there and suggests tiers from evidence.</div></div>
+  </div></section>
+  <div class="po-footer" style="margin-top:0"><div class="po-footer-l"></div><div class="po-footer-r"><a class="ds-btn" href="#gallery">Cancel</a><button class="ds-btn ds-btn-primary" type="button" data-testid="card-url-continue" disabled aria-describedby="cu-dis">Continue to assessment</button><span class="ds-sr" id="cu-dis">Enter an agent card URL first.</span></div></div>
+  </div></div><div class="po-proto">Prototype: step 2 is today’s seven-question assessment from Register.jsx, unchanged.</div>`;
+
+function connView(p) {
+  const bad = p === 'google';
+  const name = bad ? 'Google Cloud' : 'AWS';
+  const status = bad ? st('warn', 'Needs attention', 'connection-status') : st('ok', 'Healthy', 'connection-status');
+  const actions = `<button class="ds-btn ds-btn-primary" type="button" data-testid="connection-scan-now" ${bad ? 'disabled aria-describedby="scan-dis"' : 'data-act="scan-now"'}>Scan now</button>${bad ? '<span class="ds-sr" id="scan-dis">Scans are paused until the connection is fixed.</span>' : ''}<button class="ds-btn" type="button" data-act="check-access" data-testid="connection-check-access">Check access</button>`;
+  return header({ crumbs: [['Connections', '#gallery'], [name]], title: `<span class="po-detail-head">${mark(p, true)}<span>${bad ? 'Google Cloud · acme-bank.com' : 'AWS · Acme Bank Organization'}</span></span>`, desc: '', actions }) +
+  `<div data-testid="connection-detail" hidden></div><div class="po-detail-meta" style="margin:-12px 0 20px">${status}<span>${I.lock} No secrets stored: ${bad ? 'Workload Identity Federation' : 'IAM role trusts Domino sign-in'}</span><span>Connected 3 Nov 2026 by m.chen</span>${bad ? '' : '<span>Sync: daily at 02:00</span>'}</div>
+  ${bad ? `<div class="ds-alert ds-alert-warn" role="alert" data-testid="connection-attention" style="margin-bottom:16px">${I.alert}<div><strong>Google Cloud rejected ACT’s sign-in, so scans are paused.</strong><p>The trust was set up for ACT’s previous publisher. This app was republished on 10 Nov by a different user, so Google no longer recognizes it. Re-run the setup command to trust the current publisher. Agents already in ACT are not affected.</p><div class="ds-alert-actions"><a class="ds-btn ds-btn-sm ds-btn-primary" href="#google-1" data-testid="connection-reconnect">Re-run setup</a><button class="ds-btn ds-btn-sm" type="button" data-act="copy" data-copy="Error: unauthorized_client: The given credential is rejected by the attribute condition." data-testid="connection-copy-error">${I.copy}Copy error details</button></div></div></div>` : ''}
+  <dl class="po-kv ds-card" style="border-top:1px solid var(--ds-line);margin:0 0 16px">
+    <div><dt>Agents in ACT</dt><dd>${bad ? 12 : 19}<small>from this connection</small></dd></div>
+    <div><dt>Awaiting import</dt><dd data-testid="connection-awaiting-count">${bad ? 0 : 3}<small>${bad ? 'none' : 'found by daily sync'}</small></dd></div>
+    <div><dt>Last scan</dt><dd>${bad ? '2 days' : '2 hours'}<small>${bad ? 'last successful, 12 found' : 'ago · 19 found, 0 errors'}</small></dd></div>
+    <div><dt>Next scan</dt><dd>${bad ? 'Paused' : '02:00'}<small>${bad ? 'until the connection is fixed' : 'tomorrow, scheduled Job'}</small></dd></div>
+  </dl>
+  ${bad ? '' : `<section class="ds-card" aria-labelledby="aw-h" data-testid="awaiting-import-queue" style="margin-bottom:16px"><div class="po-panel-head"><h2 id="aw-h">Awaiting import</h2><a class="ds-btn ds-btn-sm" href="#aws-5" data-testid="awaiting-review-all">Review all 3</a></div>
+    <div class="po-tbl-wrap"><table class="ds-table"><colgroup><col><col style="width:22%"><col style="width:120px"><col style="width:140px"><col style="width:110px"></colgroup><thead><tr><th scope="col">Agent</th><th scope="col">Where</th><th scope="col">Suggested</th><th scope="col">Found</th><th scope="col"><span class="ds-sr">Action</span></th></tr></thead><tbody>
+    ${[['fx-hedging-copilot', 'AgentCore Runtime', 'payments-prod / us-east-1', 1, 'Today 02:04'], ['atm-ops-assistant', 'AgentCore harness', 'retail-prod / us-east-1', 3, 'Today 02:04'], ['reg-report-checker', 'Bedrock Agent (classic)', 'data-science-dev / us-west-2', 2, 'Yesterday 02:03']].map((r, i) => `<tr data-testid="awaiting-row-${i}"><td><span class="po-aname" style="font-weight:600;color:var(--ds-ink)">${r[0]}</span><span class="po-asub" style="display:block;font-size:12px;color:var(--ds-muted)">${r[1]}</span></td><td class="ds-trunc" title="${r[2]}">${r[2]}</td><td>${tierBadge(r[3])}</td><td style="color:var(--ds-muted)">${r[4]}</td><td><a class="ds-btn ds-btn-sm" href="#aws-5" data-testid="awaiting-review-${i}">Review<span class="ds-sr"> ${r[0]}</span></a></td></tr>`).join('')}
+    </tbody></table></div></section>`}
+  <div class="po-two" style="margin-bottom:16px">
+    <section class="ds-card" aria-labelledby="ac-h"><div class="po-panel-head"><h2 id="ac-h">Access</h2>${bad ? st('err', 'Sign-in failing') : st('ok', '7 of 7 checks passed')}</div><div class="po-panel-body"><dl class="po-dl">
+      ${bad ? '<div><dt>Trust</dt><dd>Workload identity pool act-pool, provider act-domino</dd></div><div><dt>Service identity</dt><dd class="po-mono">principal://…/act-pool/subject/3f9c…</dd></div><div><dt>Scope</dt><dd>Organization acme-bank.com (14 projects)</dd></div><div><dt>Last checked</dt><dd>Today 08:15 · failed</dd></div>' :
+      '<div><dt>Role</dt><dd class="po-mono">arn:aws:iam::123456789012:role/ACT-ReadOnly</dd></div><div><dt>Member accounts</dt><dd>3 of 4 have the role · sandbox pending</dd></div><div><dt>Template</dt><dd>v3 (current)</dd></div><div><dt>Last checked</dt><dd>Today 02:00 · all passed</dd></div>'}
+    </dl></div></section>
+    <section class="ds-card" aria-labelledby="sp-h"><div class="po-panel-head"><h2 id="sp-h">Scope</h2><a class="ds-btn ds-btn-sm" href="${bad ? '#connection-google' : '#aws-3'}" data-testid="connection-edit-scope">Edit scope</a></div><div class="po-panel-body"><dl class="po-dl">
+      ${bad ? '<div><dt>Projects</dt><dd>14 of 14 with agents</dd></div><div><dt>Products</dt><dd>Agent Runtime · Gemini Enterprise · Agent Registry</dd></div><div><dt>Traces</dt><dd>Off</dd></div>' : '<div><dt>Accounts</dt><dd>3 of 4 (sandbox waiting for role)</dd></div><div><dt>Regions</dt><dd>6 with agents; empty Regions checked daily</dd></div><div><dt>Traces</dt><dd>Off · <a href="#aws-1">Turn on</a></dd></div>'}
+    </dl></div></section>
+  </div>
+  <section class="ds-card" aria-labelledby="hi-h" data-testid="sync-history" style="margin-bottom:16px"><div class="po-panel-head"><h2 id="hi-h">Scan history</h2></div><div class="po-tbl-wrap"><table class="ds-table"><colgroup><col style="width:22%"><col><col style="width:12%"><col style="width:10%"><col style="width:10%"><col style="width:10%"><col style="width:16%"></colgroup>
+    <thead><tr><th scope="col">Started</th><th scope="col">Trigger</th><th scope="col">Found</th><th scope="col">New</th><th scope="col">Changed</th><th scope="col">Missing</th><th scope="col">Result</th></tr></thead><tbody>
+    ${(bad ? [['Today 02:00', 'Scheduled', '–', '–', '–', '–', 'err', 'Sign-in failed'], ['10 Nov 02:00', 'Scheduled', 12, 0, 1, 0, 'ok', 'Done · Job #4790'], ['9 Nov 02:00', 'Scheduled', 12, 0, 0, 0, 'ok', 'Done · Job #4761']] :
+      [['Today 02:00', 'Scheduled', 22, 3, 0, 0, 'ok', 'Done · Job #4830'], ['Yesterday 14:21', 'Manual by m.chen', 19, 13, 3, 1, 'ok', 'Done · Job #4821'], ['Yesterday 14:02', 'Manual by m.chen', 18, 13, 3, 1, 'warn', '1 Region skipped']]).map((r) => `<tr><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td><td>${r[5]}</td><td>${st(r[6], r[7])}</td></tr>`).join('')}
+  </tbody></table></div></section>
+  <section class="ds-card" aria-labelledby="dz-h"><div class="po-panel-head"><h2 id="dz-h">Disconnect</h2></div><div class="po-panel-body" style="display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center"><p class="ds-helper" style="margin:0;max-width:70ch">Stops all reads from ${name}. Agents already in ACT stay, marked Source disconnected. You remove the trust on the ${name} side.</p><button class="ds-btn ds-btn-danger" type="button" data-act="disconnect" data-testid="connection-disconnect">Disconnect ${name}</button></div></section>`;
+}
+V['connection-aws'] = () => connView('aws');
+V['connection-google'] = () => connView('google');
+
+V.fleet = () => header({ title: 'Fleet', desc: 'Every AI agent across your estate, with its tier, owner and open findings.', actions: '<a class="ds-btn" href="#other" data-testid="fleet-add-by-url">Add by URL</a><a class="ds-btn ds-btn-primary" href="#gallery" data-testid="fleet-add-agents">Add agents</a>' }) +
+  `<div class="ds-alert ds-alert-info" data-testid="fleet-awaiting-banner" style="margin-bottom:16px;align-items:center">${I.info}<div style="flex:1"><strong>3 agents found by AWS sync are awaiting import.</strong> They aren’t in Fleet until someone reviews them.</div><a class="ds-btn ds-btn-sm" href="#connection-aws">Review</a></div>
+  <div class="ds-card" style="overflow:hidden"><table class="ds-table"><colgroup><col style="width:120px"><col><col style="width:20%"><col style="width:96px"><col style="width:150px"></colgroup><thead><tr><th scope="col">Source</th><th scope="col">Name</th><th scope="col">Owner</th><th scope="col">Tier</th><th scope="col">Status</th></tr></thead><tbody>
+  ${A.filter((a) => S.sel.has(a.id)).slice(0, 6).map((a) => `<tr><td><span class="po-st po-st-idle">AWS</span></td><td><span class="po-aname" style="font-weight:600;color:var(--ds-ink)">${a.name}</span></td><td>${ownerOf(a) || '<span class="po-flag po-flag-high">Needs owner</span>'}</td><td>${tierBadge(tierOf(a))}</td><td><span class="po-chg po-chg-changed">Pending review</span></td></tr>`).join('')}
+  </tbody></table></div>`;
+
+/* ---------- after-render behaviours ---------- */
+const AFTER = {};
+function startListener(onDetect, ms) {
+  const t0 = Date.now(); const el = $('#elapsed');
+  every(() => { if (!el) return; const s = Math.floor((Date.now() - t0) / 1000); el.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }, 1000);
+  if (onDetect) later(onDetect, ms);
+}
+AFTER['aws-1-waiting'] = () => {
+  say('Waiting for AWS. This page continues on its own when the role is ready.');
+  startListener(() => {
+    const box = $('[data-testid="handshake-listener"]'); box.className = 'po-listen is-ok';
+    $('#listen-text').innerHTML = '<strong>Role detected.</strong> ACT-ReadOnly in account 1234 5678 9012. Checking access…';
+    $('#elapsed').textContent = '';
+    say('AWS role detected in account 1234 5678 9012. Moving to Check access.');
+    later(() => { location.hash = 'aws-2'; }, 1600);
+  }, 4200);
+};
+['google-1', 'microsoft-1', 'snowflake-1'].forEach((k) => { AFTER[k] = () => startListener(null); });
+function runChecks(partial) {
+  const items = AWS_CHECKS; let i = 0;
+  const step = () => {
+    if (i >= items.length) return finish();
+    const c = items[i]; const li = $('#ck-' + c[0]);
+    let cls = 'is-ok', icon = I.check, txt = 'Passed';
+    if (c[0] === 'traces') { cls = 'is-skip'; icon = I.dash; txt = 'Not requested'; }
+    if (partial && c[0] === 'registry') { cls = 'is-miss'; icon = I.x; txt = 'Missing'; }
+    li.className = cls; li.querySelector('.po-ico').innerHTML = icon; li.querySelector('.po-check-state').textContent = txt;
+    if (partial && c[0] === 'registry') li.insertAdjacentHTML('beforeend', `<div class="po-check-fix warn" data-testid="permission-fix-registry"><strong>The ACT role is missing agent-registry:ListRegistries.</strong> Your stack uses template v2, from before AWS moved the Agent Registry to its own service. Update the stack to v3 in AWS (one click, about a minute), then check again. You can continue without it: agents are still scanned, but without Registry names and owners.<div class="ds-alert-actions"><button class="ds-btn ds-btn-sm ds-btn-primary" type="button" data-act="open-cloud" data-testid="permission-fix-registry-action">Update stack in AWS${I.ext}<span class="ds-sr">(opens in a new tab)</span></button><button class="ds-btn ds-btn-sm" type="button" data-act="copy" data-copy="agent-registry:ListRegistries">${I.copy}Copy permission name</button></div></div>`);
+    i++; later(step, 380);
+  };
+  const finish = () => {
+    const miss = partial ? 1 : 0;
+    $('#ck-sum').textContent = miss ? '5 of 6 passed · 1 optional missing' : 'All 6 checks passed';
+    $('#ck-foot').textContent = miss ? 'Required checks passed. The missing optional permission only limits what ACT can show.' : 'Required checks passed.';
+    const n = $('#ck-next'); n.removeAttribute('aria-disabled'); n.removeAttribute('tabindex'); n.style.cssText = ''; if (miss) n.textContent = 'Continue without Registry';
+    say(miss ? 'Access check finished. 5 of 6 passed. Read the Agent Registry is missing; a fix is shown. You can continue.' : 'Access check finished. All checks passed. Continue to scope.');
+  };
+  say('Checking access. ' + items.length + ' checks.');
+  later(step, 300);
+}
+AFTER['aws-2'] = () => runChecks(false);
+AFTER['aws-2-partial'] = () => runChecks(true);
+function scopeSummary() {
+  const boxes = [...document.querySelectorAll('[data-act="scope-region"]')]; const on = boxes.filter((b) => b.checked).length;
+  document.querySelectorAll('[data-act="scope-acct"]').forEach((b) => { if (b.dataset.mixed) b.indeterminate = true; });
+  const s = $('#scope-summary'); if (s) s.textContent = `${on} of ${boxes.length} Regions selected · 3 accounts`;
+  const btn = $('#scan-btn'); if (btn) { btn.textContent = on ? `Scan ${on} Region${on > 1 ? 's' : ''}` : 'Select a Region to scan'; if (!on) { btn.setAttribute('aria-disabled', 'true'); btn.style.pointerEvents = 'none'; btn.style.opacity = '.55'; } else { btn.removeAttribute('aria-disabled'); btn.style.cssText = ''; } }
+}
+AFTER['aws-3'] = scopeSummary;
+AFTER['aws-4'] = () => {
+  const found = A.filter((a) => a.change !== 'missing');
+  const counts = { found: 0, new: 0, changed: 0, unchanged: 0, missing: 0, skipped: 1 };
+  const set = () => Object.keys(counts).forEach((k) => { $('#c-' + k).textContent = counts[k]; });
+  let i = 0; let lastSay = 0;
+  const feed = $('#feed'); const bar = $('#scan-bar');
+  const doScope = () => {
+    if (i > 0) { const prev = $('#ss-' + (i - 1)); const n = found.filter((a) => a.acct === SCAN_SCOPES[i - 1][0] && a.region === SCAN_SCOPES[i - 1][1]).length; prev.firstElementChild.innerHTML = '<span style="color:var(--ds-ok)">' + I.check + '</span>'; prev.lastElementChild.textContent = `Done · ${n} agent${n === 1 ? '' : 's'}`; }
+    bar.setAttribute('aria-valuenow', i); bar.firstElementChild.style.width = (i / SCAN_SCOPES.length * 100) + '%';
+    if (i >= SCAN_SCOPES.length) return done();
+    const [acc, reg] = SCAN_SCOPES[i]; const row = $('#ss-' + i);
+    row.firstElementChild.innerHTML = '<span class="po-spin" aria-hidden="true"></span>'; row.lastElementChild.textContent = 'Reading agents…';
+    $('#scan-eta').textContent = `Scanning ${acc} / ${reg} · ${i} of ${SCAN_SCOPES.length} done`;
+    const agents = found.filter((a) => a.acct === acc && a.region === reg);
+    let j = 0;
+    const addAgent = () => {
+      if (j >= agents.length) { i++; later(doScope, 350); return; }
+      const a = agents[j++]; const emp = $('#feed-empty'); if (emp) emp.remove();
+      feed.insertAdjacentHTML('afterbegin', `<li data-testid="scan-agent-row-${a.id}"><span class="po-fname">${a.name}</span>${chg(a.change)}<span class="po-fsub">${a.kind} · ${acc} · ${reg}</span></li>`);
+      counts.found++; counts[a.change]++; set();
+      if (Date.now() - lastSay > 5000) { lastSay = Date.now(); say(`${counts.found} agents found so far.`); }
+      later(addAgent, 260);
+    };
+    later(addAgent, 500);
+  };
+  const done = () => {
+    counts.missing = 1; set(); S.scanDone = true;
+    $('#scan-eta').innerHTML = `<span style="color:var(--ds-ok);font-weight:600">Scan complete in 1 min 12 s.</span> ${counts.found} found, 1 missing, 1 scope skipped.`;
+    const r = $('#scan-review'); r.removeAttribute('aria-disabled'); r.removeAttribute('tabindex'); r.style.cssText = ''; r.textContent = `Review ${A.length} agents`;
+    say(`Scan complete. ${counts.found} agents found: ${counts.new} new, ${counts.changed} changed, ${counts.unchanged} unchanged, 1 missing. Review agents is now available.`);
+  };
+  say('Scan started as a Domino Job. Progress updates every few seconds.');
+  later(doScope, 600);
+};
+AFTER['aws-5-why'] = () => { S.ovrTier = 2; };
+
+/* ---------- router ---------- */
+function render(initial) {
+  clearTimers();
+  let h = (location.hash || '#gallery').slice(1);
+  if (!V[h]) h = 'gallery';
+  if (h !== 'aws-5-why' && h !== 'aws-5' && h !== 'sample-review') { S.open = null; S.ovrOpen = null; }
+  app.innerHTML = V[h]();
+  document.querySelectorAll('#nav a').forEach((a) => a.removeAttribute('aria-current'));
+  const navKey = h === 'fleet' ? 'fleet' : 'connections';
+  const n = document.querySelector(`#nav [data-nav="${navKey}"]`); if (n) n.setAttribute('aria-current', 'page');
+  const t = $('#view-h'); let tt = 'Connections'; if (t) { const c = t.cloneNode(true); c.querySelectorAll('.po-mark, .ds-sr').forEach((x) => x.remove()); tt = c.textContent.trim(); } document.title = tt + ' · ACT';
+  if (AFTER[h]) AFTER[h]();
+  if (!initial && t) { t.focus(); window.scrollTo(0, 0); }
+}
+function rerenderReview() {
+  const id = document.activeElement && document.activeElement.id;
+  $('#review-region').innerHTML = reviewTable(); $('#footer-region').innerHTML = reviewFooter();
+  if (id) { const el = document.getElementById(id); if (el) { el.focus(); if (el.type === 'search') { const n = el.value.length; el.setSelectionRange(n, n); } } }
+}
+window.addEventListener('hashchange', () => render(false));
+
+/* ---------- events ---------- */
+async function copy(text, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (e) { ok = false; }
+  if (btn) { const old = btn.innerHTML; btn.innerHTML = ok ? I.check + 'Copied' : 'Select and copy'; setTimeout(() => { btn.innerHTML = old; }, 1800); }
+  say(ok ? 'Copied to clipboard.' : 'Copy failed. Select the text and copy it.');
+}
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  const act = el.dataset.act; const id = el.dataset.id;
+  switch (act) {
+    case 'skip': $('#main').focus(); break;
+    case 'copy': e.preventDefault(); copy(el.dataset.copy, el); break;
+    case 'copy-open': copy(el.dataset.copy, null); say('Command copied. Opening the console in a new tab (simulated in this prototype).'); break;
+    case 'open-cloud': say('Opening AWS in a new tab (simulated in this prototype). ACT is now waiting for the role.'); break;
+    case 'sim-detect': {
+      const box = $('[data-testid="handshake-listener"]'); const p = el.dataset.p;
+      if (box) { box.className = 'po-listen is-ok'; $('#listen-text').innerHTML = `<strong>Connected.</strong> ${P[p].name} trust verified. Checking access…`; }
+      say(`${P[p].name} connected. Moving to Check access.`); break;
+    }
+    case 'recheck': render(false); break;
+    case 'scope-all': S.scopeOff = new Set(['acct-7770']); $('#tree').innerHTML = scopeTree(); scopeSummary(); say('All Regions with agents selected.'); break;
+    case 'tree-toggle': { const ex = el.getAttribute('aria-expanded') === 'true'; el.setAttribute('aria-expanded', String(!ex)); document.getElementById(el.getAttribute('aria-controls')).hidden = ex; el.setAttribute('aria-label', (ex ? 'Expand ' : 'Collapse ') + el.getAttribute('aria-label').split(' ').slice(1).join(' ')); break; }
+    case 'start-scan': S.scanDone = false; break;
+    case 'filter': S.filter = el.dataset.f; S.open = null; rerenderReview(); say(`${visible().length} agents shown.`); break;
+    case 'clear-filter': S.filter = 'all'; S.q = ''; rerenderReview(); break;
+    case 'why': S.open = S.open === id ? null : id; S.ovrOpen = null; rerenderReview(); break;
+    case 'ovr-open': S.ovrOpen = id; S.ovrTier = tierOf(byId[id]); rerenderReview(); const f = document.querySelector(`#xp-${id} [aria-checked="true"]`); if (f) f.focus(); break;
+    case 'ovr-cancel': S.ovrOpen = null; rerenderReview(); const b = document.getElementById('ovr-btn-' + id); if (b) b.focus(); break;
+    case 'pick': S.ovrTier = Number(el.dataset.n); el.parentElement.querySelectorAll('button').forEach((x) => { x.setAttribute('aria-checked', String(x === el)); x.tabIndex = x === el ? 0 : -1; }); break;
+    case 'ovr-save': {
+      const inp = document.getElementById('rsn-' + id); const v = inp.value.trim();
+      if (v.length < 10) { inp.setAttribute('aria-invalid', 'true'); const er = document.getElementById('rsn-err-' + id); er.textContent = 'Enter a reason of at least 10 characters. Reviewers see it with the tier.'; er.style.color = 'var(--ds-danger)'; inp.focus(); return; }
+      S.tiers[id] = S.ovrTier; S.reasons[id] = v; S.ovrOpen = null; rerenderReview(); const w = document.getElementById('why-' + id); if (w) w.focus();
+      say(`Tier ${S.ovrTier} saved for ${byId[id].name}.`); break;
+    }
+    case 'sel-all': break;
+    case 'bulk-clear': S.sel.clear(); rerenderReview(); say('Selection cleared.'); break;
+    case 'import': location.hash = S.sample ? 'gallery' : 'aws-6'; if (S.sample) say('Sample agents imported and marked Sample data.'); break;
+    case 'sync-save': { const s = $('#sync-st'); s.textContent = S.schedule === 'off' ? 'Sync is off.' : `Saved. Next scan ${S.schedule === 'daily' ? 'tomorrow at 02:00' : 'within the hour'}.`; break; }
+    case 'disconnect': $('#disconnect-dialog').showModal(); break;
+    case 'dc-cancel': $('#disconnect-dialog').close(); break;
+    case 'dc-confirm': $('#disconnect-dialog').close(); S.awsConnected = false; location.hash = 'gallery'; say('AWS disconnected. 19 agents kept and marked Source disconnected.'); break;
+    case 'scan-now': location.hash = 'aws-4'; break;
+    case 'check-access': location.hash = el.closest('main').querySelector('[data-testid="connection-attention"]') ? 'connection-google' : 'aws-2'; break;
+    case 'filter-attn': S.filter = 'attention'; break;
+    case 'sample': S.sample = true; break;
+  }
+});
+document.addEventListener('change', (e) => {
+  const el = e.target; const act = el.dataset.act; const id = el.dataset.id;
+  if (act === 'mode') { S.mode = el.value; }
+  if (act === 'traces') { S.traces = el.checked; }
+  if (act === 'sync') { S.schedule = el.value; }
+  if (act === 'sel') { el.checked ? S.sel.add(id) : S.sel.delete(id); rerenderReview(); }
+  if (act === 'sel-all') { visible().filter((a) => a.change === 'new' || a.change === 'changed').forEach((a) => (el.checked ? S.sel.add(a.id) : S.sel.delete(a.id))); rerenderReview(); say(el.checked ? `${S.sel.size} selected.` : 'Selection cleared for shown agents.'); }
+  if (act === 'owner') { S.owners[id] = el.value || null; rerenderReview(); }
+  if (act === 'bulk-owner' && el.value) { const n = S.sel.size; S.sel.forEach((sid) => { S.owners[sid] = el.value; }); rerenderReview(); say(`Owner ${el.value} assigned to ${n} agents.`); }
+  if (act === 'scope-region') { const acc = el.id.split('-').slice(0, 2).join('-'); el.checked ? S.scopeOff.delete(el.id) : S.scopeOff.add(el.id); scopeSummary(); }
+  if (act === 'scope-acct') { const kids = document.querySelectorAll(`#${el.id}-kids [data-act="scope-region"]`); kids.forEach((k) => { k.checked = el.checked; el.checked ? S.scopeOff.delete(k.id) : S.scopeOff.add(k.id); }); el.indeterminate = false; scopeSummary(); }
+});
+document.addEventListener('keydown', (e) => {
+  const el = e.target;
+  if (el.getAttribute && el.getAttribute('role') === 'radio' && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+    e.preventDefault();
+    const all = [...el.parentElement.querySelectorAll('[role="radio"]')]; const i = all.indexOf(el);
+    const nx = all[(i + (e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? all.length - 1 : 1)) % all.length];
+    nx.focus(); nx.click();
+  }
+});
+let pt;
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (el.dataset.act === 'search') { S.q = el.value; clearTimeout(pt); pt = setTimeout(() => { rerenderReview(); }, 200); return; }
+  if (el.id === 'paste') {
+    clearTimeout(pt);
+    pt = setTimeout(() => {
+      const r = parseAnything(el.value); const out = $('#paste-result'); const want = el.dataset.provider;
+      if (!r) { out.innerHTML = ''; el.removeAttribute('aria-invalid'); return; }
+      if (r.ok && r.p !== want) { out.innerHTML = `<p class="po-parse-hint">That looks like a ${P[r.p].name} ${r.what.toLowerCase()}. <a href="#${r.p}-1">Connect ${P[r.p].name}</a> instead.</p>`; return; }
+      if (r.ok) { el.removeAttribute('aria-invalid'); out.innerHTML = `<div class="po-parse-card">${I.check}<span class="po-parse-text">Recognized: ${r.text}.</span><a class="ds-btn ds-btn-sm ds-btn-primary" href="${want === 'aws' ? '#aws-2' : '#' + want + '-1'}" data-testid="paste-anything-use">Use this</a></div>`; return; }
+      el.setAttribute('aria-invalid', r.hint ? 'false' : 'true');
+      out.innerHTML = r.hint ? `<p class="po-parse-hint">${r.msg}</p>` : `<p class="po-parse-err" data-testid="paste-anything-error">${r.msg}</p>`;
+    }, 250);
+  }
+});
+render(true);
+})();
+</script>
+</body>
+</html>
