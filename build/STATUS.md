@@ -8,7 +8,7 @@ The workspace is on hardware tier **Small: 1 core, 4 GiB**. Each resume started 
 
 ## Wave W2 in progress (see build/plan.md "Combined schedule")
 - T-39 Settings page: MERGED (311c986), post-merge 634 pass / 3 skip. Follow-ups queued as T-39f.
-- T-19b Agent + Run pages: UI run 4 green (216/217 + selector fix), code review approved. Design review r4: 1 blocker ("40 spans" collides with the row chevron at 1024). 3 builder rounds used -> WAITING ON NICK: 4th round for the CSS fix, or merge now and fix in T-19f.
+- T-19b Agent + Run pages: MERGED 0027b4f (Nick chose to merge; the "40 spans" overlap at 1024 and 5 design follow-ups moved to T-19f).
 - T-47 parallel e2e harness: H-1/H-2/H-5 done; H-3/H-4 PARKED until the workspace is on Medium/Large (they caused the crashes on Small).
 - T-48 Settings reachable: code tests partly written (uncommitted in .worktrees/T-48), interrupted by the crash.
 - Next: W3 T-20 (navigation + routes for the Superblocks screens).
