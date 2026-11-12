@@ -140,7 +140,10 @@ def test_ac1_unknown_or_missing_fields_do_not_crash(suggest, agent):
     assert set(out) == set(CRITERIA)
     for v in out.values():
         assert 1 <= v["score"] <= 5
-        assert v["reason"] == "no evidence found"
+        r = v["reason"]
+        assert isinstance(r, str) and r.strip()
+        assert r.strip().lower() != "no evidence found"
+        assert "\n" not in r
 
 
 def test_ac4_rules_file_exists_with_all_criteria():
