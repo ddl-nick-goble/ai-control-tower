@@ -1,4 +1,5 @@
 """Caller identity: Domino proxy headers or a bearer JWT verified against Keycloak JWKS."""
+import logging
 import os
 from dataclasses import dataclass
 
@@ -9,6 +10,7 @@ from fastapi import HTTPException, Request
 class User:
     user_id: str
     username: str
+    via: str = "domino"  # "domino" (proxy headers or bearer) | "workspace" (workspace owner mode)
 
 
 _jwks_client = None
@@ -40,6 +42,36 @@ def _verify_bearer(token: str):
     return User(user_id=str(uid), username=str(name)) if uid and name else None
 
 
+_warned_forced = [False]
+
+
+def in_notebook_session() -> bool:
+    """True when DOMINO_RUN_HOST_PATH contains "/notebookSession/" (a Workspace, not a published App or Job).
+    The one detection used by main.in_workspace (port choice) and workspace_owner_mode (SR-2)."""
+    return "/notebookSession/" in (os.environ.get("DOMINO_RUN_HOST_PATH") or "")
+
+
+def workspace_owner_mode() -> bool:
+    """True when an anonymous caller is the project owner: the app runs inside a Domino Workspace, where only the
+    workspace owner can reach the port. ACT_WORKSPACE_OWNER_MODE=1 forces on, 0 forces off. Unset: on only when
+    DOMINO_RUN_HOST_PATH contains "/notebookSession/" (a Workspace, not a published App or Job) AND
+    DOMINO_PROJECT_OWNER is set. Any other value, or anything missing, is off (fail closed)."""
+    owner = (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()
+    if not owner:
+        return False
+    forced = (os.environ.get("ACT_WORKSPACE_OWNER_MODE") or "").strip().lower()
+    if forced in ("1", "true", "yes", "on"):
+        if not in_notebook_session() and not _warned_forced[0]:
+            _warned_forced[0] = True
+            logging.getLogger(__name__).warning(
+                "ACT_WORKSPACE_OWNER_MODE=1 but DOMINO_RUN_HOST_PATH has no /notebookSession/: anonymous callers "
+                "are treated as the project owner even though this does not look like a Workspace.")
+        return True
+    if forced:
+        return False
+    return in_notebook_session()
+
+
 def get_user(request):
     """Return the caller or None. A valid bearer wins over proxy headers.
 
@@ -56,6 +88,13 @@ def get_user(request):
     name = request.headers.get("X-Domino-User")
     if uid and name:
         return User(user_id=uid, username=name)
+    # Owner mode only for a caller that presented no credentials at all; a rejected bearer or a half set of
+    # identity headers is never upgraded to the owner.
+    if not auth and not uid and not name and workspace_owner_mode():
+        owner = os.environ["DOMINO_PROJECT_OWNER"].strip()
+        # Audit actor id "workspace:<owner>": the caller is anonymous but trusted as the owner (SR-2), so audit rows
+        # record the owner by name and mark the way they were identified.
+        return User(user_id=f"workspace:{owner}", username=owner, via="workspace")
     return None
 
 

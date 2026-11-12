@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,7 +35,7 @@ class SettingError(Exception):
         self.status, self.message = status, message
 
 
-# name -> (section, secret, env name, kind, label)
+# name -> (section, secret, env name, kind); LABELS/HELP below give the Settings page its text
 _DEFS = [
     ("demo_mode", "demo", False, "ACT_DEMO_MODE", "bool"),
     ("llm_provider", "integrations", False, "ACT_LLM_PROVIDER", "provider"),
@@ -59,7 +60,32 @@ _DEFS = [
     ("databricks_client_secret", "credentials", True, "ACT_DATABRICKS_CLIENT_SECRET", "text"),
     ("admins", "access", False, "ACT_ADMINS", "text"),
 ]
-DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind}
+LABELS = {
+    "demo_mode": ("Demo mode", "Run on a simulated database with stand-in services. Never touches real data; turn off to return to the real database."),
+    "llm_provider": ("LLM provider", "Where model calls go: gateway (Domino LLM Gateway) or mock (canned answers)."),
+    "llm_gateway_url": ("LLM Gateway URL", "Base URL of the Domino LLM Gateway used when the provider is gateway."),
+    "break_classifier_endpoint_url": ("Break-classifier endpoint URL", "URL of the Domino model endpoint that classifies reconciliation breaks."),
+    "break_classifier_access_key": ("Break-classifier access key", "Access key for the break classifier endpoint. Stored encrypted and never shown."),
+    "external_allow_hosts": ("External card allowed hosts", "Comma-separated hosts external agents may be registered from."),
+    "trusted_jwks_path": ("Trusted JWKS", "Path of the JWKS file used to verify external agent tokens."),
+    "service_accounts": ("Service accounts", "Comma-separated service accounts allowed to call the API without a user."),
+    "policy_agentic_id": ("Governance policy id (agentic bundle)", "Domino Governance policy id used for agent bundles."),
+    "policy_model_id": ("Governance policy id (model bundle)", "Domino Governance policy id used for model bundles."),
+    "aws_role_arn": ("AWS role ARN", "IAM role the app assumes to read AWS data."),
+    "aws_external_id": ("AWS external ID", "External id sent when assuming the AWS role."),
+    "aws_access_key_id": ("AWS access key ID", "Access key id for AWS. Stored encrypted and never shown."),
+    "aws_secret_access_key": ("AWS secret access key", "Secret access key for AWS. Stored encrypted and never shown."),
+    "google_service_account_json": ("Google service-account JSON", "Service account key (a JSON object) for Google Cloud. Stored encrypted and never shown."),
+    "microsoft_tenant_id": ("Microsoft tenant ID", "Azure AD tenant for Microsoft access."),
+    "microsoft_client_id": ("Microsoft client ID", "Azure AD application (client) id."),
+    "microsoft_client_secret": ("Microsoft client secret", "Azure AD client secret. Stored encrypted and never shown."),
+    "databricks_host": ("Databricks host", "Workspace URL of your Databricks deployment."),
+    "databricks_client_id": ("Databricks client ID", "OAuth client id for Databricks."),
+    "databricks_client_secret": ("Databricks client secret", "OAuth client secret for Databricks. Stored encrypted and never shown."),
+    "admins": ("Admins", "Comma-separated usernames who can open Settings. The project owner is always an admin."),
+}
+DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind,
+            "label": LABELS[n][0], "help": LABELS[n][1]}
         for n, sec, secret, env, kind in _DEFS}
 # Used while demo mode is on and neither the environment nor the app sets the value.
 _DEMO_DEFAULTS = {"llm_provider": "mock", "external_allow_hosts": "127.0.0.1,localhost"}
@@ -198,7 +224,8 @@ def _invalidate() -> None:
 
 def _env_value(name):
     env = DEFS[name]["env"]
-    if env in demo.applied_env():
+    if env in demo.applied_env():  # demo mode filled this in itself: not a project variable, so not locked, and the
+        # banner must not claim it is (the value shows as a default that Settings can override)
         return None
     v = os.environ.get(env)
     return v if v is not None and v.strip() else None
@@ -255,7 +282,7 @@ def entry(name: str) -> dict:
     row = _rows().get(name)
     app_set = row is not None and row.value is not None
     source = "env" if env_v is not None else "app" if app_set else "default"
-    out = {"name": name, "section": d["section"], "secret": d["secret"], "env": d["env"], "is_set": source != "default",
+    out = {"name": name, "section": d["section"], "label": d["label"], "help": d["help"], "secret": d["secret"], "env": d["env"], "is_set": source != "default",
            "source": source, "locked": source == "env",
            "changed_by": row.changed_by if source == "app" else None,
            "changed_at": row.changed_at if source == "app" else None}
@@ -339,24 +366,88 @@ def _store(user, name, stored, action):
     _invalidate()
 
 
-def put_setting(user, name, value) -> dict:
-    _check_writable(name)
-    v = _validate(name, value)
-    if name == "demo_mode":
+def _switch_off_or_409() -> None:
+    try:
+        demo.switch_off(own=1)
+    except demo.DemoGuardError as e:
+        raise SettingError(409, f"{e}; nothing was changed, try again")
+
+
+def _restore_demo_on() -> None:
+    """The switch-off happened but the value could not be saved: put the live mode back to match what is stored.
+    A failure here is a 503 (the state is uncertain), never a 500."""
+    try:
+        demo.switch_on(own=1)
+    except Exception:  # noqa: BLE001
+        log.exception("could not restore demo mode after a failed save")
+        raise SettingError(503, "the setting could not be saved and demo mode could not be restored; try again")
+
+
+def _switch_off_retry() -> None:
+    """Rollback of a switch-on whose value was not saved: retry a few times (a drain timeout is transient). The
+    whole retry stays inside the 30 s request gate: each attempt waits up to demo.DRAIN_TIMEOUT."""
+    deadline = time.monotonic() + 25.0
+    for _ in range(3):
+        try:
+            demo.switch_off(own=1)
+            return
+        except demo.DemoGuardError:
+            if time.monotonic() + demo.DRAIN_TIMEOUT > deadline:
+                break
+            time.sleep(0.05)
+    raise SettingError(503, "the value was not saved and demo mode could not be switched back off yet; try again")
+
+
+# Serialises was_on + switch + _store for demo_mode across requests (else two overlapping toggles can leave the
+# stored value and the live mode disagreeing). Taken before demo._Switch steps out, never while holding _rt_lock.
+_demo_setting_lock = threading.Lock()
+
+
+@contextmanager
+def _demo_locked():
+    demo.acquire_outside_flight(_demo_setting_lock, own=1)
+    try:
+        yield
+    finally:
+        _demo_setting_lock.release()
+
+
+def _put_demo(user, name, v) -> None:
+    with _demo_locked():
         was_on = demo.enabled()
         if v == "true":
             try:
                 demo.switch_on(own=1)  # atomic: on failure nothing has changed
             except demo.DemoGuardError as e:
                 raise SettingError(409, str(e))
-        try:
-            _store(user, name, v, "settings.update")
-        except Exception:
-            if v == "true" and not was_on:
-                demo.switch_off(own=1)  # the value was not saved, so the app must not stay in demo mode
-            raise
-        if v == "false":
-            demo.switch_off(own=1)
+            try:
+                _store(user, name, v, "settings.update")
+            except Exception:
+                log.exception("demo_mode could not be saved")
+                if not was_on:
+                    _switch_off_retry()  # the value was not saved, so the app must not stay in demo mode
+                    raise SettingError(503, "the setting could not be saved; demo mode was left off, try again")
+                raise SettingError(503, "the setting could not be saved; demo mode is still on, try again")
+        else:
+            _switch_off_or_409()  # first: if it cannot happen, nothing is stored and the two stay consistent
+            _store_or_restore(user, name, v, "settings.update", was_on)
+
+
+def _store_or_restore(user, name, stored, action, was_on) -> None:
+    try:
+        _store(user, name, stored, action)
+    except Exception:
+        log.exception("demo_mode could not be saved")
+        if was_on:
+            _restore_demo_on()
+        raise SettingError(503, "the setting could not be saved; demo mode was left as it was, try again")
+
+
+def put_setting(user, name, value) -> dict:
+    _check_writable(name)
+    v = _validate(name, value)
+    if name == "demo_mode":
+        _put_demo(user, name, v)
         return entry(name)
     stored = key_state()[0].encrypt(v.encode()).decode() if DEFS[name]["secret"] else v
     _store(user, name, stored, "settings.update")
@@ -365,9 +456,13 @@ def put_setting(user, name, value) -> dict:
 
 def delete_setting(user, name) -> dict:
     _check_writable(name)
-    _store(user, name, None, "settings.clear")
     if name == "demo_mode":
-        demo.switch_off(own=1)
+        with _demo_locked():
+            was_on = demo.enabled()
+            _switch_off_or_409()
+            _store_or_restore(user, name, None, "settings.clear", was_on)
+        return entry(name)
+    _store(user, name, None, "settings.clear")
     return entry(name)
 
 

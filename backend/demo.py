@@ -179,7 +179,23 @@ class _Switch:
         self.own = own
 
     def __enter__(self):
-        _switch_mutex.acquire()
+        global _inflight
+        # The triggering request is counted in flight while it waits for another switch; that switch would wait
+        # for it to drain (a 15 s stall). Step out of the count while waiting, back in once the mutex is ours.
+        if self.own:
+            with _cond:
+                _inflight -= self.own
+                _cond.notify_all()
+        try:
+            _switch_mutex.acquire()
+        except BaseException:
+            if self.own:
+                with _cond:
+                    _inflight += self.own
+            raise
+        if self.own:
+            with _cond:
+                _inflight += self.own
         try:
             _begin_switch(self.own)
         except BaseException:
@@ -194,6 +210,20 @@ class _Switch:
 
 
 from contextlib import contextmanager
+
+
+def acquire_outside_flight(lock, own=1) -> None:
+    """Take `lock` while this request is stepped out of the in-flight count, so the holder's switch never waits
+    (the 15 s drain stall) for a request that is itself only waiting for that lock. Counted back in once held."""
+    global _inflight
+    with _cond:
+        _inflight -= own
+        _cond.notify_all()
+    try:
+        lock.acquire()
+    finally:
+        with _cond:
+            _inflight += own
 
 
 @contextmanager
@@ -266,6 +296,8 @@ def restore_defaults() -> None:
     """Remove the defaults apply_defaults() filled in (called when the app shuts down)."""
     while _applied:
         os.environ.pop(_applied.pop(), None)
+    while _applied_rt:  # a shutdown whose switch-off was skipped must not leave demo's defaults in the environment
+        os.environ.pop(_applied_rt.pop(), None)
 
 
 def stand_ins() -> list:

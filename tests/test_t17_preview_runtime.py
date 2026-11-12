@@ -51,6 +51,7 @@ def _load_app(monkeypatch, tmp_path, with_dist, host_path="/some/other/r/noteboo
         (d / "index.html").write_text(INDEX_HTML)
         (d / "assets" / "t17.js").write_text(ASSET_JS)
     monkeypatch.setenv("DOMINO_RUN_HOST_PATH", host_path)
+    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")  # these tests cover prefix handling and the write guard, not SR-2
     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
         del sys.modules[m]

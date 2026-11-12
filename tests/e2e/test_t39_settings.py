@@ -4,7 +4,7 @@ Own apps: A on 9893 (owner = DOMINO_PROJECT_OWNER "owner.user", generated secret
 variable, demo off) and B on 9894 (ACT_SECRET_KEY set). Screenshots: /mnt/data/ai-control-tower/qa/T-39-run3/.
 Identity: owner signs in with X-Domino-User "owner.user"; a non-admin with "plain.user".
 data-testid / role contract (role/label/text locators are primary):
-  settings-page        page root at #/settings; h1 "Settings"; primary nav link "Settings" (owners/admins only)
+  settings-page        page root at #/settings; h1 "Settings"; primary nav link "Settings" (every visitor, T-48 SR-1)
   settings-no-access   plain "no access" state (text matches /no access/i) shown instead of the page for non-admins
   settings-loading     role=status "Loading settings"; settings-error role=alert + button "Try again"
   Sections (headings): "Demo mode", "Platform credentials", "Integrations". Credential blocks are role=group named
@@ -66,7 +66,8 @@ def _start(tmp, port, extra):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("ACT_DEMO", "ACT_SECRET", "LLM_GATEWAY")) and k not in _MANAGED_ENV}
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0", "ACT_DB": str(tmp / "act.db"),
-                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": "owner.user"})
+                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": "owner.user",
+                "ACT_WORKSPACE_OWNER_MODE": "0"})  # explicit: a Workspace would otherwise auto-enable owner mode
     env.update(extra)
     log = tmp / "app.log"
     logf = open(log, "w")
@@ -159,7 +160,7 @@ def test_st1_nav_link_and_sections(page, shot, owner, base_url):
     expect(page).to_have_url(re.compile(r"#/settings$"))
     expect(page.get_by_test_id("settings-page")).to_be_visible()
     expect(nav.get_by_role("link", name="Settings")).to_have_attribute("aria-current", "page")
-    for h in ("Demo mode", "Platform credentials", "Integrations"):
+    for h in ("Demo mode", "Credentials", "Integrations"):
         expect(page.get_by_role("heading", name=h, exact=True)).to_be_visible()
     for blk in ("AWS AgentCore", "Google Agent Platform", "Microsoft Agent 365", "Databricks"):
         g = _field(page, blk)
@@ -201,7 +202,7 @@ def test_st2_secret_write_only(page, shot, owner):
     expect(f).to_contain_text("Set · changed by")
     page.once("dialog", lambda d: d.accept())
     f.get_by_role("button", name="Clear").click()
-    confirm = page.get_by_role("button", name=re.compile(r"^Clear key"))
+    confirm = page.get_by_role("button", name="Clear key", exact=True)  # SF-4: no sr-only "(confirm)" suffix
     expect(confirm).to_be_visible()
     confirm.click()
     expect(f).not_to_contain_text("Set · changed by")
@@ -288,21 +289,23 @@ def test_st6_anonymous_gets_401_and_sign_in_message(page, context, shot, base_ur
     assert page.request.get("./api/settings").status == 401
     page.goto("./#/settings")
     expect(page.get_by_text(re.compile(r"sign in|sign-in|log in", re.I)).first).to_be_visible()
-    expect(page.get_by_role("heading", name="Platform credentials")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Credentials")).to_have_count(0)
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
     shot("then")
 
 
-def test_st6_non_admin_no_link_no_access(page, context, shot, base_url):
+def test_st6_non_admin_link_present_no_access(page, context, shot, base_url):
+    # T-48 SR-1: the Settings link is always in the primary nav; a non-admin gets the plain no-access state.
     context.set_extra_http_headers(PLAIN)
     page.goto("./#/")
-    expect(page.get_by_role("navigation", name="Primary").get_by_role("link", name="Fleet")).to_be_visible()
-    expect(page.get_by_role("navigation", name="Primary").get_by_role("link", name="Settings")).to_have_count(0)
+    nav = page.get_by_role("navigation", name="Primary")
+    expect(nav.get_by_role("link", name="Fleet")).to_be_visible()
+    expect(nav.get_by_role("link", name="Settings")).to_be_visible()
     page.goto("./#/settings")
     na = page.get_by_test_id("settings-no-access")
     expect(na).to_be_visible()
-    expect(na).to_contain_text(re.compile("no access", re.I))
-    expect(page.get_by_role("heading", name="Platform credentials")).to_have_count(0)
+    expect(na).to_contain_text(re.compile("no access|read-only", re.I))
+    expect(page.get_by_role("heading", name="Credentials")).to_have_count(0)
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
     assert page.request.get("./api/settings", headers=PLAIN).status in (401, 403)
     shot("then")

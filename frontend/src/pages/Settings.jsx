@@ -4,42 +4,32 @@ import { settingsApi, refreshHealth } from '../api'
 import { PageHeader, Button } from '../components/form'
 import '../settings.css'
 
-// label, one-line hint, placeholder (a format example only, never a plausible value)
-const COPY = {
-  llm_provider: ['LLM provider', 'Default: gateway. mock is the offline stand-in.'],
-  llm_gateway_url: ['LLM Gateway URL', 'The LLM Gateway app that answers model calls.', 'https://'],
-  break_classifier_endpoint_url: ['Break-classifier endpoint URL', 'Model endpoint that classifies recon breaks.', 'https://'],
-  break_classifier_access_key: ['Break-classifier access key', 'Used to call the break-classifier endpoint.'],
-  external_allow_hosts: ['External card allowed hosts', 'Comma-separated hosts for external agent cards.'],
-  trusted_jwks_path: ['Trusted JWKS', 'File path of the key set signed cards must match.'],
-  service_accounts: ['Service accounts', 'Comma-separated distinct-agent accounts.'],
-  policy_agentic_id: ['Governance policy id (agentic bundle)', 'Policy used for agentic system bundles.'],
-  policy_model_id: ['Governance policy id (model bundle)', 'Policy used for model bundles.'],
-  admins: ['Admins', 'Comma-separated usernames. The owner is always included.'],
+// Labels and help text come from the API (backend/settings.py DEFS). Placeholders are format examples only.
+const PLACEHOLDER = {
+  llm_provider: 'mock | gateway', llm_gateway_url: 'https://…', break_classifier_endpoint_url: 'https://…',
+  trusted_jwks_path: '/path/to/jwks.json', policy_agentic_id: 'policy id', policy_model_id: 'policy id',
+  aws_role_arn: 'arn:aws:iam::123456789012:role/name', aws_external_id: 'external id', aws_access_key_id: 'AKIA…',
+  microsoft_tenant_id: 'tenant id (GUID)', microsoft_client_id: 'client id (GUID)',
+  databricks_host: 'https://…', databricks_client_id: 'client id',
+  external_allow_hosts: 'host1, host2', service_accounts: 'user1, user2',
+  admins: 'user1, user2',
 }
+const INTEGRATIONS = ['llm_provider', 'llm_gateway_url', 'break_classifier_endpoint_url', 'break_classifier_access_key', 'external_allow_hosts',
+  'trusted_jwks_path', 'service_accounts', 'policy_agentic_id', 'policy_model_id']
 const PLATFORMS = [
   { id: 'aws', title: 'AWS AgentCore', blurb: 'An IAM role ACT assumes, or an access key as a fallback.',
-    fields: [['aws_role_arn', 'AWS role ARN'], ['aws_external_id', 'AWS external ID'],
-      ['aws_access_key_id', 'AWS access key ID'], ['aws_secret_access_key', 'AWS secret access key']],
+    fields: [['aws_role_arn', true], ['aws_external_id'], ['aws_access_key_id'], ['aws_secret_access_key']],
     ready: (v) => v.aws_role_arn || (v.aws_access_key_id && v.aws_secret_access_key) },
   { id: 'google', title: 'Google Agent Platform', blurb: 'A service-account key as JSON.',
-    fields: [['google_service_account_json', 'Google service-account JSON', true, 'Paste the full service-account key file. It is encrypted and never shown again.']],
-    ready: (v) => v.google_service_account_json },
+    fields: [['google_service_account_json', true]], ready: (v) => v.google_service_account_json },
   { id: 'microsoft', title: 'Microsoft Agent 365', blurb: 'An Entra app registration, client-credentials flow.',
-    fields: [['microsoft_tenant_id', 'Microsoft tenant ID', true], ['microsoft_client_id', 'Microsoft client ID'],
-      ['microsoft_client_secret', 'Microsoft client secret']],
+    fields: [['microsoft_tenant_id', true], ['microsoft_client_id'], ['microsoft_client_secret']],
     ready: (v) => v.microsoft_tenant_id && v.microsoft_client_id && v.microsoft_client_secret },
   { id: 'databricks', title: 'Databricks', blurb: 'A workspace URL and a service principal (OAuth M2M).',
-    fields: [['databricks_host', 'Databricks host', true], ['databricks_client_id', 'Databricks client ID'],
-      ['databricks_client_secret', 'Databricks client secret']],
+    fields: [['databricks_host', true], ['databricks_client_id'], ['databricks_client_secret']],
     ready: (v) => v.databricks_host && v.databricks_client_id && v.databricks_client_secret },
 ]
-const NAV = [
-  ['st-demo', 'Demo mode'],
-  ['st-platforms', 'Platform credentials', [['st-aws', 'AWS AgentCore'], ['st-google', 'Google Agent Platform'], ['st-microsoft', 'Microsoft Agent 365'], ['st-databricks', 'Databricks']]],
-  ['st-integrations', 'Integrations'],
-  ['st-access', 'Access'],
-]
+const NAV = [['st-demo', 'Demo'], ['st-integrations', 'Integrations'], ['st-credentials', 'Credentials'], ['st-access', 'Access']]
 
 const cx = (...a) => a.filter(Boolean).join(' ')
 
@@ -51,7 +41,7 @@ const sentence = (t) => { t = (t || '').trim(); return t ? t[0].toUpperCase() + 
 
 function problem(err) {
   if (!err) return 'The change could not be saved. Try again.'
-  if (err.status === 423) return 'This value is set by a project variable and cannot be changed here.'
+  if (err.status === 423) return 'This value is set by an environment variable and cannot be changed here.'
   if (err.status === 403 || err.status === 401) return 'You do not have permission to change settings.'
   if (err.status === 422) return sentence(err.message) || 'That value is not valid.'
   if (err.status === 409) return sentence(err.message) || 'That change was refused.'
@@ -70,7 +60,8 @@ function Badge({ tone = 'none', children }) {
 }
 
 /** One setting. layout "row": settings-table row (label+hint | control | status); "stack": compact, for platform cards. */
-function SettingField({ entry, label, hint, placeholder, layout = 'row', span, onChange }) {
+function SettingField({ entry, layout = 'row', span, onChange, children }) {
+  const label = entry.label, hint = entry.help, placeholder = PLACEHOLDER[entry.name]
   const id = React.useId()
   const secret = entry.secret
   const saved = entry.value || ''
@@ -114,12 +105,18 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
   let badge = null
   if (entry.locked) badge = <Badge tone="lock">Set by project variable</Badge>
   else if (unreadable) badge = <Badge tone="warn">Re-enter</Badge>
+  else if (entry.is_set && layout === 'row') badge = <Badge tone="ok">Set</Badge>
   else if (!entry.is_set && layout === 'row') badge = <Badge>Not set</Badge>
 
-  let hintText = hint
-  if (entry.locked) hintText = <>Set by <code>{entry.env}</code>. Change it there.</>
-  else if (unreadable) hintText = 'The secret key changed, so this value can no longer be read. Enter it again.'
-  else if (setLine) hintText = <span className="st-setline">{setLine}</span>  // full text, wraps rather than truncates
+  // Help text always shows; env notice and the changed-by line add to it, never replace it.
+  const hintText = (
+    <>
+      {hint && <span className="st-help">{hint}</span>}
+      {entry.locked && <span className="st-help st-env">Set by environment variable <code>{entry.env}</code>. Change it there.</span>}
+      {unreadable && <span className="st-help">The secret key changed, so this value can no longer be read. Enter it again.</span>}
+      {setLine && <span className="st-help st-setline">{setLine}</span>}
+    </>
+  )
 
   const labelId = `${id}-l`, hintId = `${id}-h`
   const plainLocked = entry.locked
@@ -149,11 +146,12 @@ function SettingField({ entry, label, hint, placeholder, layout = 'row', span, o
       </div>
       {invalid
         ? <p id={hintId} className="st-hint st-hint-error" role="alert">{Icon.err}<span>{st.msg}</span></p>
-        : <p id={hintId} className="st-hint">{hintText}</p>}
+        : <div id={hintId} className="st-hint">{hintText}</div>}
+      {children}
       {ask && (
-        <ConfirmDialog title={`Clear ${label}?`} danger confirmLabel="Clear key" onConfirm={clear} onCancel={() => setAsk(false)}
-                       body={secret ? 'The stored secret is deleted and cannot be recovered. You can enter a new one later.'
-                         : 'The saved value is removed and the default applies.'} />
+        <ConfirmDialog title={secret ? 'Clear key' : 'Clear value'} danger confirmLabel={secret ? 'Clear key' : 'Clear value'} onConfirm={clear} onCancel={() => setAsk(false)}
+                       body={secret ? `Clear ${label}? The stored secret is deleted and cannot be recovered. You can enter a new one later.`
+                         : `Clear ${label}? The saved value is removed and the default applies.`} />
       )}
     </div>
   )
@@ -184,13 +182,13 @@ function ConfirmDialog({ title, body, danger, confirmLabel, onConfirm, onCancel 
         <div className="st-dlg-actions">
           <Button onClick={onCancel}>Cancel</Button>
           <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>
-            {confirmLabel ? <>{confirmLabel}<span className="ds-sr"> (confirm)</span></> : 'Confirm'}</Button>
+            {confirmLabel || 'Confirm'}</Button>
         </div>
       </div>
     </div>, document.body)
 }
 
-function DemoRow({ entry, onChange }) {
+function DemoCard({ entry, onChange }) {
   const [ask, setAsk] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
@@ -203,27 +201,34 @@ function DemoRow({ entry, onChange }) {
     } catch (e) { setErr(problem(e)) } finally { setBusy(false) }
   }
   return (
-    <div className="st-demo" data-testid="setting-demo_mode">
-      <div className="st-ctl">
-        <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-h" aria-describedby="st-demo-help"
-                className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
-        <span className="st-switch-text" aria-hidden="true">{busy ? (on ? 'Switching to your real data…' : 'Switching to demo data…') : on ? 'On' : 'Off'}</span>
-        {entry.locked && <Badge tone="lock">Set by project variable</Badge>}
-        <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
+    <section id="st-demo" className="ds-card st-card" aria-labelledby="st-demo-h" data-testid="settings-card-demo">
+      <header className="st-card-head st-card-head-row">
+        <h2 id="st-demo-h" className="ds-section-title">Demo mode</h2>
+        <Badge tone={on ? 'warn' : 'none'}>{on ? 'On' : 'Off'}</Badge>
+      </header>
+      <div className="st-demo" data-testid="setting-demo_mode">
+        <div className="st-ctl">
+          <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-h" aria-describedby="st-demo-help"
+                  className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
+          {entry.locked && <Badge tone="lock">Set by project variable</Badge>}
+          <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
+        </div>
+        <div id="st-demo-help" className={err ? 'st-hint st-hint-error' : 'st-hint'} role={err ? 'alert' : undefined}>
+          {err ? <>{Icon.err}<span>{err}</span> <Button onClick={() => setAsk(true)}>Retry</Button></> : <>
+            <span className="st-help st-help-strong">{on ? 'Demo mode is on. You are seeing simulated data.' : 'Demo mode is off. You are seeing your real data.'}</span>
+            <span className="st-help">{entry.help} Turning it on switches to a separate demo database with simulated agents, runs and approver. Your real data is never changed.</span>
+            {entry.locked && <span className="st-help st-env">Set by environment variable <code>{entry.env}</code>. Change it there.</span>}
+          </>}
+        </div>
       </div>
-      {err
-        ? <p id="st-demo-help" className="st-hint st-hint-error" role="alert">{Icon.err}<span>{err}</span></p>
-        : <p id="st-demo-help" className="st-hint">
-          {entry.locked ? <>Set by the project variable <code>ACT_DEMO_MODE</code>. Change it there.</>
-            : 'Shows simulated data from a separate demo database. Your real data is never changed.'}</p>}
       {ask && (
         <ConfirmDialog
           title={on ? 'Turn demo mode off?' : 'Turn demo mode on?'}
-          body={on ? 'The app goes back to your real database. Demo data stays in its own database.'
+          body={on ? 'The app goes back to your real database. If no real data is loaded yet, Fleet will be empty until you register or import agents. Demo data stays in its own database.'
             : 'The app switches to a separate demo database with simulated agents, runs and a simulated approver. Your real database is not touched.'}
           onConfirm={flip} onCancel={() => setAsk(false)} />
       )}
-    </div>
+    </section>
   )
 }
 
@@ -254,7 +259,7 @@ function PlatformCard({ p, by, update }) {
       </header>
       <p className="st-sub st-plat-blurb">{p.blurb}</p>
       <div className="st-plat-fields">
-        {p.fields.map(([n, label, span, hint]) => <SettingField key={n} layout="stack" span={span} entry={by[n]} label={label} hint={hint} onChange={update} />)}
+        {p.fields.map(([n, span]) => <SettingField key={n} layout="stack" span={span} entry={by[n]} onChange={update} />)}
       </div>
     </section>
   )
@@ -264,7 +269,7 @@ function SectionNav({ ready }) {
   const [active, setActive] = React.useState('st-demo')
   React.useEffect(() => {
     if (!ready || !('IntersectionObserver' in window)) return undefined
-    const ids = NAV.flatMap(([id, , subs]) => [id, ...(subs || []).map((s) => s[0])])
+    const ids = NAV.map((n) => n[0])
     const seen = new Map()
     const io = new IntersectionObserver((es) => {
       es.forEach((e) => seen.set(e.target.id, e.isIntersecting))
@@ -281,16 +286,10 @@ function SectionNav({ ready }) {
     el.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
     setActive(id)
   }
-  const link = (id, text, sub) => (
-    <a key={id} href={`#/settings`} onClick={go(id)} className={cx('st-nav-link', sub && 'st-nav-sub')} aria-current={active === id ? 'location' : undefined}>{text}</a>
-  )
   return (
     <nav className="st-nav" aria-label="Settings sections">
-      {NAV.map(([id, text, subs]) => (
-        <React.Fragment key={id}>
-          {link(id, text)}
-          {subs && subs.map(([sid, st]) => link(sid, st, true))}
-        </React.Fragment>
+      {NAV.map(([id, text]) => (
+        <a key={id} href="#/settings" onClick={go(id)} className="st-nav-link" aria-current={active === id ? 'location' : undefined}>{text}</a>
       ))}
     </nav>
   )
@@ -314,11 +313,11 @@ function Skeleton() {
   return (
     <div role="status" data-testid="settings-loading" className="st-layout st-loading" aria-busy="true">
       <span className="ds-sr">Loading settings</span>
-      <div className="st-nav st-nav-sk" aria-hidden="true">{[0, 1, 2, 3, 4].map((i) => <span key={i} className="ds-skel" style={{ width: '70%' }} />)}</div>
+      <div className="st-nav st-nav-sk" aria-hidden="true">{[0, 1, 2, 3].map((i) => <span key={i} className="ds-skel" style={{ width: '70%' }} />)}</div>
       <div className="st-main" aria-hidden="true">
         <div className="ds-card st-card">{head(120)}<div className="st-sk-row"><span className="ds-skel" style={{ width: 44, height: 24, borderRadius: 12 }} /></div></div>
-        <div className="ds-card st-card">{head(190)}<div className="st-plat-wrap"><div className="st-plat-grid">{[0, 1, 2, 3].map(plat)}</div></div></div>
         <div className="ds-card st-card">{head(140)}<div className="st-rows">{[0, 1, 2, 3, 4, 5, 6, 7, 8].map(row)}</div></div>
+        <div className="ds-card st-card">{head(190)}<div className="st-plat-wrap"><div className="st-plat-grid">{[0, 1, 2, 3].map(plat)}</div></div></div>
         <div className="ds-card st-card">{head(80)}<div className="st-rows">{row(0)}</div></div>
       </div>
     </div>
@@ -333,15 +332,17 @@ const Glyph = {
 
 export default function Settings() {
   const [state, setState] = React.useState({ phase: 'loading' })
+  const [me, setMe] = React.useState(null)  // GET /api/settings/access: { admin, user, via, owner, admins_configured }
   const load = React.useCallback(() => {
     setState({ phase: 'loading' })
     const minShow = new Promise((r) => setTimeout(r, 250))  // the skeleton never just flashes
+    settingsApi.access().then(setMe, () => setMe(null))
     settingsApi.list().then(
       (data) => minShow.then(() => setState({ phase: 'ready', data })),
       (e) => {
         if (e.status === 401) setState({ phase: 'signin' })
         else if (e.status === 403) {
-          settingsApi.access().then((a) => setState({ phase: 'denied', unconfigured: a && a.admins_configured === false }),
+          settingsApi.access().then((a) => setState({ phase: 'denied', unconfigured: a && a.admins_configured === false, owner: a && a.owner }),
             () => setState({ phase: 'denied' }))
         } else setState({ phase: 'error' })
       })
@@ -359,8 +360,8 @@ export default function Settings() {
     body = (
       <div className="ds-card ds-empty" data-testid="settings-signin">
         <span className="st-empty-icon" aria-hidden="true">{Glyph.user}</span>
-        <h2 className="ds-empty-title">Sign in to Domino to manage Settings</h2>
-        <p className="ds-helper">Settings are limited to the project owner and the admins they list. Sign in to Domino, then open this page again.</p>
+        <h2 className="ds-empty-title">Sign in to view Settings</h2>
+        <p className="ds-helper">Settings are locked until you sign in. Sign in to Domino, then reload this page. Settings can be changed by the project owner and listed admins.</p>
         <Button variant="primary" onClick={() => window.location.reload()}>Reload after signing in</Button>
       </div>
     )
@@ -368,11 +369,11 @@ export default function Settings() {
     body = (
       <div className="ds-card ds-empty" data-testid="settings-no-access">
         <span className="st-empty-icon" aria-hidden="true">{Glyph.lock}</span>
-        <h2 className="ds-empty-title">You have no access to Settings</h2>
+        <h2 className="ds-empty-title">Settings are read-only for you</h2>
         <p className="ds-helper">
           {state.unconfigured
-            ? 'No project owner or admins are configured, so nobody can open Settings yet. Set the project variable ACT_ADMINS to a list of usernames.'
-            : 'Settings are limited to the project owner and the admins they list. Ask the project owner if you need a change.'}
+            ? 'No owner or admins are configured, so nobody can open Settings yet. Set ACT_ADMINS to a list of usernames.'
+            : `You can see that this page exists, but only the project owner and listed admins can view or edit settings. Ask ${state.owner ? state.owner : 'the project owner'} to add you under Access.`}
         </p>
       </div>
     )
@@ -387,38 +388,46 @@ export default function Settings() {
     )
   } else {
     const by = Object.fromEntries(state.data.settings.map((s) => [s.name, s]))
-    const row = (name) => <SettingField key={name} entry={by[name]} label={COPY[name][0]} hint={COPY[name][1]} placeholder={COPY[name][2]} onChange={update} />
+    const owner = (me && me.owner) || ''
     body = (
       <>
-        {state.data.warnings.length > 0 && (
-          <div className="st-warning" role="status" data-testid="secret-key-warning">
-            {Icon.warn}
-            <div>{state.data.warnings.map((w) => <p key={w}>{w.split(/(ACT_SECRET_KEY)/).map((t, i) => (t === 'ACT_SECRET_KEY' ? <code key={i}>{t}</code> : t))}</p>)}</div>
-          </div>
-        )}
         <div className="st-layout" data-testid="settings-body">
           <SectionNav ready />
           <div className="st-main">
-            <Card id="st-demo" title="Demo mode"><DemoRow entry={by.demo_mode} onChange={update} /></Card>
-            <Card id="st-platforms" plain title="Platform credentials"
+            <DemoCard entry={by.demo_mode} onChange={update} />
+            <Card id="st-integrations" title="Integrations" subtitle="An environment variable with the same name wins and is read-only here. Secrets are encrypted and write-only.">
+              {INTEGRATIONS.map((n) => <SettingField key={n} entry={by[n]} onChange={update} />)}
+            </Card>
+            <Card id="st-credentials" plain title="Credentials"
                   subtitle="Used by the import wizard to read agents from each platform. Secrets are encrypted, write-only and never shown again.">
+              {state.data.warnings.length > 0 && (
+                <div className="st-warning" role="status" data-testid="secret-key-warning">
+                  {Icon.warn}
+                  <div>{state.data.warnings.map((w) => <p key={w}>{w.split(/(ACT_SECRET_KEY)/).map((t, i) => (t === 'ACT_SECRET_KEY' ? <code key={i}>{t}</code> : t))}</p>)}</div>
+                </div>
+              )}
               <div className="st-plat-grid">
                 {PLATFORMS.map((p) => <PlatformCard key={p.id} p={p} by={by} update={update} />)}
               </div>
             </Card>
-            <Card id="st-integrations" title="Integrations" subtitle="A project variable with the same name wins and is read-only here. Secrets are encrypted and write-only.">
-              {['llm_provider', 'llm_gateway_url', 'break_classifier_endpoint_url', 'break_classifier_access_key', 'external_allow_hosts',
-                'trusted_jwks_path', 'service_accounts', 'policy_agentic_id', 'policy_model_id'].map(row)}
+            <Card id="st-access" title="Access" subtitle="Only the project owner and these admins can open this page.">
+              {owner && (
+                <div className="st-owner-row">
+                  <span className="st-chip" data-testid="admins-fixed-owner">{Icon.lock}<strong>{owner}</strong><span>Project owner · always admin</span></span>
+                </div>
+              )}
+              <SettingField entry={by.admins} onChange={update} />
             </Card>
-            <Card id="st-access" title="Access" subtitle="Only the project owner and these admins can open this page.">{row('admins')}</Card>
           </div>
         </div>
       </>
     )
   }
+  const who = me && me.user ? (me.via === 'workspace' ? `Signed in as ${me.user} (workspace)` : `Signed in as ${me.user}`) : null
   return (
     <div className="ds-page ds-container" data-testid="settings-page">
       <PageHeader title="Settings" description="Connections, credentials and access for this Control Tower. Changes apply within seconds, with no restart." />
+      {who && <p className="st-who" data-testid="settings-signed-in">{who}</p>}
       {body}
     </div>
   )

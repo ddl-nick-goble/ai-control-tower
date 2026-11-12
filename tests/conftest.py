@@ -30,3 +30,11 @@ def db_mod(db_env):
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: needs a live deployment; skipped unless its env var is set")
     config.addinivalue_line("markers", "default_hosts: run with ACT_EXTERNAL_ALLOW_HOSTS unset")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_workspace_owner_mode(monkeypatch):
+    """The test host may itself be a Domino Workspace (DOMINO_RUN_HOST_PATH=/notebookSession/...), which would
+    switch SR-2 workspace owner mode on and turn anonymous 401s into owner calls. Pin it off by default;
+    tests that exercise owner mode set ACT_WORKSPACE_OWNER_MODE (or delenv it for auto mode) themselves."""
+    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")

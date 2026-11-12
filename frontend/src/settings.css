@@ -21,7 +21,7 @@
 /* a setting: label, status, control, hint (one grid, two layouts) */
 .st-f { display: grid; column-gap: var(--ds-s2); row-gap: 2px; min-width: 0 }
 .st-label { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--ds-ink) }
-.st-state { display: flex; align-items: center; justify-content: flex-start; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
+.st-state { display: flex; align-items: center; justify-content: flex-end; gap: 0 6px; min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted); text-align: right }
 .st-setline { min-width: 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
 .st-hint .st-setline { display: block }
 .st-ctl { display: flex; align-items: center; gap: var(--ds-s1); min-width: 0 }
@@ -43,10 +43,11 @@
 .ds-input[readonly] { background: #f5f6f8; color: var(--ds-text) }
 
 /* table row */
-.st-f-row { grid-template-columns: minmax(300px, 340px) minmax(0, 1fr) 196px; grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
+.st-f-row { grid-template-columns: minmax(280px, 40%) minmax(0, 1fr) minmax(120px, max-content); column-gap: var(--ds-s2); grid-template-areas: "label ctl state" "hint ctl state"; padding: 8px var(--ds-s3); align-items: center }
 .st-f-row .st-label { grid-area: label; align-self: end }
 .st-f-row .st-hint { grid-area: hint; align-self: start }
 .st-f-row .st-ctl { grid-area: ctl }
+.st-f-row .st-state { justify-content: flex-start; min-width: 0 }
 .st-f-row .st-state { grid-area: state }
 
 /* stacked (platform cards) */
@@ -115,8 +116,7 @@
   .st-nav-sk { flex-direction: row }
   .st-card, .st-plat, .st-platforms { scroll-margin-top: 56px }
 }
-@media (max-width: 899px) {
-  .st-plat-grid, .st-plat-fields { grid-template-columns: minmax(0, 1fr) }
+@media (max-width: 799px) {
   .st-f-row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "label state" "ctl ctl" "hint hint"; row-gap: 4px }
   .st-sk-row { grid-template-columns: minmax(0, 1fr) }
   .st-demo { grid-template-columns: minmax(0, 1fr); row-gap: 8px }
@@ -124,3 +124,14 @@
 @media (prefers-reduced-motion: reduce) { .st-switch, .st-knob { transition: none } }
 
 .ds-empty .ds-helper { font-size: 13px; line-height: 20px }
+
+/* T-48 */
+.st-card-head-row { display: flex; align-items: center; justify-content: space-between; gap: var(--ds-s1); min-height: 56px; padding-top: 0; padding-bottom: 0 }
+.st-who { margin: -8px 0 var(--ds-s2); font-size: 13px; line-height: 20px; color: var(--ds-muted) }
+.st-help { display: block }
+.st-help-strong { color: var(--ds-ink); font-weight: 600 }
+.st-owner-row { padding: 12px var(--ds-s3); border-bottom: 1px solid var(--ds-line) }
+.st-chip { display: inline-flex; align-items: center; gap: 8px; min-height: 28px; padding: 2px 12px; border: 1px solid var(--ds-line-strong); border-radius: 14px; background: #f5f6f8; color: var(--ds-text); font-size: 13px }
+.st-chip strong { color: var(--ds-ink); font-weight: 600 }
+.st-plat-wrap .st-warning { margin: 0 0 var(--ds-s2) }
+@media (max-width: 1099px) { .st-plat-grid, .st-plat-fields { grid-template-columns: minmax(0, 1fr) } }
