@@ -123,9 +123,11 @@ def seed(db_path: str) -> dict:
     r = client.post("/v1/traces", json=_second_run_doc(), headers=hdr)
     assert r.status_code == 200, r.text
     time.sleep(1.5)  # let drift evaluation for the second run settle
+    with db.engine.connect() as cx:
+        k = cx.execute(select(db.agents.c.id).where(db.agents.c.name == "kyc-refresh-agent")).first()
     db.engine.dispose()
     return {"recon_id": aid, "treasury_id": tid, "run_id": run_id, "run2_id": SECOND_TRACE,
-            "approvable_id": act_id("aws", "kyc-refresh-agent")}
+            "approvable_id": k[0]}
 
 
 if __name__ == "__main__":
