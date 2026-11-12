@@ -471,3 +471,4 @@ PO-4 API (merged): all lists return {"rows":[...]}.
 Fleet: the primary "Add agents" -> #/connections; "Add by URL" keeps data-testid register-external-button; the awaiting-import banner when any connection has awaiting rows; the agent page source chip links to its connection; the "Sample data" badge everywhere sample shows.
 Touches: frontend/src/pages/{ConnectScan,ScanReview,ImportSummary,ConnectionDetail,Intake}.jsx, components/connect/*, connect.css, main.jsx, api.js, pages/Fleet.jsx, pages/Agent.jsx (source chip only), dist. Builder: builder. QA: ui-tester, visual-reviewer, code-reviewer. Branch task/PO-6.
 - PO-6 test baseline 68e8dd6 (22 red; t9/t19a Fleet tests accept the 'Add by URL' label, register-external-button kept). Builder running.
+- PC end-of-wave on main a7d6c45: code 960 pass / 3 skip (11:59); e2e 257 pass (4:49). Wave PC DONE.
