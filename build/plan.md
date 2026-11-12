@@ -284,3 +284,17 @@ Status: approved by Nick 2026-11-12 (owner mode auto-detect, publish now). Branc
 - 2026-11-12: T-48 design brief saved (build/review/T-48-design-brief.md). Gap tests (test-author) running; then builder round 1 (code-r1 major + minors + frontend per brief).
 - 2026-11-12: Nick asked for faster UI tests + captures. Proposed build/e2e-speed-plan.md: tiered runs (A, active now), captures out of regression + retire run2/run3 capture files (B), viewport-only screenshots on failure (C), one app per run (D), sleeps -> waits (E), shared node_modules for worktrees (F), Medium/Large + xdist (G). B-E = reworked T-47, after T-48 merges and before T-20. Awaiting approval for T-47 rework.
 - 2026-11-12: T-48 gap tests aa215a5: 13 tests (19 cases), 1 fails as expected (put(false) store failure -> 500, needs 503); SR-2 spoofing cases pass; interleaving race not reproducible via requests (drain gate) but lock still added per review. e2e t39 heading -> "Credentials". T-48 test baseline now aa215a5. Builder round 1 (backend fixes + frontend per design brief) running.
+
+## T-47 reworked (approved by Nick 2026-11-12): fast serial e2e on Small (build/e2e-speed-plan.md B-E)
+ACs:
+- FE-1 Capture tests carry @pytest.mark.capture and are excluded from regression runs by default (pytest.ini addopts -m "not capture"); test_t19b_run2_captures.py and test_t19b_run3_captures.py removed; the H-5 capture CLI (tests/e2e/capture.py) is on main and documented.
+- FE-2 Regression runs take screenshots only on failure; the shot fixture defaults to viewport screenshots (full_page opt-in) with no fixed wait.
+- FE-3 A full run starts at most one app per distinct environment (session-scoped, cached by env key), seeding once and copying the seeded DB; no per-file app start remains where env is identical.
+- FE-4 No wait_for_timeout/time.sleep in tests/e2e/test_*.py except documented polling helpers; a guard test fails if one is added.
+- FE-5 A `smoke` marker selects ~15 tests (shell, nav, Fleet, Agent, Run, Settings load) that run in under 5 min on Small.
+- FE-6 Same pass count as the step-0 baseline minus only the deleted capture files; no assertion removed or weakened; before/after timings recorded in build/e2e-speed-plan.md.
+- H-1/H-2/H-5 (done on the branch) carried; H-3/H-4 parked until Medium/Large.
+Touches: tests/e2e/ only, pytest.ini, README test section. Owner: test-author. QA: code-reviewer (no weakened assertions), ui-tester (full serial run, pass-count parity). Branch task/T-47 rebased onto main after T-48 merges (it overlaps test_t39_settings.py and the e2e conftest). Starts before T-20.
+Tiered-run policy (plan A) in effect from now: build rounds run the task file + smoke; full suite once pre-merge; wave-end full run skipped when main's tree equals the last pre-merge-tested tree.
+Worktree setup (plan F): new worktrees symlink node_modules from one shared install and touch frontend/dist after checkout.
+- 2026-11-12: T-47 step 0 baseline timing run on main (serial, --durations=60) running; results to qa/e2e-baseline.

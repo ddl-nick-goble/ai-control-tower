@@ -1,4 +1,4 @@
-# E2E speed plan (proposed 2026-11-12, for Nick's approval)
+# E2E speed plan (APPROVED by Nick 2026-11-12)
 
 Goal: cut a task's UI cycle on the Small tier (1 core, 4 GiB) from ~25 min per run to ~5 min, without weakening any assertion.
 
