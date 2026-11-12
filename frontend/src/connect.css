@@ -407,7 +407,8 @@ dialog.po-dialog::backdrop { background: rgba(20, 24, 31, .45) }
 .fl-awaiting-text { flex: 1; min-width: 0 }
 .fl-awaiting .ds-btn { flex: none }
 .fl-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: var(--ds-s2); font-size: 14px; color: var(--ds-text) }
-.fl-nm .ds-row-link { flex: 0 1 auto; min-width: 0 }
+.ds-table col.c-owner { width: 23% }
+.fl-nm { flex-wrap: wrap; gap: 2px 6px } .fl-nm .ds-row-link { flex: 0 0 auto; max-width: 100% }
 .fl-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px }
 .fl-gone { font-size: 12px; font-weight: 600; color: var(--ds-text); background: var(--ds-surface-2); border-radius: 11px; padding: 1px 8px; white-space: nowrap }
 a.ag-source-link { text-decoration: none; color: var(--ds-text) }
@@ -425,3 +426,4 @@ a.ag-source-link:hover { background: var(--ds-accent-soft); color: var(--ds-acce
   .po-rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0) }
   .po-rail [aria-current="step"] .po-rail-label { position: static; width: auto; height: auto; clip: auto }
 }
+.po-rt .po-aname-row { flex-wrap: wrap; gap: 2px 8px } .po-rt .po-aname { flex: 0 1 auto }
