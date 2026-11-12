@@ -54,3 +54,11 @@ Also: code review and design review keep running in parallel with the UI run (th
 - F is coordinator setup.
 - B-E become one task, **T-47 (reworked)**: "fast serial e2e on Small". It touches tests/e2e/, pytest.ini, and the README test section only. Owner: test-author. QA: code-reviewer, plus a before/after timing comparison with an equal pass count (no assertion removed except the deleted superseded capture files). T-47's existing worktree has H-1/H-2/H-5 already; H-3/H-4 stay parked until Medium/Large.
 - Scheduling: T-47 touches tests/e2e/conftest.py and test files that T-48 also edits (test_t39_settings.py). So it starts as soon as T-48 merges, before T-20. It is about 1-2 hours of agent time on Small, and pays back from the second task after it.
+
+## Step 0 baseline (2026-11-12, main after T-19b merge, serial, Small, builder running alongside)
+217 passed in 1086.6 s (18:06); peak RSS 467 MB. Setup 670.8 s (62%), call 408.6 s, teardown 5.9 s.
+- Capture files: 496.6 s (46%): t19b run2 135.4, run3 140.2, run4 143.6, t19a captures 77.4. run2/run3/run4 are near-identical.
+- Per-file app start: 35-38 s each, paid once per file that starts its own app.
+- Fixed waits: test_cap_agent_loading 36.3 s (x3 files), test_t15 test_d10_off_by_default 35.8 s, cap_run_loading ~6.5 s (x3).
+- Other files: t39 126.2, t19b pages 111.9, t19a shell 96.7, t15 83.9, t18 56.7, t19a p2 36.2, t10 31.4, t9 18.4, t12 17.8, t13 8.5, t14 0.9.
+Expected after B-E: drop ~500 s of captures, ~6 x 36 s of app starts, ~150 s of fixed waits -> about 5-6 min serial on Small. Raw output: qa/e2e-baseline/{run.txt,full.txt}.
