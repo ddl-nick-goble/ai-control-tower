@@ -1,0 +1,67 @@
+{
+ "label": "Sample Entra tenant (Example Bank)",
+ "identity": "act-reader (user-assigned managed identity)",
+ "permissions": [
+  {
+   "name": "Microsoft accepted ACT's sign-in",
+   "detail": "login.microsoftonline.com token exchange",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read subscriptions",
+   "detail": "Microsoft.Resources/subscriptions/read",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read Azure AI Foundry agents",
+   "detail": "Microsoft.CognitiveServices/accounts/AIServices/agents/read",
+   "required": false,
+   "missing_first": true,
+   "fix": "ACT can see the Foundry resource but not its agents. Assign ACT Foundry Inventory Reader on it: az role assignment create --assignee <act-reader-principal-id> --role \"ACT Foundry Inventory Reader\" --scope <foundry-resource-id>"
+  },
+  {
+   "name": "Read Entra agent identities",
+   "detail": "Graph: AgentIdentity.Read.All",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read Agent 365 catalog",
+   "detail": "Graph: AgentCatalog.Read (needs an Agent 365 licence)",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  }
+ ],
+ "tree": [
+  {
+   "id": "az:sub:0f3c1e7a",
+   "label": "Corporate AI (subscription)",
+   "children": [
+    {
+     "id": "az:sub:0f3c1e7a:foundry-prod",
+     "label": "foundry-prod (Foundry resource)",
+     "children": [
+      {
+       "id": "az:sub:0f3c1e7a:foundry-prod:kyc",
+       "label": "project kyc-assistant",
+       "children": [],
+       "agents": 3
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "az:entra",
+   "label": "Entra-only agents",
+   "children": [],
+   "agents": 2
+  }
+ ]
+}

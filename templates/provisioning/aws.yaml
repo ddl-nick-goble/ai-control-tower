@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ACT read-only role for Bedrock AgentCore, Bedrock Agents and the Agent Registry (template v{{TEMPLATE_VERSION}}). Contains no secret.
+Parameters:
+  OidcIssuerUrl: {Type: String, Default: "{{ISSUER}}"}
+  OidcAudience: {Type: String, Default: "{{AUDIENCE}}"}
+  OidcSubject: {Type: String, Default: "{{SUBJECT}}"}
+  Nonce: {Type: String, Default: "{{STATE}}", Description: "One-time setup token from ACT"}
+  CreateOidcProvider: {Type: String, Default: "true", AllowedValues: ["true", "false"]}
+Conditions:
+  MakeOidc: !Equals [!Ref CreateOidcProvider, "true"]
+Resources:
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidc
+    Properties:
+      Url: !Ref OidcIssuerUrl
+      ClientIdList: [!Ref OidcAudience]
+  ActReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ACT-ReadOnly
+      MaxSessionDuration: 3600
+      Tags: [{Key: "act:template-version", Value: "{{TEMPLATE_VERSION}}"}]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/se-demo.domino.tech/auth/realms/DominoRealm"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "se-demo.domino.tech/auth/realms/DominoRealm:aud": "{{AUDIENCE}}"
+                "se-demo.domino.tech/auth/realms/DominoRealm:sub": "{{SUBJECT}}"
+      Policies:
+        - PolicyName: ACT-ReadOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AgentCoreRead
+                Effect: Allow
+                Resource: "*"
+                Action:
+                  - bedrock-agentcore:ListAgentRuntimes
+                  - bedrock-agentcore:GetAgentRuntime
+                  - bedrock-agentcore:ListAgentRuntimeEndpoints
+                  - bedrock-agentcore:ListHarnesses
+                  - bedrock-agentcore:GetHarness
+                  - bedrock-agentcore:ListGateways
+                  - bedrock-agentcore:ListGatewayTargets
+                  - bedrock-agentcore:ListWorkloadIdentities
+              - Sid: ClassicAgentsRead
+                Effect: Allow
+                Resource: "*"
+                Action:
+                  - bedrock:ListAgents
+                  - bedrock:GetAgent
+                  - bedrock:ListAgentActionGroups
+                  - bedrock:GetAgentActionGroup
+              - Sid: RolePoliciesRead
+                Effect: Allow
+                Resource: "*"
+                Action:
+                  - iam:GetRole
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:GetRolePolicy
+Outputs:
+  RoleArn:
+    Value: !GetAtt ActReadOnlyRole.Arn
+  ReturnToACT:
+    Description: Open this link to finish in ACT
+    Value: !Sub "{{RETURN_URL}}&role=${ActReadOnlyRole.Arn}"

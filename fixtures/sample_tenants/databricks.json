@@ -1,0 +1,67 @@
+{
+ "label": "Sample Databricks account (Example Bank)",
+ "identity": "act-reader (service principal)",
+ "permissions": [
+  {
+   "name": "Databricks accepted ACT's sign-in",
+   "detail": "/oidc/v1/token on each workspace",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read serving endpoints",
+   "detail": "GET /api/2.0/serving-endpoints",
+   "required": true,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read Apps",
+   "detail": "GET /api/2.0/apps",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  },
+  {
+   "name": "Read Unity Catalog metadata",
+   "detail": "GET /api/2.1/unity-catalog/models",
+   "required": false,
+   "missing_first": true,
+   "fix": "Grant CAN_VIEW on serving endpoints to the group act-readers: databricks permissions update serving-endpoints <endpoint-id> --json '{\"access_control_list\":[{\"group_name\":\"act-readers\",\"permission_level\":\"CAN_VIEW\"}]}'"
+  },
+  {
+   "name": "Read Agent Bricks",
+   "detail": "GET /api/2.0/agent-bricks",
+   "required": false,
+   "missing_first": false,
+   "fix": null
+  }
+ ],
+ "tree": [
+  {
+   "id": "dbx:ws:1111111111111111",
+   "label": "fraud-analytics (workspace)",
+   "children": [
+    {
+     "id": "dbx:ws:1111111111111111:main",
+     "label": "catalog main",
+     "children": [],
+     "agents": 3
+    }
+   ]
+  },
+  {
+   "id": "dbx:ws:2222222222222222",
+   "label": "customer-service (workspace)",
+   "children": [
+    {
+     "id": "dbx:ws:2222222222222222:prod",
+     "label": "catalog prod",
+     "children": [],
+     "agents": 2
+    }
+   ]
+  }
+ ]
+}

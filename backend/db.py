@@ -196,6 +196,7 @@ agents = Table(
     Column("record", JSON),
     Column("bundle_id", String),
     Column("governance", JSON),
+    Column("connection_id", String),  # PO-1: the provider connection that discovered it (set by PO-4 intake)
 )
 
 agent_versions = Table(
@@ -340,6 +341,39 @@ audit_events = Table(
     Column("target", String),
     Column("ts", String),
     Column("detail", JSON),
+)
+
+# PO-1: provider connections ("Connect a provider"). state: draft, waiting, trusted, verified, partial, connected,
+# needs_attention, failed, disconnected. `config` holds what the handshake or paste learned (role ARN, project, ...);
+# `scopes` is {"selected": [ids]} once the user saved a selection (None = everything selected).
+connections = Table(
+    "connections", metadata,
+    Column("id", String, primary_key=True),
+    Column("provider", String, nullable=False),
+    Column("state", String, nullable=False, default="draft"),
+    Column("sample", Boolean, default=False),
+    Column("state_token", String, index=True),
+    Column("token_used", Boolean, default=False),
+    Column("config", JSON),
+    Column("scopes", JSON),
+    Column("created_by", String),
+    Column("created_by_username", String),
+    Column("created_at", String),
+    Column("updated_at", String),
+    Column("waiting_since", Float),
+    Column("last_check", String),
+    Column("last_scan", String),
+    Column("disconnected_at", String),
+)
+
+# One row per access check, newest last (the sample tenant turns green on the second check).
+connection_checks = Table(
+    "connection_checks", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("connection_id", String, index=True),
+    Column("ts", String),
+    Column("state", String),
+    Column("permissions", JSON),
 )
 
 # In-app Settings (T-39). Secret values are Fernet ciphertext; plain values are text. Always in the real DB.
