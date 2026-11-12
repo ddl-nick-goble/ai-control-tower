@@ -127,6 +127,7 @@ def test_ac2_list_and_get_fields(client):
 
 
 def test_ac2_get_unknown_is_404(client):
+    create(client, "aws")  # route must exist for real ids
     assert client.get("/api/connections/nope-123", headers=H).status_code == 404
 
 
