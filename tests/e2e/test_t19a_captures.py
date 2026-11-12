@@ -1,4 +1,5 @@
-"""T-19a QA viewport captures (not full-page). Output: /mnt/data/ai-control-tower/qa/T-19a/."""
+"""T-19a QA viewport captures (not full-page). Output: $QA_RUN_DIR (default test-results/). Marked capture: not part of regression runs."""
+import os
 import re
 
 import pytest
@@ -7,8 +8,14 @@ from playwright.sync_api import expect
 from _waits import settle
 
 pytestmark = pytest.mark.capture
+SHOT_DIR = os.environ.get("QA_RUN_DIR", "test-results")  # honours QA_RUN_DIR
 
-from test_t19a_shell_fleet import (SHOT_DIR, app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
+
+@pytest.fixture(autouse=True)
+def _out_dir():
+    os.makedirs(SHOT_DIR, exist_ok=True)
+
+from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
                                    seeded)
 
 
