@@ -15,7 +15,7 @@ data-testid / role contract (role/label/text locators are primary):
     "Governance policy id (agentic bundle)", "Governance policy id (model bundle)"; button "Save".
     After Save: role=status text "Saved". Failed save: role=alert.
     Secret field once set: text "Set · changed by <user> on <date>", buttons "Replace" and "Clear", no input value, no value in DOM.
-    Env-set field: text "Set by project variable", input readonly/disabled, no Save/Clear buttons.
+    Env-set field: text "Set by environment variable LLM_GATEWAY_URL", input readonly/disabled, no Save/Clear buttons.
   secret-key-warning   role=alert/status text recommending the ACT_SECRET_KEY project secret variable (only for a generated key file)
   Demo mode switch     role=switch named "Demo mode"; click opens role=dialog/alertdialog with buttons "Confirm" and "Cancel".
 """
@@ -178,13 +178,13 @@ def test_st2_no_warning_when_key_provided(page, context, shot, app_b):
 def test_st3_env_set_is_read_only(page, shot, owner):
     _open(page)
     f = _field(page, "LLM Gateway URL")
-    expect(f).to_contain_text("Set by project variable")
+    expect(f).to_contain_text("Set by environment variable LLM_GATEWAY_URL")
     box = f.get_by_label("LLM Gateway URL")
     assert box.count() == 0 or box.evaluate("e => e.readOnly || e.disabled")
     expect(f.get_by_role("button", name="Save")).to_have_count(0)
     expect(f.get_by_role("button", name="Clear")).to_have_count(0)
     other = _field(page, "External card allowed hosts")
-    expect(other).not_to_contain_text("Set by project variable")
+    expect(other).not_to_contain_text("Set by environment variable")
     shot("then")
 
 
@@ -223,7 +223,7 @@ def test_st5_demo_mode_variable_locks_switch(page, context, shot, app_c):
     sw = page.get_by_role("switch", name="Demo mode")
     expect(sw).to_have_attribute("aria-checked", "true")
     expect(sw).to_be_disabled()
-    expect(page.get_by_test_id("settings-page")).to_contain_text("Set by project variable")
+    expect(page.get_by_test_id("settings-page")).to_contain_text("Set by environment variable ACT_DEMO_MODE")
     sw.click(force=True)
     expect(page.get_by_role("dialog").or_(page.get_by_role("alertdialog"))).to_have_count(0)
     shot("then")
