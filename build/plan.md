@@ -347,3 +347,4 @@ Nick: "register agent" becomes a gallery of provider cards. Each card opens an o
 - Design spec: build/design/provider-onboarding.md (+ static prototype)
 - Then: rewrite build/import-wizard-plan.md into the provider-onboarding plan (tasks, ACs, waves), keeping its adapter contract (auth_methods, test_connection, list_scopes, discover) and Domino Jobs for crawls.
 - Concurrency: session cap is 3 subagents; research runs in two batches (AWS, Vertex, Google agents; then Azure, Databricks, Snowflake), design after.
+- 2026-11-12: Provider onboarding research (6 providers + Domino token spike) and design (spec + prototype, served on port 9201) done. Plan PROPOSED: build/provider-onboarding-plan.md (PO-1..PO-7, PO-L; waves PA-PE; supersedes T-40..T-46, T-27, T-31). Waiting on Nick: D-1 service account, D-2 sandboxes, D-3 Google cards, D-4 sync default, D-5 sample import, D-6 order.

@@ -27,3 +27,6 @@ T-50 merged; the real DB is restored on the dataset in DELETE journal mode: 12 a
 
 ## If the workspace restarts
 Worktrees under .worktrees/ are lost; recreate from origin/task/<id>. Playwright + Node are in the project default environment ai-control-tower-dse-pw.
+
+## 2026-11-12: Provider onboarding (proposed)
+Research, design and plan are done: build/provider-onboarding-plan.md. The prototype is at <workspace proxy>/9201/provider-onboarding.html. Waiting on Nick's decisions D-1..D-6 before PA (T-20, PO-1, PO-2) starts.
