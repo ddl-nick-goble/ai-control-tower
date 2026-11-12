@@ -1,9 +1,7 @@
 """T-19f e2e: table CSS and Agent/Run page design fixes (F-1, F-3 .. F-9; F-2 lives in test_t19a_shell_fleet).
 
 Every check is geometry or computed style on the seeded app (treasury-sweep-agent and its weekend-drift run).
-F-6 ratio rule: on the empty agent page at 1440 the two columns (data-testid-less .ag-main / .ag-side wrappers, found
-as the Overview card's column and the Findings card's column) must be balanced: the wider is at most 15% wider than
-the narrower: main <= 1.5 x side.
+F-6: columns are found as the Overview card's and Runs card's parents; see F-6 tests below (side 380 +-4, empty text <= 560px, Evidence pack full-width row, bottoms within 40px).
 """
 import re
 import pathlib
@@ -98,61 +96,110 @@ def test_f4_spans_text_never_touches_chevron(page, shot, seeded, w):
 
 
 # ---- F-5 ----------------------------------------------------------------------------------------------------
+_BAR_JS = """e => { const c = getComputedStyle(e), b = getComputedStyle(e, '::before');
+    return {shadow: c.boxShadow, outline: c.outlineStyle, outlineOffset: parseFloat(c.outlineOffset) || 0,
+            beforeBg: b.backgroundColor, beforeW: parseFloat(b.width) || 0, beforeLeft: b.left, beforeContent: b.content,
+            beforePos: b.position,
+            bottom: [c.borderBottomColor, parseFloat(c.borderBottomWidth)],
+            bodyBottom: (() => { const k = e.querySelector('.rt-body'); if (!k) return null;
+                const d = getComputedStyle(k); return [d.borderBottomColor, parseFloat(d.borderBottomWidth)]; })()}; }"""
+
+
+def _inset_left_red_bar(shadow):
+    """True if an inset box-shadow has a red-ish colour and an x offset/spread >= 3px on the left."""
+    for part in re.split(r",\s*(?=rgba?\()", shadow or ""):
+        m = re.match(r"(rgba?\([^)]*\))\s*(.*)", part.strip())
+        if not m or "inset" not in m.group(2) or not _red(m.group(1)):
+            continue
+        nums = [float(x) for x in re.findall(r"-?[\d.]+(?=px)", m.group(2))]
+        if len(nums) >= 1 and nums[0] >= 3:
+            return True
+    return False
+
+
 def test_f5_violation_row_has_red_left_bar(page, shot, seeded):
     _agent(page, seeded["treasury_id"])
     if page.get_by_role("tab", name="Findings", exact=True).count():
         page.get_by_role("tab", name="Findings", exact=True).click()
     page.get_by_test_id("finding-timeline-link").first.click()
-    v = page.locator("[data-testid=timeline-event][data-violation=true]").first
-    expect(v).to_be_visible()
+    rows = page.locator("[data-testid=timeline-event][data-violation=true]")
+    hl = rows.filter(has_text="transfer_funds").filter(has_text="02:14").first
+    expect(hl).to_be_visible()
     settle(page)
-    border = v.evaluate("""e => { const c = getComputedStyle(e);
-        return [c.borderLeftColor, parseFloat(c.borderLeftWidth), c.borderLeftStyle]; }""")
-    before = v.evaluate("""e => { const c = getComputedStyle(e, '::before');
-        return [c.backgroundColor, parseFloat(c.width) || 0, c.content]; }""")
-    bar_border = _red(border[0]) and border[1] >= 2 and border[2] != "none"
-    bar_before = before[2] not in ("none", "normal") and _red(before[0]) and before[1] >= 2
-    assert bar_border or bar_before, f"no red left bar: border={border} before={before}"
+    d = hl.evaluate(_BAR_JS)
+    inset = _inset_left_red_bar(d["shadow"])
+    before = (d["beforeContent"] not in ("none", "normal") and _red(d["beforeBg"]) and d["beforeW"] >= 3
+              and d["beforeLeft"] in ("0px", "auto") and d["beforePos"] == "absolute")
+    assert inset or before, f"no red left bar drawn inside the highlighted row (inset shadow or ::before): {d}"
+    if d["outline"] != "none":
+        assert d["outlineOffset"] <= 0, f"row outline sits outside the row and can cover the bar: {d}"
+    other = rows.filter(has_text="list_credentials").first
+    expect(other).to_be_visible()
+    o = other.evaluate(_BAR_JS)
+    for name, (color, width) in (("row", o["bottom"]), ("body", o["bodyBottom"] or ("rgb(255,255,255)", 0))):
+        assert width == 0 or not _red(color), f"list_credentials {name} has a red bottom border: {color} {width}px"
     shot("then")
 
 
 # ---- F-6 ----------------------------------------------------------------------------------------------------
-def test_f6_empty_agent_page_columns_balanced_at_1440(page, shot, seeded):
-    page.set_viewport_size({"width": 1440, "height": 900})
-    rid = seeded["recon_id"]
+def _col(page, heading):
+    card = page.locator("section").filter(has=page.get_by_role("heading", name=heading, exact=True)).first
+    return card.evaluate("e => { const c = e.closest('.ag-main, .ag-side'); const b = c.getBoundingClientRect();"
+                         " return {x: b.x, y: b.y + scrollY, width: b.width, height: b.height}; }")
+
+
+def _assert_side_380(page, label):
+    main, side = _col(page, "Runs"), _col(page, "Overview")
+    assert abs(side["width"] - 380) <= 4, f"{label}: side column is {side['width']:.0f}px, want 380 +-4"
+    assert main["width"] > side["width"], f"{label}: main column should take the rest ({main['width']:.0f}px)"
+    return main, side
+
+
+@pytest.mark.parametrize("w", [1280, 1440])
+def test_f6_empty_agent_page_columns_balanced(page, shot, seeded, w):
+    page.set_viewport_size({"width": w, "height": 900})
     page.route(re.compile(r"/api/agents/[^/]+/runs$"), lambda r: r.fulfill(json=[]))
     page.route(re.compile(r"/api/agents/[^/]+/findings$"), lambda r: r.fulfill(json=[]))
-    _agent(page, rid)
-    expect(page.get_by_text(re.compile("No runs", re.I)).first).to_be_visible()
+    _agent(page, seeded["recon_id"])
+    empty = page.get_by_text(re.compile("No runs", re.I)).first
+    expect(empty).to_be_visible()
     settle(page)
-    main = page.locator("section").filter(has=page.get_by_role("heading", name="Runs", exact=True)) \
-        .first.locator("xpath=..").bounding_box()
-    side = page.locator("section").filter(has=page.get_by_role("heading", name="Overview", exact=True)) \
-        .first.locator("xpath=..").bounding_box()
-    ok = main["width"] <= side["width"] * 1.5
-    assert ok, f"unbalanced columns: main {main['width']:.0f}px vs side {side['width']:.0f}px"
+    main, side = _assert_side_380(page, f"empty page at {w}")
+    assert main["width"] >= w - 380 - 3 * 48 - 40, f"main column does not take the rest: {main['width']:.0f}px"
+    for t in page.locator(".ag-main .ag-empty p").all():
+        tw = t.evaluate("e => e.getBoundingClientRect().width")
+        assert tw <= 560, f"empty-state text is {tw:.0f}px wide (> 560px, about 56ch)"
+    ev = page.get_by_test_id("evidence-pack-card")
+    expect(ev).to_be_visible()
+    eb = ev.evaluate("e => { const b = e.getBoundingClientRect(); return {y: b.y + scrollY, width: b.width}; }")
+    assert eb["y"] >= max(main["y"] + main["height"], side["y"] + side["height"]) - 1, \
+        "Evidence pack card is inside the two-column grid, not a full-width row below it"
+    assert eb["width"] >= main["width"] + side["width"] - 4, f"Evidence pack is not full width: {eb['width']:.0f}px"
+    gap = abs((main["y"] + main["height"]) - (side["y"] + side["height"]))
+    assert gap <= 40, f"column bottoms differ by {gap:.0f}px"
     shot("then")
 
 
-def _side_width(page, aid):
-    _agent(page, aid)
+@pytest.mark.parametrize("w", [1280, 1440])
+def test_f6_populated_agent_page_side_column_is_380(page, shot, seeded, w):
+    page.set_viewport_size({"width": w, "height": 900})
+    _agent(page, seeded["treasury_id"])
     settle(page)
-    return page.locator("section").filter(has=page.get_by_role("heading", name="Overview", exact=True)) \
-        .first.locator("xpath=..").bounding_box()["width"]
-
-
-def test_f6_populated_agent_page_side_column_keeps_normal_width(page, shot, seeded):
-    page.set_viewport_size({"width": 1440, "height": 900})
-    w = _side_width(page, seeded["treasury_id"])
-    assert w <= 400, f"side column widened on populated page: {w:.0f}px"
+    _assert_side_380(page, f"populated page at {w}")
+    ev = page.get_by_test_id("evidence-pack-card").evaluate("e => ({y: e.getBoundingClientRect().y + scrollY})")
+    main, side = _col(page, "Runs"), _col(page, "Overview")
+    assert ev["y"] >= max(main["y"] + main["height"], side["y"] + side["height"]) - 1, \
+        "Evidence pack card is inside the two-column grid"
     shot("then")
 
 
-def test_f6_side_column_normal_when_one_main_card_empty(page, shot, seeded):
-    page.set_viewport_size({"width": 1440, "height": 900})
+@pytest.mark.parametrize("w", [1280, 1440])
+def test_f6_side_column_380_when_one_main_card_empty(page, shot, seeded, w):
+    page.set_viewport_size({"width": w, "height": 900})
     page.route(re.compile(r"/api/agents/[^/]+/findings$"), lambda r: r.fulfill(json=[]))
-    w = _side_width(page, seeded["treasury_id"])
-    assert w <= 400, f"side column widened by one empty main card: {w:.0f}px"
+    _agent(page, seeded["treasury_id"])
+    settle(page)
+    _assert_side_380(page, f"one empty main card at {w}")
     shot("then")
 
 
@@ -171,26 +218,39 @@ def test_f7_runs_thead_fill_uniform(page, shot, seeded):
 
 
 # ---- F-8 ----------------------------------------------------------------------------------------------------
-def _is_ghost(btn):
-    return btn.evaluate("""e => { const c = getComputedStyle(e);
-        const clear = x => x === 'transparent' || /rgba\\(.*,\\s*0\\)$/.test(x);
-        return e.classList.contains('ds-btn-ghost') && clear(c.backgroundColor) && clear(c.borderTopColor); }""")
+_BTN_JS = """e => { const c = getComputedStyle(e);
+    return {bg: c.backgroundColor, bw: parseFloat(c.borderTopWidth), bs: c.borderTopStyle, bc: c.borderTopColor,
+            cls: e.classList.contains('ds-btn-ghost')}; }"""
 
 
-def test_f8_card_level_try_again_is_ghost_button(page, shot, seeded):
-    page.route(re.compile(r"/api/agents/[^/]+/runs$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+def _assert_secondary(btn, ref, what):
+    b, r = btn.evaluate(_BTN_JS), ref.evaluate(_BTN_JS)
+    nums = [float(x) for x in re.findall(r"[\d.]+", b["bg"])[:3]]
+    assert not b["cls"], f"{what} Try again is still the ghost button"
+    assert min(nums) >= 245 and not b["bg"].endswith(", 0)"), f"{what} Try again fill is not white-ish: {b}"
+    assert b["bw"] >= 1 and b["bs"] == "solid", f"{what} Try again has no visible 1px border: {b}"
+    assert (b["bg"], b["bw"], b["bc"]) == (r["bg"], r["bw"], r["bc"]), f"{what} differs from the secondary button: {b} vs {r}"
+
+
+def test_f8_try_again_is_secondary_button(page, shot, seeded):
     _agent(page, seeded["treasury_id"])
-    card = _runs_card(page)
-    btn = card.get_by_role("button", name="Try again")
+    ref = page.get_by_test_id("evidence-pack-generate")
+    expect(ref).to_be_visible()
+    page.route(re.compile(r"/api/agents/[^/]+/runs$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
+    page.reload()
+    ref = page.get_by_test_id("evidence-pack-generate")
+    btn = _runs_card(page).get_by_role("button", name="Try again")
     expect(btn).to_be_visible()
-    assert _is_ghost(btn), "inline card Try again is not a ghost button"
+    _assert_secondary(btn, ref, "card-level")
     page.unroute(re.compile(r"/api/agents/[^/]+/runs$"))
     page.route(re.compile(r"/api/agents/[^/]+$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
     page.goto(f"./#/agents/{seeded['recon_id']}")
     expect(page.get_by_role("alert").first).to_be_visible()
-    btn = page.get_by_role("alert").get_by_role("button", name="Try again")
-    expect(btn).to_be_visible()
-    assert _is_ghost(btn), "error card Try again is a bordered default button, not ghost"
+    page_btn = page.get_by_role("alert").get_by_role("button", name="Try again")
+    expect(page_btn).to_be_visible()
+    # the Generate button is not on the error page: probe a plain .ds-btn (the secondary style) in the same page
+    page.evaluate("() => { const b = document.createElement('button'); b.className = 'ds-btn'; b.id = 'probe-secondary'; document.body.appendChild(b); }")
+    _assert_secondary(page_btn, page.locator("#probe-secondary"), "page-level")
     shot("then")
 
 
@@ -204,6 +264,7 @@ def test_f9_filter_chips_and_copy_buttons_show_focus_ring_on_keyboard(page, shot
         page.keyboard.press("Tab")
         info = page.evaluate("""() => { const e = document.activeElement; if (!e || e === document.body) return null;
             const grp = e.closest('[role=group]');
+            if (e.closest('.ds-tile')) return null;
             const kind = e.matches('[data-testid=copy-button]') ? 'copy'
                 : (grp && grp.getAttribute('aria-label') === 'Filter by event type' ? 'chip' : null);
             if (!kind) return null;
