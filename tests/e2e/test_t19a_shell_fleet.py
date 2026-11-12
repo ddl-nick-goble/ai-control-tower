@@ -4,7 +4,7 @@ Own seeded app (and a demo-mode app for the banner), each on a free port.
 Screenshots: /mnt/data/ai-control-tower/qa/T-19a/.
 data-testid contract (role/label locators are primary):
   app-topbar        the top bar (landmark role=banner) holding the product name "Agent Control Tower",
-                    app-subtitle (non-empty), and nav role=navigation name "Primary" with links Fleet / Register external agent
+                    app-subtitle (non-empty), and nav role=navigation name "Primary" with links Home / Fleet / Findings / Policies / Connections / Audit (T-20)
   nav "Breadcrumb"  role=navigation name "Breadcrumb" on Register, Agent and Run pages (absent on Fleet)
   fleet-tile-<key>  keys: total, tier1, open-findings, pending-review; number visible; tile is a button/link-like control
   fleet-search      not used; the search box is labelled "Search agents"
@@ -116,17 +116,17 @@ def test_s1_topbar_on_every_page(page, shot, seeded, route):
     assert len(page.get_by_test_id("app-subtitle").inner_text().strip()) > 5
     nav = _primary(page)
     expect(nav.get_by_role("link", name="Fleet")).to_be_visible()
-    expect(nav.get_by_role("link", name="Register external agent")).to_be_visible()
+    expect(nav.get_by_role("link", name="Register external agent")).to_have_count(0)  # T-20 N-1: left the nav
     shot("then")
 
 
 def test_s1_current_page_indicated(page, shot):
     page.goto("./#/")
     expect(_primary(page).get_by_role("link", name="Fleet")).to_have_attribute("aria-current", "page")
-    expect(_primary(page).get_by_role("link", name="Register external agent")).not_to_have_attribute("aria-current", "page")
-    _primary(page).get_by_role("link", name="Register external agent").click()
-    expect(page).to_have_url(re.compile(r"#/register"))
-    expect(_primary(page).get_by_role("link", name="Register external agent")).to_have_attribute("aria-current", "page")
+    expect(_primary(page).get_by_role("link", name="Register external agent")).to_have_count(0)  # T-20 N-1
+    _primary(page).get_by_role("link", name="Policies").click()
+    expect(page).to_have_url(re.compile(r"#/policies"))
+    expect(_primary(page).get_by_role("link", name="Policies")).to_have_attribute("aria-current", "page")
     expect(_primary(page).get_by_role("link", name="Fleet")).not_to_have_attribute("aria-current", "page")
     shot("then")
 
@@ -396,7 +396,7 @@ def test_s5_fleet_at_1024_usable(page, shot):
 
 def test_s5_visible_focus(page, shot):
     _fleet(page)
-    nav_link = _primary(page).get_by_role("link", name="Register external agent")
+    nav_link = _primary(page).get_by_role("link", name="Policies")  # T-20 N-1: Register left the nav
     nav_link.focus()
     assert _has_focus_ring(nav_link)
     _primary(page).get_by_role("link", name="Fleet").focus()
