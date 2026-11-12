@@ -1,0 +1,45 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
+    "agentRuntimeId": "treasury_sweep_agent-Xk3Lq9ZpT2",
+    "agentRuntimeName": "treasury-sweep-agent",
+    "agentRuntimeVersion": "3",
+    "description": "Sweeps excess cash between treasury accounts and posts journals.",
+    "status": "READY",
+    "createdAt": "2026-09-01T10:00:00.000Z",
+    "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
+    "roleArn": "arn:aws:iam::123456789012:role/agentcore-treasury-sweep-agent",
+    "workloadIdentityDetails": {
+      "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/treasury_sweep_agent-Xk3Lq9ZpT2"
+    },
+    "protocolConfiguration": {
+      "serverProtocol": "HTTP"
+    },
+    "networkConfiguration": {
+      "networkMode": "PUBLIC"
+    },
+    "authorizerConfiguration": {
+      "customJWTAuthorizer": {
+        "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
+        "allowedClients": [
+          "act-agents"
+        ]
+      }
+    },
+    "agentRuntimeArtifact": {
+      "containerConfiguration": {
+        "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/treasury_sweep_agent:v3"
+      }
+    },
+    "environmentVariables": {
+      "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "GATEWAY_URL": "https://treasury-gw-7q2k9x.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+      "MEMORY_ID": "mem-treasury-01",
+      "CORE_BANKING_API_KEY": "sk-live-9f3a7c21d4e84b6aa0"
+    }
+  }
+}

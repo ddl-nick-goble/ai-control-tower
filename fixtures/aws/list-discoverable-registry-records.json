@@ -3,98 +3,98 @@
     {
       "registryId": "reg-bank-prod",
       "recordId": "rec-xk3lq9zpt2",
-      "name": "treasury-sweep-agent",
-      "descriptorType": "AGENT",
+      "recordArn": "arn:aws:agent-registry:us-east-1:123456789012:registry/reg-bank-prod/record/rec-xk3lq9zpt2",
+      "name": "aws-autodetected-123456789012-us-east-1-treasury_sweep_agent-Xk3Lq9ZpT2",
+      "displayName": "treasury-sweep-agent",
       "description": "Sweeps excess cash between treasury accounts and posts journals.",
+      "recordType": "AGENT",
+      "recordVersion": "3",
       "status": "APPROVED",
-      "version": "3",
+      "createdAt": "2026-09-01T10:00:00Z",
       "updatedAt": "2026-11-03T14:22:41.512Z",
       "descriptors": {
-        "agent": {
-          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
-          "protocol": "HTTP",
-          "owner": "treasury-ops@example-bank.com",
-          "tools": [
-            {
-              "name": "get_balance"
-            },
-            {
-              "name": "sweep_plan"
-            },
-            {
-              "name": "get_fx_rate"
-            },
-            {
-              "name": "transfer_funds"
-            },
-            {
-              "name": "post_journal_entry"
-            }
-          ]
+        "custom": {
+          "data": "{\"protocol\": \"HTTP\"}"
         }
-      }
+      },
+      "provenance": [
+        {
+          "relation": "DETECTED_FROM",
+          "sourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
+          "sourceType": "AWS::BedrockAgentCore::Runtime",
+          "sourceDetails": {
+            "agentcoreRuntime": {
+              "protocolConfiguration": {
+                "serverProtocol": "HTTP"
+              }
+            }
+          }
+        }
+      ]
     },
     {
       "registryId": "reg-bank-prod",
       "recordId": "rec-rt7hn4wvb8",
-      "name": "kyc-refresh-agent",
-      "descriptorType": "AGENT",
+      "recordArn": "arn:aws:agent-registry:us-east-1:123456789012:registry/reg-bank-prod/record/rec-rt7hn4wvb8",
+      "name": "aws-autodetected-123456789012-us-east-1-kyc_refresh_agent-Rt7Hn4WvB8",
+      "displayName": "kyc-refresh-agent",
       "description": "Prepares periodic KYC refresh requests for corporate customers.",
+      "recordType": "AGENT",
+      "recordVersion": "3",
       "status": "APPROVED",
-      "version": "3",
+      "createdAt": "2026-09-01T10:00:00Z",
       "updatedAt": "2026-10-28T09:05:12.087Z",
       "descriptors": {
-        "agent": {
-          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
-          "protocol": "HTTP",
-          "owner": "kyc-operations@example-bank.com",
-          "tools": [
-            {
-              "name": "lookup_customer"
-            },
-            {
-              "name": "fetch_sanctions_list"
-            },
-            {
-              "name": "draft_refresh_request"
-            },
-            {
-              "name": "update_kyc_status"
-            }
-          ]
+        "custom": {
+          "data": "{\"protocol\": \"HTTP\"}"
         }
-      }
+      },
+      "provenance": [
+        {
+          "relation": "DETECTED_FROM",
+          "sourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
+          "sourceType": "AWS::BedrockAgentCore::Runtime",
+          "sourceDetails": {
+            "agentcoreRuntime": {
+              "protocolConfiguration": {
+                "serverProtocol": "HTTP"
+              }
+            }
+          }
+        }
+      ]
     },
     {
       "registryId": "reg-bank-prod",
       "recordId": "rec-mc2fd6yjq5",
-      "name": "trade-break-triage",
-      "descriptorType": "AGENT",
+      "recordArn": "arn:aws:agent-registry:us-east-1:123456789012:registry/reg-bank-prod/record/rec-mc2fd6yjq5",
+      "name": "aws-autodetected-123456789012-us-east-1-trade_break_triage-Mc2Fd6YjQ5",
+      "displayName": "trade-break-triage",
       "description": "Classifies equity and FX trade breaks and opens tickets.",
+      "recordType": "AGENT",
+      "recordVersion": "3",
       "status": "APPROVED",
-      "version": "3",
+      "createdAt": "2026-09-01T10:00:00Z",
       "updatedAt": "2026-11-05T16:41:30.944Z",
       "descriptors": {
-        "agent": {
-          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
-          "protocol": "HTTP",
-          "owner": "markets-ops@example-bank.com",
-          "tools": [
-            {
-              "name": "get_trade"
-            },
-            {
-              "name": "get_confirmation"
-            },
-            {
-              "name": "classify_break"
-            },
-            {
-              "name": "open_ticket"
-            }
-          ]
+        "custom": {
+          "data": "{\"protocol\": \"HTTP\"}"
         }
-      }
+      },
+      "provenance": [
+        {
+          "relation": "DETECTED_FROM",
+          "sourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
+          "sourceType": "AWS::BedrockAgentCore::Runtime",
+          "sourceDetails": {
+            "agentcoreRuntime": {
+              "protocolConfiguration": {
+                "serverProtocol": "HTTP"
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }

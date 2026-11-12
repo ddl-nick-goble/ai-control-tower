@@ -1,0 +1,19 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "agentRuntimes": [
+      {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
+        "agentRuntimeId": "trade_break_triage-Mc2Fd6YjQ5",
+        "agentRuntimeVersion": "3",
+        "agentRuntimeName": "trade-break-triage",
+        "description": "Classifies equity and FX trade breaks and opens tickets.",
+        "lastUpdatedAt": "2026-11-05T16:41:30.944Z",
+        "status": "READY"
+      }
+    ]
+  }
+}

@@ -1,0 +1,386 @@
+{
+  "runtimes": {
+    "treasury_sweep_agent-Xk3Lq9ZpT2": {
+      "getAgentRuntime": {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
+        "agentRuntimeId": "treasury_sweep_agent-Xk3Lq9ZpT2",
+        "agentRuntimeName": "treasury-sweep-agent",
+        "agentRuntimeVersion": "3",
+        "description": "Sweeps excess cash between treasury accounts and posts journals.",
+        "status": "READY",
+        "createdAt": "2026-09-01T10:00:00.000Z",
+        "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
+        "roleArn": "arn:aws:iam::123456789012:role/agentcore-treasury-sweep-agent",
+        "workloadIdentityDetails": {
+          "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/treasury_sweep_agent-Xk3Lq9ZpT2"
+        },
+        "protocolConfiguration": {
+          "serverProtocol": "HTTP"
+        },
+        "networkConfiguration": {
+          "networkMode": "PUBLIC"
+        },
+        "authorizerConfiguration": {
+          "customJWTAuthorizer": {
+            "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
+            "allowedClients": [
+              "act-agents"
+            ]
+          }
+        },
+        "agentRuntimeArtifact": {
+          "containerConfiguration": {
+            "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/treasury_sweep_agent:v3"
+          }
+        },
+        "environmentVariables": {
+          "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "GATEWAY_URL": "https://treasury-gw-7q2k9x.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+          "MEMORY_ID": "mem-treasury-01",
+          "CORE_BANKING_API_KEY": "sk-live-9f3a7c21d4e84b6aa0"
+        }
+      },
+      "tags": {
+        "owner": "treasury-ops@example-bank.com",
+        "cost-center": "CC-2e4e",
+        "act:limit:transfer_funds": "250000USD"
+      },
+      "rolePolicy": {
+        "PolicyName": "agentcore-treasury-sweep-agent-data",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadData",
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:Scan"
+              ],
+              "Resource": [
+                "arn:aws:dynamodb:us-east-1:123456789012:table/treasury.cash_positions",
+                "arn:aws:dynamodb:us-east-1:123456789012:table/treasury.nostro_balances"
+              ]
+            }
+          ]
+        }
+      },
+      "gatewayTargets": {
+        "items": [
+          {
+            "targetId": "TREASURYRE01",
+            "name": "treasury-reads",
+            "status": "READY",
+            "description": "treasury-reads tools",
+            "createdAt": "2026-09-01T10:05:00.000Z",
+            "updatedAt": "2026-10-20T08:00:00.000Z",
+            "targetConfiguration": {
+              "mcp": {
+                "lambda": {
+                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:treasury-reads",
+                  "toolSchema": {
+                    "inlinePayload": [
+                      {
+                        "name": "get_balance",
+                        "description": "get balance",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "sweep_plan",
+                        "description": "sweep plan",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "get_fx_rate",
+                        "description": "get fx rate",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          {
+            "targetId": "TREASURYWR01",
+            "name": "treasury-writes",
+            "status": "READY",
+            "description": "treasury-writes tools",
+            "createdAt": "2026-09-01T10:05:00.000Z",
+            "updatedAt": "2026-10-20T08:00:00.000Z",
+            "targetConfiguration": {
+              "mcp": {
+                "lambda": {
+                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:treasury-writes",
+                  "toolSchema": {
+                    "inlinePayload": [
+                      {
+                        "name": "transfer_funds",
+                        "description": "transfer funds",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "post_journal_entry",
+                        "description": "post journal entry",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "kyc_refresh_agent-Rt7Hn4WvB8": {
+      "getAgentRuntime": {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
+        "agentRuntimeId": "kyc_refresh_agent-Rt7Hn4WvB8",
+        "agentRuntimeName": "kyc-refresh-agent",
+        "agentRuntimeVersion": "3",
+        "description": "Prepares periodic KYC refresh requests for corporate customers.",
+        "status": "READY",
+        "createdAt": "2026-09-01T10:00:00.000Z",
+        "lastUpdatedAt": "2026-10-28T09:05:12.087Z",
+        "roleArn": "arn:aws:iam::123456789012:role/agentcore-kyc-refresh-agent",
+        "workloadIdentityDetails": {
+          "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/kyc_refresh_agent-Rt7Hn4WvB8"
+        },
+        "protocolConfiguration": {
+          "serverProtocol": "HTTP"
+        },
+        "networkConfiguration": {
+          "networkMode": "PUBLIC"
+        },
+        "authorizerConfiguration": {
+          "customJWTAuthorizer": {
+            "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
+            "allowedClients": [
+              "act-agents"
+            ]
+          }
+        },
+        "agentRuntimeArtifact": {
+          "containerConfiguration": {
+            "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/kyc_refresh_agent:v3"
+          }
+        },
+        "environmentVariables": {
+          "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "GATEWAY_URL": "https://kyc-gw-3m8c4d.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+          "MEMORY_ID": "mem-kyc-01",
+          "CORE_BANKING_API_KEY": "sk-live-51c0be77a2d94f10b3"
+        }
+      },
+      "tags": {
+        "owner": "kyc-operations@example-bank.com",
+        "cost-center": "CC-c6f7"
+      },
+      "rolePolicy": {
+        "PolicyName": "agentcore-kyc-refresh-agent-data",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadData",
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:Scan"
+              ],
+              "Resource": [
+                "arn:aws:dynamodb:us-east-1:123456789012:table/customer.pii",
+                "arn:aws:dynamodb:us-east-1:123456789012:table/kyc.documents"
+              ]
+            }
+          ]
+        }
+      },
+      "gatewayTargets": {
+        "items": [
+          {
+            "targetId": "KYCTOOLS01",
+            "name": "kyc-tools",
+            "status": "READY",
+            "description": "kyc-tools tools",
+            "createdAt": "2026-09-01T10:05:00.000Z",
+            "updatedAt": "2026-10-20T08:00:00.000Z",
+            "targetConfiguration": {
+              "mcp": {
+                "lambda": {
+                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:kyc-tools",
+                  "toolSchema": {
+                    "inlinePayload": [
+                      {
+                        "name": "lookup_customer",
+                        "description": "lookup customer",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "fetch_sanctions_list",
+                        "description": "fetch sanctions list",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "draft_refresh_request",
+                        "description": "draft refresh request",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "update_kyc_status",
+                        "description": "update kyc status",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "trade_break_triage-Mc2Fd6YjQ5": {
+      "getAgentRuntime": {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
+        "agentRuntimeId": "trade_break_triage-Mc2Fd6YjQ5",
+        "agentRuntimeName": "trade-break-triage",
+        "agentRuntimeVersion": "3",
+        "description": "Classifies equity and FX trade breaks and opens tickets.",
+        "status": "READY",
+        "createdAt": "2026-09-01T10:00:00.000Z",
+        "lastUpdatedAt": "2026-11-05T16:41:30.944Z",
+        "roleArn": "arn:aws:iam::123456789012:role/agentcore-markets-shared-runtime",
+        "workloadIdentityDetails": {
+          "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/trade_break_triage-Mc2Fd6YjQ5"
+        },
+        "protocolConfiguration": {
+          "serverProtocol": "HTTP"
+        },
+        "networkConfiguration": {
+          "networkMode": "PUBLIC"
+        },
+        "authorizerConfiguration": {
+          "customJWTAuthorizer": {
+            "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
+            "allowedClients": [
+              "act-agents"
+            ]
+          }
+        },
+        "agentRuntimeArtifact": {
+          "containerConfiguration": {
+            "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/trade_break_triage:v3"
+          }
+        },
+        "environmentVariables": {
+          "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "GATEWAY_URL": "https://markets-gw-8d1z6w.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+          "MEMORY_ID": "mem-markets-01",
+          "CORE_BANKING_API_KEY": "sk-live-c84e19b05e3a47d2f6"
+        }
+      },
+      "tags": {
+        "owner": "markets-ops@example-bank.com",
+        "cost-center": "CC-ee9a"
+      },
+      "rolePolicy": {
+        "PolicyName": "agentcore-markets-shared-runtime-data",
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadData",
+              "Effect": "Allow",
+              "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:Query",
+                "dynamodb:Scan"
+              ],
+              "Resource": [
+                "arn:aws:dynamodb:us-east-1:123456789012:table/trades.equities",
+                "arn:aws:dynamodb:us-east-1:123456789012:table/trades.fx"
+              ]
+            }
+          ]
+        }
+      },
+      "gatewayTargets": {
+        "items": [
+          {
+            "targetId": "MARKETSTOO01",
+            "name": "markets-tools",
+            "status": "READY",
+            "description": "markets-tools tools",
+            "createdAt": "2026-09-01T10:05:00.000Z",
+            "updatedAt": "2026-10-20T08:00:00.000Z",
+            "targetConfiguration": {
+              "mcp": {
+                "lambda": {
+                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:markets-tools",
+                  "toolSchema": {
+                    "inlinePayload": [
+                      {
+                        "name": "get_trade",
+                        "description": "get trade",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "get_confirmation",
+                        "description": "get confirmation",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "classify_break",
+                        "description": "classify break",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      },
+                      {
+                        "name": "open_ticket",
+                        "description": "open ticket",
+                        "inputSchema": {
+                          "type": "object"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "roleUsage": {
+        "distinct": false,
+        "note": "the execution role is shared with other markets runtimes"
+      }
+    }
+  }
+}

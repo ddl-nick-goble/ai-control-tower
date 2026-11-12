@@ -8,17 +8,7 @@
       "description": "Sweeps excess cash between treasury accounts and posts journals.",
       "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
       "status": "READY",
-      "tags": {
-        "owner": "treasury-ops@example-bank.com",
-        "cost-center": "CC-2e4e"
-      },
-      "identity": {
-        "type": "iam_role",
-        "principal": "arn:aws:iam::123456789012:role/agentcore-treasury-sweep-agent",
-        "distinct": true
-      },
       "metadata": {
-        "owner": "treasury-ops@example-bank.com",
         "tools": [
           "get_balance",
           "sweep_plan",
@@ -26,26 +16,22 @@
           "transfer_funds",
           "post_journal_entry"
         ],
-        "data_scopes": [
-          "treasury.cash_positions",
-          "treasury.nostro_balances"
-        ],
         "systems": [
           "TMS",
           "CoreBanking",
           "SWIFT-gateway"
         ],
-        "value_limits": {
-          "transfer_funds": {
-            "amount": 250000,
-            "currency": "USD"
-          }
-        },
         "criteria": {
           "autonomy": "autonomous",
           "consequence": "moves_money",
           "human_in_loop": false,
           "customer_impact": "high"
+        },
+        "value_limits": {
+          "transfer_funds": {
+            "amount": 250000,
+            "currency": "USD"
+          }
         }
       }
     },
@@ -57,26 +43,12 @@
       "description": "Prepares periodic KYC refresh requests for corporate customers.",
       "lastUpdatedAt": "2026-10-28T09:05:12.087Z",
       "status": "READY",
-      "tags": {
-        "owner": "kyc-operations@example-bank.com",
-        "cost-center": "CC-c6f7"
-      },
-      "identity": {
-        "type": "iam_role",
-        "principal": "arn:aws:iam::123456789012:role/agentcore-kyc-refresh-agent",
-        "distinct": true
-      },
       "metadata": {
-        "owner": "kyc-operations@example-bank.com",
         "tools": [
           "lookup_customer",
           "fetch_sanctions_list",
           "draft_refresh_request",
           "update_kyc_status"
-        ],
-        "data_scopes": [
-          "customer.pii",
-          "kyc.documents"
         ],
         "systems": [
           "KYC-platform",
@@ -97,26 +69,12 @@
       "description": "Classifies equity and FX trade breaks and opens tickets.",
       "lastUpdatedAt": "2026-11-05T16:41:30.944Z",
       "status": "READY",
-      "tags": {
-        "owner": "markets-ops@example-bank.com",
-        "cost-center": "CC-ee9a"
-      },
-      "identity": {
-        "type": "none",
-        "principal": "arn:aws:iam::123456789012:role/agentcore-markets-shared-runtime",
-        "note": "shares the markets runtime execution role"
-      },
       "metadata": {
-        "owner": "markets-ops@example-bank.com",
         "tools": [
           "get_trade",
           "get_confirmation",
           "classify_break",
           "open_ticket"
-        ],
-        "data_scopes": [
-          "trades.equities",
-          "trades.fx"
         ],
         "systems": [
           "OMS",

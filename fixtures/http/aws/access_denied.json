@@ -1,0 +1,11 @@
+{
+  "status": 403,
+  "headers": {
+    "content-type": "application/json",
+    "x-amzn-errortype": "AccessDeniedException"
+  },
+  "json": {
+    "__type": "AccessDeniedException",
+    "message": "Your role is not authorized to perform: bedrock-agentcore:ListAgentRuntimes because no identity-based policy allows the action"
+  }
+}

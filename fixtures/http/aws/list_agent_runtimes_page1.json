@@ -1,0 +1,29 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "agentRuntimes": [
+      {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
+        "agentRuntimeId": "treasury_sweep_agent-Xk3Lq9ZpT2",
+        "agentRuntimeVersion": "3",
+        "agentRuntimeName": "treasury-sweep-agent",
+        "description": "Sweeps excess cash between treasury accounts and posts journals.",
+        "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
+        "status": "READY"
+      },
+      {
+        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
+        "agentRuntimeId": "kyc_refresh_agent-Rt7Hn4WvB8",
+        "agentRuntimeVersion": "3",
+        "agentRuntimeName": "kyc-refresh-agent",
+        "description": "Prepares periodic KYC refresh requests for corporate customers.",
+        "lastUpdatedAt": "2026-10-28T09:05:12.087Z",
+        "status": "READY"
+      }
+    ],
+    "nextToken": "eyJwYWdlIjoyLCJsYXN0Ijoia3ljX3JlZnJlc2hfYWdlbnQifQ=="
+  }
+}
