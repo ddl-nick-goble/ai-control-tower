@@ -3,7 +3,7 @@
 Every check is geometry or computed style on the seeded app (treasury-sweep-agent and its weekend-drift run).
 F-6 ratio rule: on the empty agent page at 1440 the two columns (data-testid-less .ag-main / .ag-side wrappers, found
 as the Overview card's column and the Findings card's column) must be balanced: the wider is at most 15% wider than
-the narrower, OR the main:side width ratio is at most 2:1 (main never more than twice the side).
+the narrower: main <= 1.5 x side.
 """
 import re
 import pathlib
@@ -129,9 +129,30 @@ def test_f6_empty_agent_page_columns_balanced_at_1440(page, shot, seeded):
         .first.locator("xpath=..").bounding_box()
     side = page.locator("section").filter(has=page.get_by_role("heading", name="Overview", exact=True)) \
         .first.locator("xpath=..").bounding_box()
-    big, small = max(main["width"], side["width"]), min(main["width"], side["width"])
-    ok = big <= small * 1.15 or main["width"] <= side["width"] * 2
+    ok = main["width"] <= side["width"] * 1.5
     assert ok, f"unbalanced columns: main {main['width']:.0f}px vs side {side['width']:.0f}px"
+    shot("then")
+
+
+def _side_width(page, aid):
+    _agent(page, aid)
+    settle(page)
+    return page.locator("section").filter(has=page.get_by_role("heading", name="Overview", exact=True)) \
+        .first.locator("xpath=..").bounding_box()["width"]
+
+
+def test_f6_populated_agent_page_side_column_keeps_normal_width(page, shot, seeded):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    w = _side_width(page, seeded["treasury_id"])
+    assert w <= 400, f"side column widened on populated page: {w:.0f}px"
+    shot("then")
+
+
+def test_f6_side_column_normal_when_one_main_card_empty(page, shot, seeded):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.route(re.compile(r"/api/agents/[^/]+/findings$"), lambda r: r.fulfill(json=[]))
+    w = _side_width(page, seeded["treasury_id"])
+    assert w <= 400, f"side column widened by one empty main card: {w:.0f}px"
     shot("then")
 
 
