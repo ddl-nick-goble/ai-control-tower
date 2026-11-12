@@ -19,34 +19,22 @@ import re
 import pytest
 from playwright.sync_api import expect
 
-from _server import start_app
+from _waits import settle, wait_true
+
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19a"
-
-
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
 @pytest.fixture(scope="module")
-def app(tmp_path_factory):
-    a = start_app(tmp_path_factory.mktemp("t19a"), seed=True)
-    try:
-        yield {"base_url": a.url, **a.ids}
-    finally:
-        a.stop()
+def app(app_session):
+    """The run's shared seeded app (conftest)."""
+    return app_session
 
 
 @pytest.fixture(scope="module")
-def demo_url(tmp_path_factory):
-    a = start_app(tmp_path_factory.mktemp("t19a-demo"), demo=True)
-    try:
-        yield a.url
-    finally:
-        a.stop()
+def demo_url(apps):
+    """The run's shared demo-mode app (conftest)."""
+    return apps(demo=True).url
 
 
 @pytest.fixture(scope="module")
@@ -285,7 +273,8 @@ def test_s2_table_sticky_header_hover_and_cells(page, shot):
         th.evaluate("e => getComputedStyle(e.parentElement).position") == "sticky" or \
         th.evaluate("e => getComputedStyle(e.closest('thead')).position") == "sticky"
     page.mouse.wheel(0, 400)
-    page.wait_for_timeout(300)
+    settle(page)
+    wait_true(page, "window.scrollY > 50", 1000)
     if page.evaluate("window.scrollY") > 50:
         assert 0 <= th.bounding_box()["y"] < 120, "header not stuck while scrolling"
     page.evaluate("window.scrollTo(0, 0)")
@@ -294,7 +283,12 @@ def test_s2_table_sticky_header_hover_and_cells(page, shot):
     r.scroll_into_view_if_needed()
     bg0 = r.evaluate("e => getComputedStyle(e.querySelector('td')).backgroundColor")
     r.hover()
-    page.wait_for_timeout(300)
+    r.evaluate("""(e, b) => new Promise(res => {  // wait (up to 2 s) for the hover transition to change the colour
+        const t0 = Date.now();
+        const f = () => (getComputedStyle(e.querySelector('td')).backgroundColor !== b || Date.now() - t0 > 2000)
+            ? res() : requestAnimationFrame(f);
+        f();
+    })""", bg0)
     bg1 = r.evaluate("e => getComputedStyle(e.querySelector('td')).backgroundColor")
     assert bg0 != bg1, "no row hover style"
     first = rows.first
@@ -383,7 +377,7 @@ def test_s5_no_horizontal_scroll(page, shot, size, route):
     page.set_viewport_size({"width": size[0], "height": size[1]})
     page.goto(route)
     expect(page.get_by_role("heading", level=1)).to_be_visible()
-    page.wait_for_timeout(300)
+    settle(page)
     assert _no_hscroll(page)
     shot(f"then-{size[0]}")
 

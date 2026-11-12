@@ -30,18 +30,12 @@ import urllib.request
 import pytest
 from playwright.sync_api import expect
 
+from _waits import settle
+
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-PORT_A, PORT_B, PORT_C = "9893", "9894", "9895"
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-39-run3"
 OWNER = {"X-Domino-User-Id": "owner-1", "X-Domino-User": "owner.user"}
 PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
 SECRET = "s3cr3t-VALUE-9f8e7d6c"
-
-
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
 # Every env var that names a setting the page manages: stripped so results do not depend on the workspace.
@@ -59,73 +53,25 @@ def _managed_env():
 _MANAGED_ENV = _managed_env()
 
 
-def _start(tmp, port, extra):
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("ACT_DEMO", "ACT_SECRET", "LLM_GATEWAY")) and k not in _MANAGED_ENV}
-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0", "ACT_DB": str(tmp / "act.db"),
-                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": "owner.user",
-                "ACT_WORKSPACE_OWNER_MODE": "0"})  # explicit: a Workspace would otherwise auto-enable owner mode
-    env.update(extra)
-    log = tmp / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{port}/"
-    return proc, logf, url
-
-
-def _stop(proc, logf):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=20)
-    except Exception:
-        os.killpg(proc.pid, signal.SIGKILL)
-    logf.close()
+def _app(apps, extra):
+    # owner mode pinned off explicitly: a Workspace would otherwise auto-enable it
+    return apps(external=False, strip_env=_MANAGED_ENV | {"LLM_GATEWAY_URL"},
+                extra_env={"DOMINO_PROJECT_OWNER": "owner.user", "ACT_WORKSPACE_OWNER_MODE": "0", **extra}).url
 
 
 @pytest.fixture(scope="module")
-def app_a(tmp_path_factory):
-    p = _start(tmp_path_factory.mktemp("t39a"), PORT_A, {"LLM_GATEWAY_URL": "http://gateway.invalid/"})
-    yield p[2]
-    _stop(p[0], p[1])
+def app_a(apps):
+    return _app(apps, {"LLM_GATEWAY_URL": "http://gateway.invalid/"})
 
 
 @pytest.fixture(scope="module")
-def app_b(tmp_path_factory):
-    p = _start(tmp_path_factory.mktemp("t39b"), PORT_B, {"ACT_SECRET_KEY": "e2e-test-secret-key-0123456789abcdef"})
-    yield p[2]
-    _stop(p[0], p[1])
+def app_b(apps):
+    return _app(apps, {"ACT_SECRET_KEY": "e2e-test-secret-key-0123456789abcdef"})
 
 
 @pytest.fixture(scope="module")
-def app_c(tmp_path_factory):
-    p = _start(tmp_path_factory.mktemp("t39c"), PORT_C, {"ACT_DEMO_MODE": "1"})
-    yield p[2]
-    _stop(p[0], p[1])
+def app_c(apps):
+    return _app(apps, {"ACT_DEMO_MODE": "1"})
 
 
 @pytest.fixture(scope="module")
@@ -331,16 +277,13 @@ def test_st7_plain_field_saved_confirmation_and_persists(page, shot, owner):
 
 
 def test_st7_loading_state(page, shot, owner):
-    def slow(route):
-        time.sleep(1.5)
-        try:
-            route.continue_()
-        except Exception:
-            pass  # target closed
-    page.route(re.compile(r"/api/settings$"), slow)
+    held = []  # hold the settings response until the loading state has been asserted
+    page.route(re.compile(r"/api/settings$"), held.append)
     page.goto("./#/settings")
     expect(page.get_by_role("status").filter(has_text=re.compile("loading", re.I)).first).to_be_visible()
     shot("then")
+    for route in held:
+        route.continue_()
 
 
 def test_st7_error_states(page, shot, owner):
@@ -382,7 +325,7 @@ CONTRAST_JS = """() => {
 def test_st7_no_hscroll_and_contrast(page, shot, owner, w, h):
     page.set_viewport_size({"width": w, "height": h})
     _open(page)
-    page.wait_for_timeout(300)
+    settle(page)
     assert page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
     bad = page.evaluate(CONTRAST_JS)
     assert not bad, bad[:10]

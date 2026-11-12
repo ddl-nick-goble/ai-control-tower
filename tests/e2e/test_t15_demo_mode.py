@@ -1,6 +1,6 @@
 """T-15 e2e: one-switch demo mode (D-2..D-10).
 
-One app on a free port via app.sh (ACT_DEMO_MODE=1, temp ACT_DB), reset per test; the off-by-default test (last) restarts it without ACT_DEMO_MODE.
+The shared demo app (ACT_DEMO_MODE=1, temp ACT_DB, conftest registry), reset per test; the off-by-default test (last) checks the shared non-demo app instead.
 data-testid contract (suggested; role/text locators are primary):
   demo-banner  persistent banner with "Demo mode: simulated data and stand-ins" and the stand-in labels
 Buttons (role=button): "Reset demo", "Approve as demo approver", "Run recon agent".
@@ -13,27 +13,7 @@ import urllib.request
 import pytest
 from playwright.sync_api import expect
 
-from _server import start_app
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-15"
-
-
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
-
-
-def _start(tmp_path, demo, port=None):
-    return start_app(tmp_path, demo=demo, external=False, port=port)
-
-
-def _stop(app):
-    app.stop()
-
-
-_APP = {}
 
 
 @pytest.fixture
@@ -43,14 +23,9 @@ def browser_context_args(browser_context_args, demo_url):
 
 
 @pytest.fixture(scope="module")
-def demo_url(tmp_path_factory):
-    """One demo-mode app for the session; the off-by-default test swaps it for a non-demo app."""
-    app = _start(tmp_path_factory.mktemp("t15-demo"), True)
-    _APP["app"] = app
-    try:
-        yield app.url
-    finally:
-        _stop(_APP["app"])
+def demo_url(apps):
+    """The run's shared demo-mode app (conftest); the off-by-default test uses the shared non-demo app instead."""
+    return apps(demo=True).url
 
 
 @pytest.fixture(autouse=True)
@@ -178,18 +153,15 @@ def test_d2_fresh_fleet(page, shot, demo_url):
     shot("then")
 
 
-def test_d10_off_by_default(page, shot, demo_url, tmp_path_factory):
-    old = _APP["app"]
-    _stop(old)
-    # restart without demo mode on the port just released, so this test's page (base_url = demo_url) reaches it
-    _APP["app"] = _start(tmp_path_factory.mktemp("t15-off"), False, port=old.port)
-    assert page.request.get("api/health").json().get("demo_mode") in (False, None)
-    page.goto("./#/")
+def test_d10_off_by_default(page, shot, demo_url, apps):
+    # the run's shared non-demo app (ACT_DEMO_MODE unset); absolute URLs because this module's base_url is the demo app
+    off = apps().url
+    assert page.request.get(off + "api/health").json().get("demo_mode") in (False, None)
+    page.goto(off + "#/")
     expect(page.get_by_role("heading").first).to_be_visible()
     expect(page.get_by_test_id("demo-banner")).to_have_count(0)
     expect(page.get_by_text("Demo mode: simulated data and stand-ins")).to_have_count(0)
     for name in ("Approve as demo approver", "Run recon agent", "Reset demo"):
         expect(page.get_by_role("button", name=name)).to_have_count(0)
-    assert page.request.post("api/demo/reset").status == 404
+    assert page.request.post(off + "api/demo/reset").status == 404
     shot("then")
-    _stop(_APP["app"])

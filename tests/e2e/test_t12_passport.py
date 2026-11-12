@@ -116,7 +116,7 @@ def tampered_url(tmp_path):
     import socket
     import subprocess
     import sys
-    import time
+    from _server import wait_port
     card = json.loads((ROOT / "fixtures/external/agent-card-signed.json").read_text())
     card["description"] = card["description"] + " (tampered)"
     d = tmp_path / "srv" / ".well-known"
@@ -128,12 +128,7 @@ def tampered_url(tmp_path):
     proc = subprocess.Popen([sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1",
                              "--directory", str(tmp_path / "srv")],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(40):
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.5).close()
-            break
-        except OSError:
-            time.sleep(0.25)
+    wait_port(port)
     yield f"http://127.0.0.1:{port}/.well-known/agent-card.json"
     proc.terminate()
     proc.wait(timeout=10)

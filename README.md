@@ -48,10 +48,35 @@ Details and go-live steps are in [docs/INTEGRATION.md](docs/INTEGRATION.md).
 
 ```
 PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests -q -p no:cacheprovider --ignore=tests/e2e
-PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright QA_RUN_DIR=<dir> python3 -m pytest tests/e2e -q -p no:cacheprovider
+PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright python3 -m pytest tests/e2e -q -p no:cacheprovider -p no:xdist   # regression
+PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright python3 -m pytest tests/e2e -q -p no:cacheprovider -p no:xdist -m smoke   # ~15 tests
 ```
 
-The browser suite serves the app on port 9888 and needs Playwright browsers.
+Browser suite (`tests/e2e`, serial on a 1-core machine; needs Playwright browsers):
+
+- `pytest.ini` runs `-m "not capture"` by default: capture tests (`@pytest.mark.capture`, screenshots only) are not
+  regression tests. Run them explicitly with `-m capture`.
+- `-m smoke` selects about 15 tests (shell, nav, Fleet, Agent, Run, Settings load) for a quick check after a change.
+- Apps start on free OS-assigned ports (never a fixed port), once per distinct environment per run, and are shared by
+  the modules that need that environment (the seed runs once; each module starts from the seeded DB again). See
+  `tests/e2e/conftest.py` (`apps(...)`) and `tests/e2e/_server.py`.
+- Screenshots: regression runs write a viewport PNG only for a failed test (`<test>-FAILED.png`). Set `QA_SHOTS=1` to
+  also write the `shot("then")` PNGs; `QA_RUN_DIR=<dir>` chooses the folder (default `test-results/`).
+  `shot(step, full_page=True)` takes a full-page one.
+- No `wait_for_timeout` / `time.sleep` in `test_*.py` (a guard test fails if one is added); use `expect(...)`, the helpers
+  in `tests/e2e/_waits.py`, or `_server.wait_until`.
+
+### Capture CLI (design review)
+
+`tests/e2e/capture.py` starts the app on a free port, takes full-page PNGs of the routes you name, and stops the app:
+
+```
+python3 tests/e2e/capture.py --out DIR --widths 1440,1024 --demo --route '#/agents/{treasury_id}' --route '#/settings' \
+    [--delay-api 'api/settings:3000'] [--fail-api 'api/agents/*:500'] [--as owner|admin|NAME] [--no-auth]
+```
+
+`--delay-api` holds matching API responses (loading states); `--fail-api` answers with an HTTP status (error states).
+`python3 tests/e2e/capture.py -h` lists all options.
 
 ## App Preview and published Apps
 

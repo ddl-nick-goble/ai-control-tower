@@ -9,27 +9,15 @@ import re
 import pytest
 from playwright.sync_api import expect
 
-from _server import start_app
-
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19a"
 MEANINGS = re.compile(r"Highest consequence|High consequence|Moderate consequence|Lowest consequence")
 UNAVAILABLE = re.compile(r"unavailable", re.I)
 
 
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
-
-
 @pytest.fixture(scope="module")
-def base_url(tmp_path_factory):
-    app = start_app(tmp_path_factory.mktemp("t19a-p2"))
-    try:
-        yield app.url
-    finally:
-        app.stop()
+def base_url(apps):
+    """The run's shared unseeded app (conftest)."""
+    return apps().url
 
 
 @pytest.fixture

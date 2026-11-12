@@ -1,14 +1,19 @@
 """T-19a QA viewport captures (not full-page). Output: /mnt/data/ai-control-tower/qa/T-19a/."""
 import re
 
+import pytest
 from playwright.sync_api import expect
+
+from _waits import settle
+
+pytestmark = pytest.mark.capture
 
 from test_t19a_shell_fleet import (SHOT_DIR, app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
                                    seeded)
 
 
 def _snap(page, name):
-    page.wait_for_timeout(300)
+    settle(page)
     page.screenshot(path=f"{SHOT_DIR}/{name}.png", full_page=False)
 
 

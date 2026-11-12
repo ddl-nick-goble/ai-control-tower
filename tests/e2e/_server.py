@@ -9,6 +9,7 @@ import pathlib
 import re
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -39,8 +40,33 @@ def _health(url):
         return False
 
 
+def copy_db(src, dst):
+    """Consistent copy of a SQLite DB through the backup API; also safe onto a DB another process has open."""
+    s, d = sqlite3.connect(str(src)), sqlite3.connect(str(dst), timeout=30)
+    try:
+        s.backup(d)
+    finally:
+        d.close()
+        s.close()
+
+
+_SEEDED = {}  # seed once per run: {"db": template path, "ids": ids}
+
+
 def seed_db(db_path, env=None):
-    """Run tests/e2e/seed.py against db_path; returns the id dict it prints."""
+    """Seed db_path with tests/e2e/seed.py; returns the id dict it prints. The seed runs once per process: later calls
+    copy the seeded DB."""
+    if _SEEDED:
+        copy_db(_SEEDED["db"], db_path)
+        return dict(_SEEDED["ids"])
+    ids = _run_seed(db_path, env)
+    tpl = pathlib.Path(tempfile.mkdtemp(prefix="act-e2e-seed-")) / "seeded.db"
+    copy_db(db_path, tpl)
+    _SEEDED.update(db=tpl, ids=ids)
+    return dict(ids)
+
+
+def _run_seed(db_path, env=None):
     env = {**(env or os.environ), "PYTHONDONTWRITEBYTECODE": "1"}
     out = subprocess.run([sys.executable, str(ROOT / "tests" / "e2e" / "seed.py"), str(db_path)], cwd=ROOT, env=env,
                          capture_output=True, text=True, timeout=180)
@@ -130,3 +156,67 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
         app.url = url
         return app
     raise AssertionError(f"app failed to start:\n{last}")
+
+
+def wait_until(cond, timeout=10.0, interval=0.25, what="condition"):
+    """Documented polling helper: call cond() until it returns truthy or `timeout` seconds pass."""
+    end = time.time() + timeout
+    while True:
+        v = cond()
+        if v:
+            return v
+        if time.time() >= end:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(interval)
+
+
+def wait_port(port, host="127.0.0.1", timeout=10.0):
+    """Wait until something accepts TCP connections on host:port."""
+    def up():
+        try:
+            socket.create_connection((host, port), timeout=0.5).close()
+            return True
+        except OSError:
+            return False
+    wait_until(up, timeout, 0.25, f"port {port}")
+
+
+class AppRegistry:
+    """One running app per distinct environment, started lazily and cached by an env key for the whole run.
+
+    The first get() for a key starts the app (the seeded DB is copied from the one seed) and snapshots its DB.
+    reset() (called at each module start) restores every snapshot over the live DB, so modules that share an
+    environment still begin from a fresh DB without a restart. Demo apps are not restored (their tests reset the
+    state through the demo API).
+    """
+
+    def __init__(self, base_tmp):
+        self.base_tmp = pathlib.Path(base_tmp)
+        self.apps, self.snap, self.starts = {}, {}, []
+
+    @staticmethod
+    def key(seed=False, demo=False, external=True, extra_env=None, strip_env=()):
+        return (bool(seed), bool(demo), bool(external), tuple(sorted((extra_env or {}).items())),
+                tuple(sorted(set(strip_env))))
+
+    def get(self, *, seed=False, demo=False, external=True, extra_env=None, strip_env=()):
+        key = self.key(seed, demo, external, extra_env, strip_env)
+        app = self.apps.get(key)
+        if app is None:
+            tmp = self.base_tmp / f"app{len(self.apps)}"
+            app = start_app(tmp, seed=seed, demo=demo, external=external, extra_env=extra_env, strip_env=strip_env)
+            self.apps[key] = app
+            self.starts.append(key)
+            if not demo and app.db_path.exists():
+                self.snap[key] = tmp / "snapshot.db"
+                copy_db(app.db_path, self.snap[key])
+        return app
+
+    def reset(self):
+        for key, snap in self.snap.items():
+            copy_db(snap, self.apps[key].db_path)
+
+    def stop_all(self):
+        for app in self.apps.values():
+            app.stop()
+        self.apps.clear()

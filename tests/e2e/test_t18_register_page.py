@@ -17,32 +17,22 @@ import re
 import pytest
 from playwright.sync_api import expect
 
-from _server import start_app
+from _waits import round_trip, settle, wait_true
+
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-18"
 NAMES = ["Decision impact", "Financial exposure", "Customer impact", "Autonomy", "Data sensitivity",
          "Reversibility", "Regulatory exposure"]
 KEYS = ["decision_impact", "financial_exposure", "customer_impact", "autonomy", "data_sensitivity",
         "reversibility", "regulatory_exposure"]
 
 
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
-
-
-# Module-scoped app on its own port; never starts the shared app. The conftest's session-scoped base_url is shadowed
+# Unseeded app shared per run (conftest registry; DB restored per module). The conftest's session-scoped base_url is shadowed
 # here, and browser_context_args is overridden at function scope (not chaining to the session one, which would
 # cache this module's URL for every later module or start the shared app).
 @pytest.fixture(scope="module")
-def base_url(tmp_path_factory):
-    app = start_app(tmp_path_factory.mktemp("t18"))
-    try:
-        yield app.url
-    finally:
-        app.stop()
+def base_url(apps):
+    return apps().url
 
 
 @pytest.fixture
@@ -105,7 +95,8 @@ def test_r1_two_columns_sticky_at_1440(page, shot):
     expect(summary.get_by_test_id("summary-scopes-count")).to_be_visible()
     assert _no_hscroll(page)
     page.mouse.wheel(0, 900)
-    page.wait_for_timeout(300)
+    settle(page)
+    wait_true(page, "window.scrollY > 100", 2000)
     assert page.evaluate("window.scrollY") > 100, "page too short to scroll: form not substantial"
     top = summary.bounding_box()["y"]
     assert 0 <= top < 200, f"summary not sticky, top={top}"
@@ -281,7 +272,8 @@ def test_r7_busy_and_no_double_submit(page, shot, card_urls):
     expect(busy).to_have_text(re.compile("Registering…"))
     busy.click(force=True)
     page.keyboard.press("Enter")
-    page.wait_for_timeout(500)
+    settle(page)
+    round_trip(page)  # any second submission would have reached the route by now
     assert len(held) == 1, f"{len(held)} submissions while busy"
     shot("then")
     held[0].continue_()  # release the held request
