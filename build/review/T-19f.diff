@@ -1,0 +1,298 @@
+diff --git a/frontend/src/components/agentui.jsx b/frontend/src/components/agentui.jsx
+index b15ca91..8a427a0 100644
+--- a/frontend/src/components/agentui.jsx
++++ b/frontend/src/components/agentui.jsx
+@@ -136,7 +136,7 @@ export function ErrorPage({ title, message, onRetry, back }) {
+         <h2 className="ds-empty-title">{title}</h2>
+         <p className="ds-helper">{message}</p>
+         <div className="ag-row">
+-          <button type="button" className="ds-btn" onClick={onRetry}>Try again</button>
++          <button type="button" className="ds-btn ds-btn-ghost" onClick={onRetry}>Try again</button>
+           {back}
+         </div>
+       </div>
+diff --git a/frontend/src/design.css b/frontend/src/design.css
+index b897b4b..5e118c0 100644
+--- a/frontend/src/design.css
++++ b/frontend/src/design.css
+@@ -443,9 +443,13 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
+ .ag-card:has(> .ag-card-body > .ag-findings) { overflow: hidden }
+ 
+ /* T-19b r3 */
+-.ds-table th.c-name-h, .ds-table th:nth-child(2) { min-width: 180px }
+-.ds-table th { box-shadow: 0 1px 0 var(--ds-line), 0 2px 4px -2px rgba(16, 24, 40, .12) }
+-.ds-table-wrap { min-height: 100vh }
++.ds-table:has(col.c-name) th:nth-child(2) { min-width: 180px }
++.ds-table-card > .ds-table th { box-shadow: 0 1px 0 var(--ds-line), 0 2px 4px -2px rgba(16, 24, 40, .12) }
++.ag-runs col.c-rgo { width: 56px } .ag-runs td.ag-go { padding-right: var(--ds-s2) }
++.ag-runs th.num, .ag-runs td.num { padding-right: var(--ds-s4) }
++.ag-cols:has(.ag-main .ag-empty) .ag-side { flex: 0 0 34% }
++.rt-seg-btn:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
++.ag-copy:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
+ .ag-card-body:has(> .ag-findings) { padding: 0 }
+ .ag-skel-dependencies { justify-content: center }
+ .ag-ph { display: block } 
+diff --git a/tests/e2e/conftest.py b/tests/e2e/conftest.py
+index 2fa291d..c4269e8 100644
+--- a/tests/e2e/conftest.py
++++ b/tests/e2e/conftest.py
+@@ -139,6 +139,7 @@ SMOKE = {
+                               "test_s2_summary_tiles", "test_s2_whole_row_click_opens_agent"},
+     "test_t9_console": {"test_ac5_timeline_matches_api_and_renders_fast",
+                         "test_agent_page_tier_card_identity_manifest_approvals"},
++    "test_t19f_tables": {"test_f1_short_fleet_table_has_no_blank_viewport_under_it"},
+     "test_t19b_agent_run_pages": {"test_s3_header_name_chip_tier_status_actions_right",
+                                   "test_s4_header_run_id_copy_agent_link_range_count",
+                                   "test_s6_existing_testids_on_agent_and_run"},
+diff --git a/tests/e2e/test_t19a_shell_fleet.py b/tests/e2e/test_t19a_shell_fleet.py
+index af5666e..6f57ebd 100644
+--- a/tests/e2e/test_t19a_shell_fleet.py
++++ b/tests/e2e/test_t19a_shell_fleet.py
+@@ -264,19 +264,34 @@ def test_s2_filter_bar_search_and_count(page, shot):
+     shot("then")
+ 
+ 
+-def test_s2_table_sticky_header_hover_and_cells(page, shot):
+-    _fleet(page)
++@pytest.mark.parametrize("banner", [False, True], ids=["plain", "demo-banner"])
++def test_s2_table_sticky_header_hover_and_cells(page, shot, banner, demo_url):
++    # Seed enough agents (60 mocked rows, ~2600px of table) that the page really scrolls, with and without the banner.
++    origin = demo_url if banner else "./"
++    base = page.request.get(origin + "api/agents").json()
++    rows = []
++    for i in range(60):
++        r = dict(base[i % len(base)])
++        r["id"], r["name"] = f"mock-{i:03d}", f"mock-agent-{i:03d}"
++        rows.append(r)
++    page.route(re.compile(r"/api/agents(\?.*)?$"), lambda r: r.fulfill(json=rows))
++    page.goto(origin + "#/")
++    if banner:
++        expect(page.get_by_test_id("demo-banner")).to_be_visible()
++    expect(page.get_by_test_id("fleet-row")).to_have_count(60)
+     for col in ("Source", "Name", "Owner", "Tier", "Status", "Open findings", "Last seen"):
+         expect(page.get_by_role("columnheader", name=re.compile(col, re.I))).to_be_visible()
+     th = page.get_by_role("columnheader").first
+     assert th.evaluate("e => getComputedStyle(e).position") == "sticky" or \
+         th.evaluate("e => getComputedStyle(e.parentElement).position") == "sticky" or \
+         th.evaluate("e => getComputedStyle(e.closest('thead')).position") == "sticky"
+-    page.mouse.wheel(0, 400)
++    assert page.evaluate("document.documentElement.scrollHeight") > page.evaluate("innerHeight") + 800, \
++        "page does not scroll for real"
++    page.mouse.wheel(0, 1200)
+     settle(page)
+-    wait_true(page, "window.scrollY > 50", 1000)
+-    if page.evaluate("window.scrollY") > 50:
+-        assert 0 <= th.bounding_box()["y"] < 120, "header not stuck while scrolling"
++    assert wait_true(page, "window.scrollY > 500", 3000), "page did not scroll"
++    assert 0 <= th.bounding_box()["y"] < 120, "header not stuck while scrolling"
++    expect(th).to_be_in_viewport()
+     page.evaluate("window.scrollTo(0, 0)")
+     rows = page.get_by_test_id("fleet-row")
+     r = rows.nth(1)
+diff --git a/tests/e2e/test_t19f_tables.py b/tests/e2e/test_t19f_tables.py
+new file mode 100644
+index 0000000..5199756
+--- /dev/null
++++ b/tests/e2e/test_t19f_tables.py
+@@ -0,0 +1,201 @@
++"""T-19f e2e: table CSS and Agent/Run page design fixes (F-1, F-3 .. F-9; F-2 lives in test_t19a_shell_fleet).
++
++Every check is geometry or computed style on the seeded app (treasury-sweep-agent and its weekend-drift run).
++F-6 ratio rule: on the empty agent page at 1440 the two columns (data-testid-less .ag-main / .ag-side wrappers, found
++as the Overview card's column and the Findings card's column) must be balanced: the wider is at most 15% wider than
++the narrower, OR the main:side width ratio is at most 2:1 (main never more than twice the side).
++"""
++import re
++import pathlib
++
++import pytest
++from playwright.sync_api import expect
++
++from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
++                                   seeded)
++from _waits import settle
++
++CSS = pathlib.Path(__file__).resolve().parent.parent.parent / "frontend" / "src" / "design.css"
++
++
++def _fleet(page):
++    page.goto("./#/")
++    expect(page.get_by_test_id("fleet-row").first).to_be_visible()
++
++
++def _agent(page, aid):
++    page.goto(f"./#/agents/{aid}")
++    expect(page.get_by_role("heading", level=1)).to_be_visible()
++
++
++def _runs_card(page):
++    return page.get_by_role("region", name="Runs", exact=True).or_(
++        page.locator("section").filter(has=page.get_by_role("heading", name="Runs", exact=True)))
++
++
++def _style(loc, prop):
++    return loc.evaluate("(e, p) => getComputedStyle(e)[p]", prop)
++
++
++def _red(color):
++    r, g, b = [float(x) for x in re.findall(r"[\d.]+", color)[:3]]
++    return r >= 150 and g <= 100 and b <= 100
++
++
++# ---- F-1 ----------------------------------------------------------------------------------------------------
++def test_f1_short_fleet_table_has_no_blank_viewport_under_it(page, shot):
++    _fleet(page)
++    settle(page)
++    rows = page.get_by_test_id("fleet-row")
++    card = page.locator(".ds-table-card").filter(has=rows.first)
++    wrap = card.locator("xpath=..")
++    last = rows.last.bounding_box()
++    last_bottom = last["y"] + last["height"]
++    cb, wb = card.bounding_box(), wrap.bounding_box()
++    assert cb["y"] + cb["height"] - last_bottom <= 24, "table card extends far below the last row"
++    assert wb["y"] + wb["height"] - last_bottom <= 64, "table wrapper leaves a blank band under the last row"
++    assert wb["height"] < 900 * 0.9, "wrapper is about a viewport tall for a short table"
++    shot("then")
++
++
++# ---- F-3 ----------------------------------------------------------------------------------------------------
++def test_f3_th_rules_scoped_to_fleet_table(page, shot, seeded):
++    assert "c-name-h" not in CSS.read_text(), "dead .c-name-h rule still in design.css"
++    _fleet(page)
++    name_th = page.get_by_role("columnheader", name=re.compile("Name", re.I))
++    assert name_th.bounding_box()["width"] >= 180
++    assert _style(name_th, "boxShadow") != "none", "Fleet th lost its shadow"
++    _agent(page, seeded["treasury_id"])
++    runs = _runs_card(page).get_by_role("table")
++    expect(runs.get_by_test_id("run-item").first).to_be_visible()
++    for th in runs.get_by_role("columnheader").all():
++        assert _style(th, "boxShadow") == "none", "Runs table th inherits the Fleet shadow"
++    second = runs.get_by_role("columnheader").nth(1)
++    assert _style(second, "minWidth") in ("0px", "auto"), "Runs 2nd th inherits the Fleet name min-width"
++    for table in page.locator("table.ag-table-static").all():
++        for th in table.get_by_role("columnheader").all():
++            assert _style(th, "boxShadow") == "none"
++        assert _style(table.get_by_role("columnheader").nth(1), "minWidth") in ("0px", "auto")
++    shot("then")
++
++
++# ---- F-4 ----------------------------------------------------------------------------------------------------
++@pytest.mark.parametrize("w", [1024, 1440])
++def test_f4_spans_text_never_touches_chevron(page, shot, seeded, w):
++    page.set_viewport_size({"width": w, "height": 900})
++    _agent(page, seeded["treasury_id"])
++    rows = _runs_card(page).get_by_test_id("run-item")
++    expect(rows.first).to_be_visible()
++    for row in rows.all():
++        text = row.locator("td").nth(2)
++        chev = row.locator("td").nth(3).locator("svg")
++        t = text.evaluate("""e => { const r = document.createRange(); r.selectNodeContents(e);
++            const b = r.getBoundingClientRect(); return {l: b.left, r: b.right, t: b.top, b: b.bottom}; }""")
++        c = chev.bounding_box()
++        assert "span" in text.inner_text()
++        assert c["x"] - t["r"] >= 8, f"spans text ends {t['r']}, chevron starts {c['x']} at {w}px"
++    shot("then")
++
++
++# ---- F-5 ----------------------------------------------------------------------------------------------------
++def test_f5_violation_row_has_red_left_bar(page, shot, seeded):
++    _agent(page, seeded["treasury_id"])
++    if page.get_by_role("tab", name="Findings", exact=True).count():
++        page.get_by_role("tab", name="Findings", exact=True).click()
++    page.get_by_test_id("finding-timeline-link").first.click()
++    v = page.locator("[data-testid=timeline-event][data-violation=true]").first
++    expect(v).to_be_visible()
++    settle(page)
++    border = v.evaluate("""e => { const c = getComputedStyle(e);
++        return [c.borderLeftColor, parseFloat(c.borderLeftWidth), c.borderLeftStyle]; }""")
++    before = v.evaluate("""e => { const c = getComputedStyle(e, '::before');
++        return [c.backgroundColor, parseFloat(c.width) || 0, c.content]; }""")
++    bar_border = _red(border[0]) and border[1] >= 2 and border[2] != "none"
++    bar_before = before[2] not in ("none", "normal") and _red(before[0]) and before[1] >= 2
++    assert bar_border or bar_before, f"no red left bar: border={border} before={before}"
++    shot("then")
++
++
++# ---- F-6 ----------------------------------------------------------------------------------------------------
++def test_f6_empty_agent_page_columns_balanced_at_1440(page, shot, seeded):
++    page.set_viewport_size({"width": 1440, "height": 900})
++    rid = seeded["recon_id"]
++    page.route(re.compile(r"/api/agents/[^/]+/runs$"), lambda r: r.fulfill(json=[]))
++    page.route(re.compile(r"/api/agents/[^/]+/findings$"), lambda r: r.fulfill(json=[]))
++    _agent(page, rid)
++    expect(page.get_by_text(re.compile("No runs", re.I)).first).to_be_visible()
++    settle(page)
++    main = page.locator("section").filter(has=page.get_by_role("heading", name="Runs", exact=True)) \
++        .first.locator("xpath=..").bounding_box()
++    side = page.locator("section").filter(has=page.get_by_role("heading", name="Overview", exact=True)) \
++        .first.locator("xpath=..").bounding_box()
++    big, small = max(main["width"], side["width"]), min(main["width"], side["width"])
++    ok = big <= small * 1.15 or main["width"] <= side["width"] * 2
++    assert ok, f"unbalanced columns: main {main['width']:.0f}px vs side {side['width']:.0f}px"
++    shot("then")
++
++
++# ---- F-7 ----------------------------------------------------------------------------------------------------
++def test_f7_runs_thead_fill_uniform(page, shot, seeded):
++    _agent(page, seeded["treasury_id"])
++    runs = _runs_card(page).get_by_role("table")
++    expect(runs.get_by_test_id("run-item").first).to_be_visible()
++    ths = runs.locator("th").all()
++    assert len(ths) >= 4
++    fills = [_style(th, "backgroundColor") for th in ths]
++    images = [_style(th, "backgroundImage") for th in ths]
++    assert len(set(fills)) == 1 and fills[0] != "rgba(0, 0, 0, 0)", fills
++    assert len(set(images)) == 1, images
++    shot("then")
++
++
++# ---- F-8 ----------------------------------------------------------------------------------------------------
++def _is_ghost(btn):
++    return btn.evaluate("""e => { const c = getComputedStyle(e);
++        const clear = x => x === 'transparent' || /rgba\\(.*,\\s*0\\)$/.test(x);
++        return e.classList.contains('ds-btn-ghost') && clear(c.backgroundColor) && clear(c.borderTopColor); }""")
++
++
++def test_f8_card_level_try_again_is_ghost_button(page, shot, seeded):
++    page.route(re.compile(r"/api/agents/[^/]+/runs$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
++    _agent(page, seeded["treasury_id"])
++    card = _runs_card(page)
++    btn = card.get_by_role("button", name="Try again")
++    expect(btn).to_be_visible()
++    assert _is_ghost(btn), "inline card Try again is not a ghost button"
++    page.unroute(re.compile(r"/api/agents/[^/]+/runs$"))
++    page.route(re.compile(r"/api/agents/[^/]+$"), lambda r: r.fulfill(status=500, json={"detail": "boom"}))
++    page.goto(f"./#/agents/{seeded['recon_id']}")
++    expect(page.get_by_role("alert").first).to_be_visible()
++    btn = page.get_by_role("alert").get_by_role("button", name="Try again")
++    expect(btn).to_be_visible()
++    assert _is_ghost(btn), "error card Try again is a bordered default button, not ghost"
++    shot("then")
++
++
++# ---- F-9 ----------------------------------------------------------------------------------------------------
++def test_f9_filter_chips_and_copy_buttons_show_focus_ring_on_keyboard(page, shot, seeded):
++    page.goto(f"./#/runs/{seeded['run_id']}")
++    expect(page.get_by_test_id("timeline-event").first).to_be_visible()
++    seen = {"chip": 0, "copy": 0}
++    bad = []
++    for _ in range(80):
++        page.keyboard.press("Tab")
++        info = page.evaluate("""() => { const e = document.activeElement; if (!e || e === document.body) return null;
++            const grp = e.closest('[role=group]');
++            const kind = e.matches('[data-testid=copy-button]') ? 'copy'
++                : (grp && grp.getAttribute('aria-label') === 'Filter by event type' ? 'chip' : null);
++            if (!kind) return null;
++            const s = getComputedStyle(e);
++            const ring = (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) ||
++                (s.boxShadow && s.boxShadow !== 'none');
++            return {kind, ring, fv: e.matches(':focus-visible'), name: e.textContent.trim() || e.getAttribute('aria-label')}; }""")
++        if info:
++            seen[info["kind"]] += 1
++            if not (info["ring"] and info["fv"]):
++                bad.append(info)
++        if seen["chip"] >= 5 and seen["copy"] >= 1:
++            break
++    assert seen["chip"] >= 5 and seen["copy"] >= 1, seen
++    assert not bad, f"controls without a visible keyboard focus ring: {bad}"
++    shot("then")

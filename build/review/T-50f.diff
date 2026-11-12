@@ -1,0 +1,537 @@
+diff --git a/backend/db.py b/backend/db.py
+index aae22f8..d890b49 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -38,7 +38,8 @@ def _unescape_mount(s: str) -> str:
+     return s
+ 
+ 
+-def _read_mounts() -> list:
++def _read_mounts():
++    """Mount table as [(mountpoint, fstype)], or None when /proc/mounts is unreadable."""
+     out = []
+     try:
+         with open("/proc/mounts") as f:
+@@ -47,14 +48,16 @@ def _read_mounts() -> list:
+                 if len(parts) >= 3:
+                     out.append((_unescape_mount(parts[1]), parts[2]))
+     except OSError as e:
+-        log.warning("cannot read /proc/mounts (%s); treating the DB filesystem as local", e)
++        log.warning("cannot read /proc/mounts (%s); cannot tell the DB filesystem type, "
++                    "falling back to the safe DELETE journal mode", e)
++        return None
+     return out
+ 
+ 
+ def fs_type(path, mounts=None) -> str:
+     """Filesystem type of `path`: longest-prefix match of its resolved path against the mount table."""
+     if mounts is None:
+-        mounts = _read_mounts()
++        mounts = _read_mounts() or []
+     p = str(Path(path).expanduser().resolve())
+     best, best_len = "unknown", -1
+     for mp, fst in mounts:
+@@ -75,6 +78,10 @@ def journal_mode_for(path, mounts=None) -> str:
+         if override.strip().upper() in ("WAL", "DELETE"):
+             return override.strip().upper()
+         log.warning("ignoring ACT_DB_JOURNAL_MODE=%r (must be WAL or DELETE)", override)
++    if mounts is None:
++        mounts = _read_mounts()
++        if mounts is None:  # unreadable mount table: the safe mode, not WAL
++            return "DELETE"
+     return "DELETE" if is_network_fs(path, mounts) else "WAL"
+ 
+ 
+diff --git a/scripts/restore_db.py b/scripts/restore_db.py
+index 50a4657..272f31e 100644
+--- a/scripts/restore_db.py
++++ b/scripts/restore_db.py
+@@ -2,7 +2,11 @@
+ 
+ Dry run by default; --apply moves the existing DB aside (never deletes) and installs the copy.
+ Stop the app before using --apply.
+-    python scripts/restore_db.py --from /path/good.db [--to /path/act.db] [--apply]
++    python scripts/restore_db.py --from /path/good.db [--to /path/act.db] [--apply] [--force]
++
++--force moves the dest and its -wal/-shm/-journal aside (to .broken-*) even when the dest cannot be
++opened (corrupt) or has a hot -journal left by a stopped app. It never overrides a busy database:
++if another process holds a lock, the restore is refused with or without --force.
+ """
+ import argparse
+ import fcntl
+@@ -56,31 +60,40 @@ def _is_sqlite(p: Path) -> bool:
+         return False
+ 
+ 
+-def dest_in_use(dest: Path) -> str:
+-    """Reason string if something else is using the dest DB, else ''."""
++def dest_in_use(dest: Path):
++    """Return (kind, message): kind is "" (free), "busy" (another process holds a lock; --force cannot
++    override), or "unopenable" (corrupt, or a hot -journal; --force may move it aside).
++    Never mutates the dest: lock checks first, then header bytes read directly, then an immutable read-only open
++    (no exclusive transaction, never touches -wal/-shm)."""
++    for suffix in SIBLINGS:
++        p = str(dest) + suffix
++        if os.path.exists(p) and _locked(p):
++            return "busy", f"{p} is locked by another process"
++    names = ", ".join(str(dest) + s for s in SIBLINGS if os.path.exists(str(dest) + s))
++    hint = (f"Files involved: {names}. Move them aside yourself, or re-run with --force to move them aside "
++            "(to .broken-*) and restore.")
+     jr = Path(str(dest) + "-journal")
+     if _is_sqlite(dest) and jr.exists() and jr.stat().st_size > 0:
+-        # A non-empty rollback journal means a write is in flight or a crash left it behind; either way the
+-        # DB must not be swapped out from under it (and probing it would roll it back).
+-        return f"{jr} is a non-empty rollback journal (a write is in progress or was interrupted)"
+-    if _is_sqlite(dest):
++        # Probing would roll the hot journal back, so do not open the DB at all.
++        return "unopenable", f"{jr} is a non-empty rollback journal (hot journal left by a stopped app). {hint}"
++    if dest.exists() and dest.stat().st_size > 0:  # absent or zero-length dest: nothing to protect
++        if not _is_sqlite(dest):
++            return "unopenable", f"{dest} is not a readable SQLite database. {hint}"
+         try:
+-            c = sqlite3.connect(str(dest), timeout=0.5, isolation_level=None)
++            # immutable=1: no locking, never reads or rewrites -wal/-shm (mode=ro alone can rewrite a stale -shm).
++            # Busy was already decided by the lock checks above; this only validates the main file.
++            c = sqlite3.connect(f"file:{dest}?mode=ro&immutable=1", uri=True, timeout=0.5)
+             try:
+-                c.execute("BEGIN EXCLUSIVE")
+-                c.execute("ROLLBACK")
++                c.execute("SELECT count(*) FROM sqlite_master").fetchall()
+             finally:
+                 c.close()
+         except sqlite3.OperationalError as e:
+             if "lock" in str(e).lower() or "busy" in str(e).lower():
+-                return f"{dest} is locked ({e})"
+-        except sqlite3.Error:
+-            pass  # unusable database: that is what we are replacing
+-    for suffix in SIBLINGS:
+-        p = str(dest) + suffix
+-        if os.path.exists(p) and _locked(p):
+-            return f"{p} is locked by another process"
+-    return ""
++                return "busy", f"{dest} is in use ({e})"
++            return "unopenable", f"{dest} cannot be opened ({e}). {hint}"
++        except sqlite3.Error as e:
++            return "unopenable", f"{dest} cannot be opened ({e}). {hint}"
++    return "", ""
+ 
+ 
+ def unique_stamp(dest: Path) -> str:
+@@ -127,6 +140,9 @@ def main() -> int:
+     ap.add_argument("--from", dest="src", required=True)
+     ap.add_argument("--to", dest="dest", default=None)
+     ap.add_argument("--apply", action="store_true")
++    ap.add_argument("--force", action="store_true",
++                    help="move an unopenable/corrupt dest (or hot -journal) and its -wal/-shm/-journal aside "
++                         "anyway; never overrides a busy (locked) database")
+     a = ap.parse_args()
+     src = Path(a.src)
+     dest = Path(a.dest or db.DB_PATH).expanduser()
+@@ -156,11 +172,14 @@ def main() -> int:
+             return 0
+ 
+         dest.parent.mkdir(parents=True, exist_ok=True)
+-        busy = dest_in_use(dest)
+-        if busy:
+-            print(f"error: {busy}. Stop the ACT app (and anything else using the database), then re-run. "
+-                  "Nothing was changed.", file=sys.stderr)
++        kind, busy = dest_in_use(dest)
++        if kind == "busy":
++            print(f"error: {busy}. Stop the ACT app (and anything else using the database), then re-run "
++                  "(--force does not override this). Nothing was changed.", file=sys.stderr)
+             return 3
++        if kind and not a.force:
++            print(f"error: {busy} Nothing was changed.", file=sys.stderr)
++            return 4
+         stamp = unique_stamp(dest)
+         tmp_dest = Path(str(dest) + f".restore-{os.getpid()}.tmp")
+         if tmp_dest.exists():
+@@ -199,7 +218,8 @@ def main() -> int:
+     finally:
+         conn.close()
+     if res != [("ok",)]:
+-        print(f"error: restored {dest} failed integrity_check: {res[:5]}", file=sys.stderr)
++        print(f"error: restored {dest} failed integrity_check: {res[:5]}. The previous files were moved "
++              f"aside as {dest}{stamp}* (e.g. {dest}{stamp}); move them back to undo.", file=sys.stderr)
+         return 1
+     eng = db._make_engine(str(dest))
+     try:
+diff --git a/tests/test_t50_sqlite_nfs.py b/tests/test_t50_sqlite_nfs.py
+index bb26e4e..567b8fd 100644
+--- a/tests/test_t50_sqlite_nfs.py
++++ b/tests/test_t50_sqlite_nfs.py
+@@ -131,13 +131,24 @@ def _src(tmp_path):
+     return src
+ 
+ 
++def _valid_dest(path, marker=1):
++    """A real, valid (rollback-journal) SQLite db: an existing dest that is openable."""
++    c = sqlite3.connect(path)
++    c.execute("PRAGMA journal_mode=DELETE")
++    c.execute("CREATE TABLE old_marker (x)")
++    c.execute("INSERT INTO old_marker VALUES (?)", (marker,))
++    c.commit()
++    c.close()
++    return Path(path).read_bytes()
++
++
+ def test_ac4_dry_run_changes_nothing(tmp_path):
+     src = _src(tmp_path)
+     dest = tmp_path / "dest.db"
+-    dest.write_bytes(b"existing")
++    existing = _valid_dest(dest)
+     r = _run("--from", str(src), "--to", str(dest), env_db=tmp_path / "x.db")
+     assert r.returncode == 0, r.stderr
+-    assert dest.read_bytes() == b"existing"
++    assert dest.read_bytes() == existing
+     assert glob.glob(str(dest) + ".broken-*") == []
+     assert "widgets" in r.stdout and "3" in r.stdout
+ 
+@@ -146,28 +157,33 @@ def test_ac4_refuses_corrupt_source(tmp_path):
+     bad = tmp_path / "bad.db"
+     bad.write_bytes(b"garbage not a database" * 500)
+     dest = tmp_path / "dest.db"
+-    dest.write_bytes(b"existing")
++    existing = _valid_dest(dest)
+     assert SCRIPT.exists()
+     r = _run("--from", str(bad), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+     assert r.returncode != 0
+     assert "No such file" not in r.stderr
+-    assert dest.read_bytes() == b"existing"
++    assert dest.read_bytes() == existing
+     assert glob.glob(str(dest) + ".broken-*") == []
+ 
+ 
+ def test_ac4_apply_moves_aside_copies_and_migrates(tmp_path):
+     src = _src(tmp_path)
+     dest = tmp_path / "dest.db"
+-    dest.write_bytes(b"old-main")
++    # Truly corrupt dest (+ siblings): DBF-1 requires --force to move it aside.
++    # (A valid dest's probe would legitimately rewrite a stale -shm, so exact
++    # sibling bytes are only meaningful for the unopenable case.)
++    old_main = b"old-main"
++    dest.write_bytes(old_main)
+     Path(str(dest) + "-wal").write_bytes(b"old-wal")
+     Path(str(dest) + "-shm").write_bytes(b"old-shm")
+-    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    r = _run("--from", str(src), "--to", str(dest), "--apply", "--force",
++             env_db=tmp_path / "x.db")
+     assert r.returncode == 0, r.stdout + r.stderr
+     main = glob.glob(str(dest) + ".broken-*")
+     main = [p for p in main if not p.endswith(("-wal", "-shm"))]
+     assert len(main) == 1
+     stamp = main[0][len(str(dest)):]
+-    assert Path(main[0]).read_bytes() == b"old-main"
++    assert Path(main[0]).read_bytes() == old_main
+     assert Path(str(dest) + stamp + "-wal").read_bytes() == b"old-wal"
+     assert Path(str(dest) + stamp + "-shm").read_bytes() == b"old-shm"
+     c = sqlite3.connect(dest)
+@@ -263,9 +279,12 @@ def test_ac4_local_dest_header_is_wal(tmp_path):
+ def test_ac4_moves_journal_sibling_aside(tmp_path):
+     src = _src(tmp_path)
+     dest = tmp_path / "dest.db"
+-    dest.write_bytes(b"old-main")
++    # Valid dest + hot -journal and no lock is the DBF-2 case: refused without
++    # --force; with --force the journal sibling is moved aside too.
++    _valid_dest(dest)
+     Path(str(dest) + "-journal").write_bytes(b"old-journal")
+-    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    r = _run("--from", str(src), "--to", str(dest), "--apply", "--force",
++             env_db=tmp_path / "x.db")
+     assert r.returncode == 0, r.stdout + r.stderr
+     j = glob.glob(str(dest) + ".broken-*-journal")
+     assert len(j) == 1 and Path(j[0]).read_bytes() == b"old-journal"
+@@ -275,7 +294,7 @@ def test_ac4_moves_journal_sibling_aside(tmp_path):
+ def test_ac4_second_apply_same_second_never_loses_moved_aside_files(tmp_path):
+     src = _src(tmp_path)
+     dest = tmp_path / "dest.db"
+-    dest.write_bytes(b"old-main")
++    old_main = _valid_dest(dest)
+     Path(str(dest) + "-wal").write_bytes(b"old-wal")
+     r1 = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+     assert r1.returncode == 0, r1.stdout + r1.stderr
+@@ -283,7 +302,7 @@ def test_ac4_second_apply_same_second_never_loses_moved_aside_files(tmp_path):
+     contents = {p: Path(p).read_bytes() for p in glob.glob(str(dest) + ".broken-*")
+                 if not p.endswith(("-wal", "-shm", "-journal"))}
+     # first set of moved-aside files always survives
+-    assert b"old-main" in contents.values()
++    assert old_main in contents.values()
+     assert any(Path(p).read_bytes() == b"old-wal" for p in glob.glob(str(dest) + ".broken-*-wal"))
+     if r2.returncode == 0:
+         assert len(contents) == 2  # both sets kept (or distinct timestamps)
+diff --git a/tests/test_t50f_restore_followups.py b/tests/test_t50f_restore_followups.py
+new file mode 100644
+index 0000000..0e14a8b
+--- /dev/null
++++ b/tests/test_t50f_restore_followups.py
+@@ -0,0 +1,270 @@
++"""T-50f: restore_db / db follow-ups (DBF-1..DBF-5). tmp_path databases only."""
++import builtins
++import fcntl
++import glob
++import importlib.util
++import logging
++import os
++import shutil
++import sqlite3
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parent.parent
++SCRIPT = ROOT / "scripts" / "restore_db.py"
++SIB = ("", "-wal", "-shm", "-journal")
++
++
++@pytest.fixture(autouse=True)
++def _clean_env(monkeypatch):
++    monkeypatch.delenv("ACT_DB_JOURNAL_MODE", raising=False)
++
++
++def _run(*args, tmp_path):
++    env = dict(os.environ)
++    env.pop("ACT_DB_JOURNAL_MODE", None)
++    env["ACT_DB"] = str(tmp_path / "unused.db")
++    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
++                          text=True, cwd=str(ROOT), env=env, timeout=120)
++
++
++def _src(tmp_path):
++    src = tmp_path / "src.db"
++    c = sqlite3.connect(src)
++    c.execute("CREATE TABLE widgets (id INTEGER)")
++    c.executemany("INSERT INTO widgets VALUES (?)", [(1,), (2,), (3,)])
++    c.commit()
++    c.close()
++    return src
++
++
++def _garbage_dest(tmp_path):
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"this is not a database " * 200)
++    Path(str(dest) + "-wal").write_bytes(b"stale wal bytes" * 50)
++    Path(str(dest) + "-shm").write_bytes(b"stale shm bytes" * 50)
++    return dest
++
++
++def _snapshot(dest):
++    return {s: Path(str(dest) + s).read_bytes() for s in SIB if Path(str(dest) + s).exists()}
++
++
++def _good_dest(tmp_path):
++    dest = tmp_path / "dest.db"
++    c = sqlite3.connect(dest)
++    c.execute("CREATE TABLE keep (x)")
++    c.execute("INSERT INTO keep VALUES (42)")
++    c.commit()
++    c.close()
++    return dest
++
++
++# ---- DBF-1
++def test_dbf1_unopenable_refused_with_message_naming_files(tmp_path):
++    src, dest = _src(tmp_path), _garbage_dest(tmp_path)
++    before = _snapshot(dest)
++    r = _run("--from", str(src), "--to", str(dest), "--apply", tmp_path=tmp_path)
++    out = r.stdout + r.stderr
++    assert r.returncode != 0, out
++    assert "--force" in out
++    for s in ("", "-wal", "-shm"):
++        assert str(dest) + s in out, out
++    assert "locked" not in out.lower()  # not reported as busy
++    assert glob.glob(str(dest) + ".broken-*") == []
++    assert _snapshot(dest) == before
++
++
++def test_dbf1_force_moves_unopenable_dest_and_siblings_aside(tmp_path):
++    src, dest = _src(tmp_path), _garbage_dest(tmp_path)
++    before = _snapshot(dest)
++    r = _run("--from", str(src), "--to", str(dest), "--apply", "--force", tmp_path=tmp_path)
++    assert r.returncode == 0, r.stdout + r.stderr
++    for s in ("", "-wal", "-shm"):
++        moved = glob.glob(str(dest) + ".broken-*" + s)
++        moved = [m for m in moved if m.endswith(s) and (s or not m.endswith(("-wal", "-shm", "-journal")))]
++        assert len(moved) == 1, (s, moved)
++        assert Path(moved[0]).read_bytes() == before[s]
++    c = sqlite3.connect(dest)
++    assert c.execute("SELECT COUNT(*) FROM widgets").fetchone() == (3,)
++    c.close()
++
++
++_HOLDER = (
++    "import sqlite3,sys,time\n"
++    "c=sqlite3.connect(sys.argv[1],isolation_level=None,timeout=0)\n"
++    "c.execute('BEGIN IMMEDIATE'); c.execute('INSERT INTO keep VALUES (43)')\n"
++    "print('locked',flush=True); sys.stdin.read()\n"
++)
++
++
++def test_dbf1_busy_refuses_even_with_force(tmp_path):
++    src, dest = _src(tmp_path), _good_dest(tmp_path)
++    # Lock held by a separate process (fcntl locks are per-process, so reading
++    # dest in this process cannot drop it).
++    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(dest)], stdin=subprocess.PIPE,
++                              stdout=subprocess.PIPE, text=True)
++    try:
++        assert holder.stdout.readline().strip() == "locked"
++        before = _snapshot(dest)  # includes the holder's own -journal
++        r = _run("--from", str(src), "--to", str(dest), "--apply", "--force", tmp_path=tmp_path)
++        after = _snapshot(dest)
++    finally:
++        holder.stdin.close()
++        holder.wait(timeout=30)
++    assert r.returncode == 3, r.stdout + r.stderr
++    assert glob.glob(str(dest) + ".broken-*") == []
++    assert after == before
++
++
++def test_dbf1_small_garbage_dest_refused_without_force(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"junk" * 10)  # 40 bytes, no SQLite header, no siblings
++    r = _run("--from", str(src), "--to", str(dest), "--apply", tmp_path=tmp_path)
++    out = r.stdout + r.stderr
++    assert r.returncode != 0, out
++    assert "--force" in out and str(dest) in out, out
++    assert dest.read_bytes() == b"junk" * 10
++    assert glob.glob(str(dest) + ".broken-*") == []
++
++
++# ---- DBF-2
++def _hot_journal(dest):
++    j = Path(str(dest) + "-journal")
++    j.write_bytes(b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7" + b"\x00" * 504)
++    return j
++
++
++def test_dbf2_hot_journal_message_names_file_without_force(tmp_path):
++    src, dest = _src(tmp_path), _good_dest(tmp_path)
++    j = _hot_journal(dest)
++    r = _run("--from", str(src), "--to", str(dest), "--apply", tmp_path=tmp_path)
++    out = r.stdout + r.stderr
++    assert r.returncode != 0, out
++    assert str(j) in out
++    assert "--force" in out or "move" in out.lower()
++    assert j.exists() and glob.glob(str(dest) + ".broken-*") == []
++
++
++def test_dbf2_force_moves_hot_journal_aside(tmp_path):
++    src, dest = _src(tmp_path), _good_dest(tmp_path)
++    _hot_journal(dest)
++    r = _run("--from", str(src), "--to", str(dest), "--apply", "--force", tmp_path=tmp_path)
++    assert r.returncode == 0, r.stdout + r.stderr
++    assert len(glob.glob(str(dest) + ".broken-*-journal")) == 1
++    assert not Path(str(dest) + "-journal").exists()
++    c = sqlite3.connect(dest)
++    assert c.execute("SELECT COUNT(*) FROM widgets").fetchone() == (3,)
++    c.close()
++
++
++# ---- DBF-3
++def _wal_dest_with_stale_files(tmp_path):
++    """A WAL db whose -wal/-shm are left behind with committed frames (copied while a writer is open)."""
++    live = tmp_path / "live.db"
++    c = sqlite3.connect(live)
++    c.execute("PRAGMA journal_mode=WAL")
++    c.execute("PRAGMA wal_autocheckpoint=0")
++    c.execute("CREATE TABLE keep (x)")
++    c.execute("INSERT INTO keep VALUES (1)")
++    c.commit()
++    dest = tmp_path / "dest.db"
++    for s in SIB[:3]:
++        shutil.copy2(str(live) + s, str(dest) + s)
++    c.close()
++    assert os.path.getsize(str(dest) + "-wal") > 0
++    return dest
++
++
++def test_dbf3_refused_busy_run_leaves_wal_and_shm_untouched(tmp_path):
++    src, dest = _src(tmp_path), _wal_dest_with_stale_files(tmp_path)
++    before = {s: (Path(str(dest) + s).read_bytes(), os.stat(str(dest) + s).st_mtime_ns)
++              for s in SIB[:3]}
++    fd = os.open(dest, os.O_RDWR)
++    fcntl.lockf(fd, fcntl.LOCK_EX)  # another process holds a lock on the db
++    try:
++        r = _run("--from", str(src), "--to", str(dest), "--apply", tmp_path=tmp_path)
++    finally:
++        os.close(fd)
++    assert r.returncode == 3, r.stdout + r.stderr
++    for s in SIB[:3]:
++        p = str(dest) + s
++        assert os.path.exists(p), f"{p} was removed by the probe"
++        assert (Path(p).read_bytes(), os.stat(p).st_mtime_ns) == before[s], f"{p} was mutated"
++    assert glob.glob(str(dest) + ".broken-*") == []
++
++
++def test_dbf3_probe_is_readonly_and_takes_no_exclusive_transaction():
++    src = SCRIPT.read_text()
++    assert "BEGIN EXCLUSIVE" not in src
++    assert "mode=ro" in src
++
++
++# ---- DBF-4
++def test_dbf4_post_install_integrity_failure_names_broken_files(tmp_path, monkeypatch, capsys):
++    spec = importlib.util.spec_from_file_location("restore_db_t50f", SCRIPT)
++    mod = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(mod)
++    src, dest = _src(tmp_path), _good_dest(tmp_path)
++
++    real = sqlite3
++
++    class Conn:
++        def __init__(self, c):
++            self._c = c
++
++        def execute(self, sql, *a):
++            if "integrity_check" in sql:
++                return real.connect(":memory:").execute("SELECT 'corrupt'")
++            return self._c.execute(sql, *a)
++
++        def __getattr__(self, n):
++            return getattr(self._c, n)
++
++    class FakeSqlite:
++        def __getattr__(self, n):
++            return getattr(real, n)
++
++        def connect(self, path, *a, **k):
++            c = real.connect(path, *a, **k)
++            if str(path) == str(dest) and not glob.glob(str(dest) + ".broken-*"):
++                return c
++            return Conn(c) if str(path) == str(dest) else c
++
++    monkeypatch.setattr(mod, "sqlite3", FakeSqlite())
++    monkeypatch.setattr(sys, "argv", ["restore_db.py", "--from", str(src), "--to", str(dest), "--apply"])
++    rc = mod.main()
++    cap = capsys.readouterr()
++    assert rc != 0
++    err = cap.err  # the failure message itself, not the earlier "moved aside" progress lines
++    assert "failed integrity_check" in err
++    broken = glob.glob(str(dest) + ".broken-*")
++    assert broken, "setup: nothing was moved aside"
++    assert str(dest) + ".broken-" in err or os.path.basename(str(dest)) + ".broken-" in err
++
++
++# ---- DBF-5
++def test_dbf5_unreadable_proc_mounts_falls_back_to_delete_and_warns(tmp_path, monkeypatch, caplog):
++    from backend import db
++    real_open = builtins.open
++
++    def fake_open(file, *a, **k):
++        if str(file) == "/proc/mounts":
++            raise PermissionError(13, "denied", "/proc/mounts")
++        return real_open(file, *a, **k)
++
++    monkeypatch.setattr(builtins, "open", fake_open)
++    with caplog.at_level(logging.WARNING):
++        mode = db.journal_mode_for(tmp_path / "act.db")
++    assert mode == "DELETE"
++    assert any(r.levelno >= logging.WARNING and "mounts" in r.getMessage().lower()
++               for r in caplog.records)
++
++
++def test_dbf5_readable_mounts_still_wal_for_local(tmp_path):
++    from backend import db
++    assert db.journal_mode_for(tmp_path / "act.db", [("/", "ext4")]) == "WAL"

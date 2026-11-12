@@ -1,0 +1,259 @@
+diff --git a/backend/routes/settings.py b/backend/routes/settings.py
+index e8d5c1a..7a4ec1d 100644
+--- a/backend/routes/settings.py
++++ b/backend/routes/settings.py
+@@ -2,7 +2,9 @@
+ import os
+ from fastapi import APIRouter, Body, Depends, HTTPException
+ 
+-from .. import settings
++from sqlalchemy import func, select
++
++from .. import db, settings
+ from ..domino_identity import User, require_user
+ 
+ router = APIRouter()
+@@ -23,6 +25,13 @@ def access(user: User = Depends(require_user)):
+             "owner": (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()}
+ 
+ 
++@router.get("/api/settings/real-agent-count")
++def real_agent_count(_user: User = Depends(require_admin)):
++    """Agents in the real (non-demo) DB, so the demo-off confirm can say what will be shown."""
++    with db.real_engine.connect() as cx:
++        return {"real_agent_count": cx.execute(select(func.count()).select_from(db.agents)).scalar() or 0}
++
++
+ @router.get("/api/settings")
+ def list_settings(_user: User = Depends(require_admin)):
+     return settings.snapshot()
+diff --git a/frontend/src/api.js b/frontend/src/api.js
+index b981a4c..c8d09a7 100644
+--- a/frontend/src/api.js
++++ b/frontend/src/api.js
+@@ -46,6 +46,7 @@ const json = (method, body) => ({ method, headers: { 'Content-Type': 'applicatio
+ export const settingsApi = {
+   access: () => request('settings/access'),
+   list: () => request('settings'),
++  realAgentCount: () => request('settings/real-agent-count'),
+   put: (name, value) => request(`settings/${encodeURIComponent(name)}`, json('PUT', { value })),
+   del: (name) => request(`settings/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+ }
+diff --git a/frontend/src/pages/Settings.jsx b/frontend/src/pages/Settings.jsx
+index 906c7fa..7713aa1 100644
+--- a/frontend/src/pages/Settings.jsx
++++ b/frontend/src/pages/Settings.jsx
+@@ -103,7 +103,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
+   const setLine = !entry.locked && !unreadable && entry.is_set
+     ? `Set · changed by ${entry.changed_by} on ${when(entry.changed_at)}` : ''
+   let badge = null
+-  if (entry.locked) badge = <Badge tone="lock">Set by project variable</Badge>
++  if (entry.locked) badge = <Badge tone="lock">Set by environment variable {entry.env}</Badge>
+   else if (unreadable) badge = <Badge tone="warn">Re-enter</Badge>
+   else if (entry.is_set && layout === 'row') badge = <Badge tone="ok">Set</Badge>
+   else if (!entry.is_set && layout === 'row') badge = <Badge>Not set</Badge>
+@@ -193,6 +193,15 @@ function DemoCard({ entry, onChange }) {
+   const [busy, setBusy] = React.useState(false)
+   const [err, setErr] = React.useState('')
+   const on = !!entry.value
++  const [realN, setRealN] = React.useState(null)
++  const openAsk = () => {
++    setAsk(true)
++    if (on) { setRealN(null); settingsApi.realAgentCount().then((r) => setRealN(r.real_agent_count)).catch(() => setRealN(undefined)) }
++  }
++  const offBody = realN === null ? 'Checking your real data…'
++    : realN === undefined ? 'The app goes back to your real database. Demo data stays in its own database.'
++    : realN > 0 ? `You'll see your ${realN} real agent${realN === 1 ? '' : 's'}. The app goes back to your real database; demo data stays in its own database.`
++    : 'No real agents yet: Fleet will be empty until you register or import agents. Demo data stays in its own database.'
+   const flip = async () => {
+     setAsk(false); setBusy(true); setErr('')
+     try {
+@@ -209,12 +218,12 @@ function DemoCard({ entry, onChange }) {
+       <div className="st-demo" data-testid="setting-demo_mode">
+         <div className="st-ctl">
+           <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-h" aria-describedby="st-demo-help"
+-                  className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
+-          {entry.locked && <Badge tone="lock">Set by project variable</Badge>}
++                  className="st-switch" disabled={entry.locked || busy} onClick={openAsk}><span className="st-knob" /></button>
++          {entry.locked && <Badge tone="lock">Set by environment variable {entry.env}</Badge>}
+           <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
+         </div>
+         <div id="st-demo-help" className={err ? 'st-hint st-hint-error' : 'st-hint'} role={err ? 'alert' : undefined}>
+-          {err ? <>{Icon.err}<span>{err}</span> <Button onClick={() => setAsk(true)}>Retry</Button></> : <>
++          {err ? <>{Icon.err}<span>{err}</span> <Button onClick={openAsk}>Retry</Button></> : <>
+             <span className="st-help st-help-strong">{on ? 'Demo mode is on. You are seeing simulated data.' : 'Demo mode is off. You are seeing your real data.'}</span>
+             <span className="st-help">{entry.help} Turning it on switches to a separate demo database with simulated agents, runs and approver. Your real data is never changed.</span>
+             {entry.locked && <span className="st-help st-env">Set by environment variable <code>{entry.env}</code>. Change it there.</span>}
+@@ -224,7 +233,7 @@ function DemoCard({ entry, onChange }) {
+       {ask && (
+         <ConfirmDialog
+           title={on ? 'Turn demo mode off?' : 'Turn demo mode on?'}
+-          body={on ? 'The app goes back to your real database. If no real data is loaded yet, Fleet will be empty until you register or import agents. Demo data stays in its own database.'
++          body={on ? offBody
+             : 'The app switches to a separate demo database with simulated agents, runs and a simulated approver. Your real database is not touched.'}
+           onConfirm={flip} onCancel={() => setAsk(false)} />
+       )}
+diff --git a/tests/e2e/test_t39_settings.py b/tests/e2e/test_t39_settings.py
+index 8f882fa..3bbe326 100644
+--- a/tests/e2e/test_t39_settings.py
++++ b/tests/e2e/test_t39_settings.py
+@@ -15,7 +15,7 @@ data-testid / role contract (role/label/text locators are primary):
+     "Governance policy id (agentic bundle)", "Governance policy id (model bundle)"; button "Save".
+     After Save: role=status text "Saved". Failed save: role=alert.
+     Secret field once set: text "Set · changed by <user> on <date>", buttons "Replace" and "Clear", no input value, no value in DOM.
+-    Env-set field: text "Set by project variable", input readonly/disabled, no Save/Clear buttons.
++    Env-set field: text "Set by environment variable LLM_GATEWAY_URL", input readonly/disabled, no Save/Clear buttons.
+   secret-key-warning   role=alert/status text recommending the ACT_SECRET_KEY project secret variable (only for a generated key file)
+   Demo mode switch     role=switch named "Demo mode"; click opens role=dialog/alertdialog with buttons "Confirm" and "Cancel".
+ """
+@@ -178,13 +178,13 @@ def test_st2_no_warning_when_key_provided(page, context, shot, app_b):
+ def test_st3_env_set_is_read_only(page, shot, owner):
+     _open(page)
+     f = _field(page, "LLM Gateway URL")
+-    expect(f).to_contain_text("Set by project variable")
++    expect(f).to_contain_text("Set by environment variable LLM_GATEWAY_URL")
+     box = f.get_by_label("LLM Gateway URL")
+     assert box.count() == 0 or box.evaluate("e => e.readOnly || e.disabled")
+     expect(f.get_by_role("button", name="Save")).to_have_count(0)
+     expect(f.get_by_role("button", name="Clear")).to_have_count(0)
+     other = _field(page, "External card allowed hosts")
+-    expect(other).not_to_contain_text("Set by project variable")
++    expect(other).not_to_contain_text("Set by environment variable")
+     shot("then")
+ 
+ 
+@@ -223,7 +223,7 @@ def test_st5_demo_mode_variable_locks_switch(page, context, shot, app_c):
+     sw = page.get_by_role("switch", name="Demo mode")
+     expect(sw).to_have_attribute("aria-checked", "true")
+     expect(sw).to_be_disabled()
+-    expect(page.get_by_test_id("settings-page")).to_contain_text("Set by project variable")
++    expect(page.get_by_test_id("settings-page")).to_contain_text("Set by environment variable ACT_DEMO_MODE")
+     sw.click(force=True)
+     expect(page.get_by_role("dialog").or_(page.get_by_role("alertdialog"))).to_have_count(0)
+     shot("then")
+diff --git a/tests/e2e/test_t48f_settings.py b/tests/e2e/test_t48f_settings.py
+new file mode 100644
+index 0000000..f402702
+--- /dev/null
++++ b/tests/e2e/test_t48f_settings.py
+@@ -0,0 +1,120 @@
++"""T-48f e2e: Settings follow-ups (SRF-1, SRF-3). SRF-2 is already covered by
++test_t48_settings_reachable.py::test_sr4_lists_exactly_defs_grouped (page testids == backend DEFS names, exactly).
++
++SRF-1: an env-provided setting shows the badge "Set by environment variable <VAR_NAME>" and is read-only.
++SRF-3: the demo-off confirm dialog names the live count of real agents (from the app's real, non-demo DB).
++"""
++import pathlib
++import re
++import sqlite3
++import sys
++
++import pytest
++from playwright.sync_api import expect
++
++ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
++sys.path.insert(0, str(ROOT))
++from backend.settings import DEFS  # noqa: E402
++
++OWNER_NAME = "owner.user"
++_MANAGED = {d["env"] for d in DEFS.values()} | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "DOMINO_RUN_HOST_PATH"}
++_ENV = {"DOMINO_PROJECT_OWNER": OWNER_NAME, "ACT_WORKSPACE_OWNER_MODE": "1"}
++
++
++def _app(apps, seed, extra=None):
++    return apps(seed=seed, external=False, strip_env=_MANAGED, extra_env={**_ENV, **(extra or {})})
++
++
++@pytest.fixture(scope="module")
++def app_env(apps):
++    return _app(apps, False, {"LLM_GATEWAY_URL": "http://gateway.invalid/"})
++
++
++@pytest.fixture(scope="module")
++def app_seeded(apps):
++    return _app(apps, True)
++
++
++@pytest.fixture(scope="module")
++def app_empty(apps):
++    return _app(apps, False)
++
++
++@pytest.fixture
++def browser_context_args():
++    return {"viewport": {"width": 1440, "height": 900}}
++
++
++def _real_agent_count(app):
++    con = sqlite3.connect(f"file:{app.db_path}?mode=ro", uri=True)
++    try:
++        return con.execute("select count(*) from agents").fetchone()[0]
++    finally:
++        con.close()
++
++
++def _open(page, app):
++    page.goto(app.url + "#/settings")
++    expect(page.get_by_role("heading", level=1, name="Settings")).to_be_visible()
++
++
++def _turn_off_dialog(page, app):
++    """Turn demo on (confirm), then click the switch again to open the turn-off confirm dialog."""
++    _open(page, app)
++    sw = page.get_by_test_id("settings-card-demo").get_by_role("switch", name="Demo mode")
++    expect(sw).to_have_attribute("aria-checked", "false")
++    sw.click()
++    page.get_by_role("dialog").or_(page.get_by_role("alertdialog")).first.get_by_role("button", name="Confirm").click()
++    expect(sw).to_have_attribute("aria-checked", "true", timeout=60000)
++    sw.click()
++    dlg = page.get_by_role("dialog").or_(page.get_by_role("alertdialog")).first
++    expect(dlg).to_be_visible()
++    return dlg
++
++
++# ---------------------------------------------------------------- SRF-1
++def test_srf1_env_badge_names_the_variable(page, shot, app_env):
++    _open(page, app_env)
++    el = page.get_by_test_id("setting-llm_gateway_url")
++    expect(el).to_be_visible()
++    var = DEFS["llm_gateway_url"]["env"]
++    expect(el).to_contain_text(f"Set by environment variable {var}")
++    expect(el).not_to_contain_text("project variable")
++    expect(el.get_by_role("button", name="Save")).to_have_count(0)
++    box = el.get_by_role("textbox")
++    assert box.count() == 0 or box.first.evaluate("e => e.readOnly || e.disabled")
++    shot("then")
++
++
++def test_srf1_badge_only_on_env_provided_fields(page, shot, app_env):
++    _open(page, app_env)
++    expect(page.get_by_test_id("setting-llm_gateway_url")).to_be_visible()
++    other = page.get_by_test_id("setting-external_allow_hosts")
++    expect(other).not_to_contain_text("Set by environment variable")
++    expect(page.get_by_test_id("settings-page")).not_to_contain_text("Set by project variable")
++    shot("then")
++
++
++# ---------------------------------------------------------------- SRF-3
++def test_srf3_demo_off_dialog_names_real_agent_count(page, shot, app_seeded):
++    n = _real_agent_count(app_seeded)
++    assert n > 0, "the seeded real DB should hold agents"
++    try:
++        dlg = _turn_off_dialog(page, app_seeded)
++        expect(dlg).to_contain_text(re.compile(rf"(?<!\d){n}(?!\d)\s+real agents?", re.I))
++        shot("then")
++        dlg.get_by_role("button", name="Cancel").click()
++    finally:
++        page.request.delete(app_seeded.url.rstrip("/") + "/api/settings/demo_mode")
++
++
++def test_srf3_demo_off_dialog_when_no_real_agents(page, shot, app_empty):
++    assert _real_agent_count(app_empty) == 0
++    try:
++        dlg = _turn_off_dialog(page, app_empty)
++        expect(dlg).to_contain_text(re.compile(r"no real agents yet", re.I))
++        expect(dlg).to_contain_text(re.compile(r"Fleet will be empty", re.I))
++        shot("then")
++        dlg.get_by_role("button", name="Cancel").click()
++    finally:
++        page.request.delete(app_empty.url.rstrip("/") + "/api/settings/demo_mode")
