@@ -29,6 +29,7 @@ def dist(tmp_path):
 @pytest.fixture
 def client(db_env, monkeypatch, dist):
     monkeypatch.setenv("DOMINO_RUN_HOST_PATH", RUN)
+    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")  # these tests cover prefix handling and the write guard, not SR-2
     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
         del sys.modules[m]

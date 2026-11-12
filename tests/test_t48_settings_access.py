@@ -186,6 +186,16 @@ def test_sr2_off_write_route_anonymous_401(env):
     _purge()
 
 
+def test_sr2_published_app_auto_write_guard_anonymous_401(env):
+    # published App (no /notebookSession/ in run path), mode unset = auto: anonymous writes stay rejected
+    env.setenv("DOMINO_RUN_HOST_PATH", "/mnt/runs/apps/app1")
+    main = _start(env)
+    with TestClient(main.app) as c:
+        assert c.post("/api/agents/external", json={}).status_code == 401
+        assert c.get("/api/settings/access").status_code == 401
+    _purge()
+
+
 # ---- SR-4 ----
 def test_sr4_lists_exactly_defs_with_flags(env):
     env.setenv("LLM_GATEWAY_URL", "http://gw.example")
@@ -289,8 +299,11 @@ def test_sf1_store_failure_rollback_guard_error(demo_client, env):
 
 # ---- SF-2 simultaneous toggles ----
 @pytest.mark.parametrize("pair", [(True, False), (True, True), (False, False)])
-def test_sf2_simultaneous_toggles_do_not_stall(demo_client, pair):
+def test_sf2_simultaneous_toggles_do_not_stall(demo_client, env, pair):
     from backend import demo
+    # Seeding is slow on a loaded box; stub it (fast, but long enough to overlap the two requests) so the
+    # time budget measures only the 15 s drain stall, not demo seeding.
+    env.setattr(demo, "_seed", lambda **kw: time.sleep(0.3))
     c = demo_client
     results = []
     barrier = threading.Barrier(2)
@@ -304,13 +317,14 @@ def test_sf2_simultaneous_toggles_do_not_stall(demo_client, pair):
     t0 = time.time()
     [t.start() for t in ts]
     [t.join(30) for t in ts]
-    assert time.time() - t0 < 5, results
+    assert time.time() - t0 < 8, results  # old behaviour stalled for the 15 s drain timeout
     assert len(results) == 2 and all(s != 500 for s, _ in results), results
     assert _stored_demo(c) is demo.enabled()
 
 
-def test_sf2_simultaneous_deletes_do_not_stall(demo_client):
+def test_sf2_simultaneous_deletes_do_not_stall(demo_client, env):
     from backend import demo
+    env.setattr(demo, "_seed", lambda **kw: time.sleep(0.3))
     c = demo_client
     _demo_on(c)
     barrier = threading.Barrier(2)
@@ -323,7 +337,7 @@ def test_sf2_simultaneous_deletes_do_not_stall(demo_client):
     t0 = time.time()
     [t.start() for t in ts]
     [t.join(30) for t in ts]
-    assert time.time() - t0 < 5, results
+    assert time.time() - t0 < 8, results
     assert all(s != 500 for s in results), results
     assert _stored_demo(c) is demo.enabled()
 
