@@ -1,0 +1,447 @@
+diff --git a/backend/db.py b/backend/db.py
+index a01abd7..ca7bef4 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -1,6 +1,7 @@
+-"""SQLite storage for ACT (single DB, WAL, pooled connections)."""
++"""SQLite storage for ACT (single DB, pooled connections; WAL on local disk, DELETE journal on network filesystems)."""
+ import logging
+ import os
++import sqlite3
+ import threading
+ from pathlib import Path
+ 
+@@ -27,22 +28,99 @@ try:
+ except OSError:
+     log.exception("could not create DB directory for %s", DB_PATH)
+ 
++_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3")
++
++
++def _read_mounts() -> list:
++    out = []
++    try:
++        with open("/proc/mounts") as f:
++            for line in f:
++                parts = line.split()
++                if len(parts) >= 3:
++                    out.append((parts[1].replace("\\040", " "), parts[2]))
++    except OSError:
++        pass
++    return out
++
++
++def fs_type(path, mounts=None) -> str:
++    """Filesystem type of `path`: longest-prefix match of its resolved path against the mount table."""
++    if mounts is None:
++        mounts = _read_mounts()
++    p = str(Path(path).expanduser().resolve())
++    best, best_len = "unknown", -1
++    for mp, fst in mounts:
++        mp_n = mp.rstrip("/")
++        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) > best_len:
++            best, best_len = fst, len(mp_n)
++    return best
++
++
++def is_network_fs(path, mounts=None) -> bool:
++    t = fs_type(path, mounts).lower()
++    return t in _NETWORK_FS or t.startswith("fuse.")
++
++
++def journal_mode_for(path, mounts=None) -> str:
++    override = os.environ.get("ACT_DB_JOURNAL_MODE")
++    if override:
++        if override.strip().upper() in ("WAL", "DELETE"):
++            return override.strip().upper()
++        log.warning("ignoring ACT_DB_JOURNAL_MODE=%r (must be WAL or DELETE)", override)
++    return "DELETE" if is_network_fs(path, mounts) else "WAL"
++
++
++def pool_size_for(path, mounts=None) -> int:
++    override = os.environ.get("ACT_DB_POOL_SIZE")
++    if override:
++        try:
++            if int(override) > 0:
++                return int(override)
++        except ValueError:
++            pass
++        log.warning("ignoring ACT_DB_POOL_SIZE=%r (must be a positive integer)", override)
++    return 4 if is_network_fs(path, mounts) else 20
++
++
++class DatabaseOpenError(Exception):
++    pass
++
++
++def check_open(path) -> None:
++    """Open the DB the way the app will; raise one clear DatabaseOpenError if that fails."""
++    mode = journal_mode_for(path)
++    try:
++        conn = sqlite3.connect(str(path), timeout=30)
++        try:
++            conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
++            conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
++        finally:
++            conn.close()
++    except sqlite3.Error as e:
++        raise DatabaseOpenError(
++            f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e}. "
++            "On a network filesystem the usual cause is stale -wal/-shm files left by a crash; "
++            "move them aside (or run scripts/restore_db.py) and restart.") from e
++
++
+ def _make_engine(path: str):
++    mode = journal_mode_for(path)
+     eng = create_engine(
+         f"sqlite:///{path}",
+         poolclass=QueuePool,
+-        pool_size=20,
++        pool_size=pool_size_for(path),
+         max_overflow=5,
+         pool_pre_ping=False,
+         connect_args={"check_same_thread": False, "timeout": 30},
+     )
+-    event.listen(eng, "connect", _on_connect)
++    event.listen(eng, "connect", lambda c, r: _on_connect(c, r, mode))
+     return eng
+ 
+ 
+-def _on_connect(dbapi_conn, _record):
++def _on_connect(dbapi_conn, _record, mode="WAL"):
+     cur = dbapi_conn.cursor()
+-    cur.execute("PRAGMA journal_mode=WAL")
++    cur.execute(f"PRAGMA journal_mode={mode}")
+     cur.execute("PRAGMA foreign_keys=ON")
+     cur.execute("PRAGMA busy_timeout=30000")
+     cur.close()
+@@ -298,6 +376,8 @@ def _ensure_findings_index(engine) -> None:
+ 
+ def init_db(eng=None) -> None:
+     eng = eng or engine
++    if eng.url.database:
++        check_open(eng.url.database)
+     try:
+         metadata.create_all(eng)
+     except Exception as e:
+@@ -309,6 +389,6 @@ def init_db(eng=None) -> None:
+ 
+ 
+ def prewarm(n: int) -> None:
+-    conns = [engine.raw_connection() for _ in range(max(0, min(n, 20)))]
++    conns = [engine.raw_connection() for _ in range(max(0, min(n, engine.pool.size())))]
+     for c in conns:
+         c.close()
+diff --git a/scripts/restore_db.py b/scripts/restore_db.py
+new file mode 100644
+index 0000000..92c8be7
+--- /dev/null
++++ b/scripts/restore_db.py
+@@ -0,0 +1,94 @@
++"""Restore the ACT database from a known-good copy.
++
++Dry run by default; --apply moves the existing DB aside (never deletes) and installs the copy.
++    python scripts/restore_db.py --from /path/good.db [--to /path/act.db] [--apply]
++"""
++import argparse
++import shutil
++import sqlite3
++import sys
++import tempfile
++import time
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
++from backend import db  # noqa: E402
++
++
++def counts(conn) -> dict:
++    names = [r[0] for r in conn.execute(
++        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
++    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
++
++
++def print_counts(label, c) -> None:
++    print(label)
++    for n, k in c.items():
++        print(f"  {n}: {k}")
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    ap.add_argument("--from", dest="src", required=True)
++    ap.add_argument("--to", dest="dest", default=None)
++    ap.add_argument("--apply", action="store_true")
++    a = ap.parse_args()
++    src = Path(a.src)
++    dest = Path(a.dest or db.DB_PATH).expanduser()
++    if not src.is_file():
++        print(f"error: source {src} not found", file=sys.stderr)
++        return 2
++
++    with tempfile.TemporaryDirectory() as tmp:
++        # Work on a private copy (with any -wal/-shm siblings) so the source is never modified.
++        work = Path(tmp) / "src.db"
++        for suffix in ("", "-wal", "-shm"):
++            if Path(str(src) + suffix).is_file():
++                shutil.copy2(str(src) + suffix, str(work) + suffix)
++        try:
++            conn = sqlite3.connect(work)
++            result = conn.execute("PRAGMA integrity_check").fetchall()
++            ok = result == [("ok",)]
++            c = counts(conn) if ok else {}
++            if ok:
++                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
++            conn.close()
++        except sqlite3.Error as e:
++            print(f"error: source {src} failed integrity check: {e}", file=sys.stderr)
++            return 1
++        if not ok:
++            print(f"error: source {src} failed integrity_check: {result[:5]}", file=sys.stderr)
++            return 1
++
++        mode = db.journal_mode_for(dest)
++        print(f"source: {src}\ndest:   {dest} (filesystem {db.fs_type(dest)}, journal mode {mode})")
++        print_counts("source row counts:", c)
++        if not a.apply:
++            print("dry run: nothing changed. Re-run with --apply to restore.")
++            return 0
++
++        stamp = f".broken-{time.strftime('%Y%m%d-%H%M%S')}"
++        dest.parent.mkdir(parents=True, exist_ok=True)
++        for suffix in ("", "-wal", "-shm"):
++            p = Path(str(dest) + suffix)
++            if p.exists():
++                moved = Path(str(dest) + stamp + suffix)
++                shutil.move(str(p), str(moved))
++                print(f"moved aside: {p} -> {moved}")
++        shutil.copy2(work, dest)
++
++    eng = db._make_engine(str(dest))
++    try:
++        db.init_db(eng)
++        with eng.connect() as cx:
++            print(f"journal mode: {cx.exec_driver_sql('PRAGMA journal_mode').scalar()}")
++    finally:
++        eng.dispose()
++    conn = sqlite3.connect(dest)
++    print_counts("restored row counts:", counts(conn))
++    conn.close()
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/test_t50_sqlite_nfs.py b/tests/test_t50_sqlite_nfs.py
+new file mode 100644
+index 0000000..78b41e9
+--- /dev/null
++++ b/tests/test_t50_sqlite_nfs.py
+@@ -0,0 +1,207 @@
++import glob
++import os
++import sqlite3
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parent.parent
++MOUNTS = [("/", "ext4"), ("/mnt/data", "nfs4"), ("/mnt/data/local", "ext4"),
++          ("/mnt/cifs", "cifs"), ("/mnt/smb", "smb3"), ("/mnt/fuse", "fuse.gcsfuse"),
++          ("/mnt/nfs3", "nfs")]
++NFS_PATH = "/mnt/data/proj/act/act.db"
++
++
++@pytest.fixture(autouse=True)
++def _clean_env(monkeypatch):
++    monkeypatch.delenv("ACT_DB_JOURNAL_MODE", raising=False)
++    monkeypatch.delenv("ACT_DB_POOL_SIZE", raising=False)
++
++
++# ---- DB-1
++def test_ac1_fs_type_longest_prefix(db_mod):
++    assert db_mod.fs_type(NFS_PATH, MOUNTS) == "nfs4"
++    assert db_mod.fs_type("/mnt/data/local/x/act.db", MOUNTS) == "ext4"
++    assert db_mod.fs_type("/home/u/act.db", MOUNTS) == "ext4"
++
++
++@pytest.mark.parametrize("p", ["/mnt/data/a.db", "/mnt/cifs/a.db", "/mnt/smb/a.db",
++                               "/mnt/fuse/a.db", "/mnt/nfs3/a.db"])
++def test_ac1_network_types_detected(db_mod, p):
++    assert db_mod.is_network_fs(p, MOUNTS) is True
++    assert db_mod.journal_mode_for(p, MOUNTS) == "DELETE"
++
++
++def test_ac1_local_is_wal(db_mod):
++    assert db_mod.is_network_fs("/home/u/a.db", MOUNTS) is False
++    assert db_mod.journal_mode_for("/mnt/data/local/a.db", MOUNTS) == "WAL"
++
++
++def test_ac1_override_case_insensitive(db_mod, monkeypatch):
++    monkeypatch.setenv("ACT_DB_JOURNAL_MODE", "wal")
++    assert db_mod.journal_mode_for(NFS_PATH, MOUNTS) == "WAL"
++    monkeypatch.setenv("ACT_DB_JOURNAL_MODE", "Delete")
++    assert db_mod.journal_mode_for("/home/u/a.db", MOUNTS) == "DELETE"
++
++
++def test_ac1_invalid_override_ignored_with_warning(db_mod, monkeypatch, caplog):
++    monkeypatch.setenv("ACT_DB_JOURNAL_MODE", "TRUNCATE")
++    with caplog.at_level("WARNING"):
++        assert db_mod.journal_mode_for(NFS_PATH, MOUNTS) == "DELETE"
++        assert db_mod.journal_mode_for("/home/u/a.db", MOUNTS) == "WAL"
++    assert any("ACT_DB_JOURNAL_MODE" in r.getMessage() for r in caplog.records)
++
++
++def test_ac1_connection_uses_detected_mode(db_mod, monkeypatch):
++    monkeypatch.setenv("ACT_DB_JOURNAL_MODE", "DELETE")
++    eng = db_mod._make_engine(str(Path(db_mod.DB_PATH).parent / "d.db"))
++    with eng.connect() as c:
++        assert c.exec_driver_sql("PRAGMA journal_mode").scalar().lower() == "delete"
++    eng.dispose()
++
++
++# ---- DB-2
++def test_ac2_pool_defaults(db_mod):
++    assert db_mod.pool_size_for(NFS_PATH, MOUNTS) == 4
++    assert db_mod.pool_size_for("/home/u/a.db", MOUNTS) == 20
++
++
++def test_ac2_pool_override(db_mod, monkeypatch):
++    monkeypatch.setenv("ACT_DB_POOL_SIZE", "7")
++    assert db_mod.pool_size_for(NFS_PATH, MOUNTS) == 7
++    assert db_mod.pool_size_for("/home/u/a.db", MOUNTS) == 7
++
++
++def test_ac2_prewarm_capped_at_pool_size(db_env, monkeypatch):
++    monkeypatch.setenv("ACT_DB_POOL_SIZE", "3")
++    import importlib
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++    db = importlib.import_module("backend.db")
++    from sqlalchemy import event
++    opened = []
++    event.listen(db.engine, "connect", lambda *a: opened.append(1))
++    db.prewarm(10)
++    assert len(opened) <= 3
++    assert len(opened) >= 1
++
++
++# ---- DB-3
++def test_ac3_check_open_clear_error(db_mod, tmp_path):
++    bad = tmp_path / "bad.db"
++    bad.write_bytes(b"this is definitely not a sqlite database" * 100)
++    with pytest.raises(db_mod.DatabaseOpenError) as ei:
++        db_mod.check_open(str(bad))
++    msg = str(ei.value)
++    assert str(bad) in msg
++    assert db_mod.fs_type(str(bad)) in msg
++    assert db_mod.journal_mode_for(str(bad)).upper() in msg.upper()
++    assert "-shm" in msg and "-wal" in msg
++    assert "stale" in msg.lower()
++
++
++def test_ac3_check_open_ok_on_good_db(db_mod, tmp_path):
++    good = tmp_path / "good.db"
++    sqlite3.connect(good).close()
++    db_mod.check_open(str(good))
++
++
++# ---- DB-4
++SCRIPT = ROOT / "scripts" / "restore_db.py"
++
++
++def _run(*args, env_db=None):
++    env = dict(os.environ)
++    env.pop("ACT_DB_JOURNAL_MODE", None)
++    if env_db:
++        env["ACT_DB"] = str(env_db)
++    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
++                          text=True, cwd=str(ROOT), env=env, timeout=120)
++
++
++def _src(tmp_path):
++    src = tmp_path / "src.db"
++    c = sqlite3.connect(src)
++    c.execute("CREATE TABLE widgets (id INTEGER)")
++    c.executemany("INSERT INTO widgets VALUES (?)", [(1,), (2,), (3,)])
++    c.commit()
++    c.close()
++    return src
++
++
++def test_ac4_dry_run_changes_nothing(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"existing")
++    r = _run("--from", str(src), "--to", str(dest), env_db=tmp_path / "x.db")
++    assert r.returncode == 0, r.stderr
++    assert dest.read_bytes() == b"existing"
++    assert glob.glob(str(dest) + ".broken-*") == []
++    assert "widgets" in r.stdout and "3" in r.stdout
++
++
++def test_ac4_refuses_corrupt_source(tmp_path):
++    bad = tmp_path / "bad.db"
++    bad.write_bytes(b"garbage not a database" * 500)
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"existing")
++    assert SCRIPT.exists()
++    r = _run("--from", str(bad), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    assert r.returncode != 0
++    assert "No such file" not in r.stderr
++    assert dest.read_bytes() == b"existing"
++    assert glob.glob(str(dest) + ".broken-*") == []
++
++
++def test_ac4_apply_moves_aside_copies_and_migrates(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"old-main")
++    Path(str(dest) + "-wal").write_bytes(b"old-wal")
++    Path(str(dest) + "-shm").write_bytes(b"old-shm")
++    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    assert r.returncode == 0, r.stdout + r.stderr
++    main = glob.glob(str(dest) + ".broken-*")
++    main = [p for p in main if not p.endswith(("-wal", "-shm"))]
++    assert len(main) == 1
++    stamp = main[0][len(str(dest)):]
++    assert Path(main[0]).read_bytes() == b"old-main"
++    assert Path(str(dest) + stamp + "-wal").read_bytes() == b"old-wal"
++    assert Path(str(dest) + stamp + "-shm").read_bytes() == b"old-shm"
++    c = sqlite3.connect(dest)
++    assert c.execute("SELECT COUNT(*) FROM widgets").fetchone()[0] == 3
++    tables = {t[0] for t in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
++    assert "agents" in tables  # schema init ran
++    assert c.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"  # local disk
++    c.close()
++    assert "widgets" in r.stdout
++    assert src.exists()
++
++
++def test_ac4_apply_without_existing_dest(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "new.db"
++    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    assert r.returncode == 0, r.stdout + r.stderr
++    assert dest.exists()
++
++
++def test_ac4_to_defaults_to_app_db_path(tmp_path):
++    src = _src(tmp_path)
++    app_db = tmp_path / "appdb" / "act.db"
++    app_db.parent.mkdir()
++    r = _run("--from", str(src), "--apply", env_db=app_db)
++    assert r.returncode == 0, r.stdout + r.stderr
++    c = sqlite3.connect(app_db)
++    assert c.execute("SELECT COUNT(*) FROM widgets").fetchone()[0] == 3
++    c.close()
++
++
++# ---- DB-5
++def test_ac5_local_unchanged(db_mod):
++    with db_mod.engine.connect() as c:
++        assert c.exec_driver_sql("PRAGMA journal_mode").scalar().lower() == "wal"
++        assert c.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
++        assert c.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
