@@ -379,3 +379,4 @@ Touches: scripts/restore_db.py, backend/db.py, tests/test_t50*.py (test-author).
 - SRF-3 The demo-off confirm copy states what will change, using live data (e.g. the agent count).
 Touches: frontend/src/pages/Settings.jsx, backend/settings.py (only if needed), tests/e2e/test_t39_settings.py, tests/e2e/test_t48_settings_reachable.py, frontend/dist.
 Waves: W3a = T-20, T-19f, T-50f (no shared files). T-48f joins when a slot frees.
+- T-50f test baseline f2fccc8 (8 red, 2 regression guards).
