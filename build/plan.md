@@ -415,3 +415,4 @@ Guard rails: tests/test_po2_suggest.py fixture tiers (treasury-sweep Tier 1-2, l
 Shared files nobody touches in PB: adapters/base.py, backend/normalize.py, jobs/intake.py, fixtures/runs/. If one is needed, report it instead of editing.
 - PO-3a test baseline 0118e16 (31 red, 3 guard rails green; note: intake = 12 agents + the shadow row AC-1 tests add = 13). Builder running.
 - PO-1 post-merge 818 pass / 3 skip (6:51). Worktree removed. PO-1 DONE. Wave PA DONE.
+- PO-3b test baseline b573c5e (44 red, 4 guard rails green). Builder running.
