@@ -93,20 +93,43 @@ def test_dbf1_force_moves_unopenable_dest_and_siblings_aside(tmp_path):
     c.close()
 
 
+_HOLDER = (
+    "import sqlite3,sys,time\n"
+    "c=sqlite3.connect(sys.argv[1],isolation_level=None,timeout=0)\n"
+    "c.execute('BEGIN IMMEDIATE'); c.execute('INSERT INTO keep VALUES (43)')\n"
+    "print('locked',flush=True); sys.stdin.read()\n"
+)
+
+
 def test_dbf1_busy_refuses_even_with_force(tmp_path):
     src, dest = _src(tmp_path), _good_dest(tmp_path)
-    d = sqlite3.connect(dest, isolation_level=None, timeout=0)
-    d.execute("BEGIN IMMEDIATE")
-    d.execute("INSERT INTO keep VALUES (43)")
-    before = dest.read_bytes()
+    # Lock held by a separate process (fcntl locks are per-process, so reading
+    # dest in this process cannot drop it).
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(dest)], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, text=True)
     try:
+        assert holder.stdout.readline().strip() == "locked"
+        before = _snapshot(dest)  # includes the holder's own -journal
         r = _run("--from", str(src), "--to", str(dest), "--apply", "--force", tmp_path=tmp_path)
+        after = _snapshot(dest)
     finally:
-        d.execute("ROLLBACK")
-        d.close()
+        holder.stdin.close()
+        holder.wait(timeout=30)
     assert r.returncode == 3, r.stdout + r.stderr
     assert glob.glob(str(dest) + ".broken-*") == []
-    assert dest.read_bytes() == before
+    assert after == before
+
+
+def test_dbf1_small_garbage_dest_refused_without_force(tmp_path):
+    src = _src(tmp_path)
+    dest = tmp_path / "dest.db"
+    dest.write_bytes(b"junk" * 10)  # 40 bytes, no SQLite header, no siblings
+    r = _run("--from", str(src), "--to", str(dest), "--apply", tmp_path=tmp_path)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, out
+    assert "--force" in out and str(dest) in out, out
+    assert dest.read_bytes() == b"junk" * 10
+    assert glob.glob(str(dest) + ".broken-*") == []
 
 
 # ---- DBF-2
