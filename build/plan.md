@@ -473,3 +473,21 @@ Touches: frontend/src/pages/{ConnectScan,ScanReview,ImportSummary,ConnectionDeta
 - PO-6 test baseline 68e8dd6 (22 red; t9/t19a Fleet tests accept the 'Add by URL' label, register-external-button kept). Builder running.
 - PC end-of-wave on main a7d6c45: code 960 pass / 3 skip (11:59); e2e 257 pass (4:49). Wave PC DONE.
 - PO-6 r1 9eaf29d: full e2e 278 pass; code review pass (minors). Design review: changes needed. HIGH: the scan-done feed says 'found no agents' while the counters say 5; the imported tier differs from the review suggestion (payments-recon Tier 3 in review -> Tier 1 in Fleet). MEDIUM: the schedule radio vs 'Not scheduled'; a phantom running sync row; no Reconnect; names truncated at 1024. LOW: raw '->' in the why text, the sticky bar clips the last row, the progress bar at 64% when done, the sample badge wraps. Builder round 2 running.
+
+## Wave PE: PO-7 demo + publish (after PO-6 merges)
+Two sequential parts, two builders:
+- PO-7a Demo seed and walk (builder). The demo DB (backend/demo.py ensure_seeded / demo switch) also seeds connected sample tenants for all five clouds:
+  - AWS and Google connected with a finished scan, holding New and Changed rows awaiting review
+  - Microsoft connected with an awaiting-import queue (so the Fleet banner shows)
+  - Databricks needs_attention (one missing permission)
+  - Snowflake not connected (so the live wizard can be shown)
+  The real DB is never seeded with sample connections. docs/DEMO.md gains a "Connect a provider" walk (under 3 minutes: gallery → AWS sample connect → scan → review/why/override → import → Fleet → connection detail). ACs:
+  - D7-1 With demo mode on from a cold start, those states show on Connections and Fleet with no clicks.
+  - D7-2 The walk runs end to end in the browser with captures to the QA folder; no screen shows "unavailable", raw JSON or a status code.
+  - D7-3 The existing demo tests (t13/t15) still pass, and the demo seed is idempotent.
+  Touches: backend/demo.py, a new backend/demo_connections.py, docs/DEMO.md, tests (ui-tester). Branch task/PO-7a.
+- PO-7b Publish (domino-deploy, model sonnet; SR-6). Publish ACT as a Domino App from main via app.sh:
+  - small hardware tier, the project's environment
+  - env: ACT_PUBLIC_URL = the App URL (for the provider return links); the existing ACT_* vars from the workspace that the app needs (names only); no secrets printed
+  - the App serves the real DB on the dataset
+  Then smoke-check the App URL (health, #/connections, #/fleet). Record the App id + URL in STATUS.md and plan.md. If publishing needs a choice that isn't Nick's standing rule (e.g. visibility), use the most private option and report.
