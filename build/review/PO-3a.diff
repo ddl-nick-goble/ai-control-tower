@@ -1,0 +1,2043 @@
+diff --git a/adapters/__init__.py b/adapters/__init__.py
+index a53c1b1..f2ca58b 100644
+--- a/adapters/__init__.py
++++ b/adapters/__init__.py
+@@ -1,13 +1,14 @@
+ """Source adapters: one per agent platform, resolved by class through a small registry."""
+ import importlib
+ 
+-# provider -> (module, class). Snowflake has no adapter yet.
++# provider -> (module, class).
+ REGISTRY = {
+     "aws": ("adapters.aws", "AwsAdapter"),
+     "google": ("adapters.google", "GoogleAdapter"),
+     "microsoft": ("adapters.microsoft", "MicrosoftAdapter"),
+     "databricks": ("adapters.databricks", "DatabricksAdapter"),
+     "domino": ("adapters.domino", "DominoAdapter"),
++    "snowflake": ("adapters.snowflake", "SnowflakeAdapter"),
+ }
+ 
+ 
+diff --git a/adapters/aws.py b/adapters/aws.py
+index eaea262..8879248 100644
+--- a/adapters/aws.py
++++ b/adapters/aws.py
+@@ -1,36 +1,575 @@
+-"""AWS Bedrock AgentCore: ListAgentRuntimes + Agent Registry records."""
+-from .base import AdapterBase, SourceAgent, http_get_json, live_enabled, load_fixture
++"""AWS adapter: Bedrock AgentCore Runtimes (control plane), their gateways, tags and IAM execution roles.
+ 
++Real APIs do not carry tools, data scopes or value limits as first-class fields on a Runtime, so they are derived:
++  - tools          from the Gateway targets' tool schemas (GetAgentRuntime env GATEWAY_URL -> gateway id)
++  - data_scopes    from the Resource ARNs in the execution role's IAM policies
++  - value_limits   from `act:limit:<tool>=<amount><CCY>` resource tags
++  - owner          from the `owner` tag
++Everything the APIs cannot provide is "unknown" (scalars) or empty (lists), never invented. Raw payloads pass redact();
++environment variable values are never kept (keys only).
+ 
++All network calls go through the module-level `_http(method, url, **kw) -> (status, headers, json)`.
++Sample mode (cfg["sample"]) never calls it: it replays fixtures/aws/ (+ discovery-only runtimes from the sample tenant).
++`list_agents()` is the replay path used by jobs/intake.py.
++"""
++import copy
++import datetime as _dt
++import hashlib
++import hmac
++import json
++import os
++import re
++import time
++from urllib.parse import quote, unquote, urlparse
++
++from .base import AdapterBase, SourceAgent, fixtures_dir, live_enabled, load_fixture
++
++READ_VERBS = ("Get", "List", "Describe", "Query", "Scan", "Search", "BatchGet", "Lookup", "Head", "Select", "Read")
++DATA_SERVICES = {"s3", "dynamodb", "secretsmanager", "rds", "redshift", "glue", "athena", "bedrock-agentcore"}
++TEMPLATE_FIX = "Click Update stack in AWS (CloudFormation, about a minute) to refresh the ACT role, then check again."
++PROVIDER = "AWS Bedrock AgentCore"
++
++
++class Dep(dict):
++    """A dependency record ({"name": ...}) as backend.normalize expects. It also equals its plain name, so the
++    adapter contract's `"model-id" in agent.dependencies["models"]` holds."""
++
++    def __init__(self, name):
++        super().__init__(name=str(name))
++
++    def __eq__(self, other):
++        return self["name"] == other if isinstance(other, str) else dict.__eq__(self, other)
++
++    def __ne__(self, other):
++        return not self.__eq__(other)
++
++    __hash__ = None
++
++
++# ------------------------------------------------------------------ transport
++def _xml_to_obj(el):
++    kids = list(el)
++    tag = el.tag.split("}")[-1]
++    if not kids:
++        return tag, (el.text or "").strip()
++    out = {}
++    for k in kids:
++        t, v = _xml_to_obj(k)
++        if t in out:
++            out[t] = out[t] if isinstance(out[t], list) else [out[t]]
++            out[t].append(v)
++        else:
++            out[t] = v
++    return tag, out
++
++
++def _http(method, url, **kw):
++    """The only place that touches the network. -> (status, headers, parsed body)."""
++    import requests
++    r = requests.request(method, str(url), headers=kw.get("headers"), data=kw.get("data"), timeout=30)
++    try:
++        body = r.json()
++    except ValueError:
++        try:
++            import xml.etree.ElementTree as ET
++            t, v = _xml_to_obj(ET.fromstring(r.text))
++            body = {t: v}
++        except Exception:
++            body = {"message": r.text[:300]}
++    return r.status_code, dict(r.headers), body
++
++
++def _sig(key, msg):
++    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
++
++
++def _sigv4(method, url, body, creds, service, region, extra=None):
++    """Minimal AWS Signature V4 headers for one request."""
++    u = urlparse(url)
++    now = _dt.datetime.now(_dt.timezone.utc)
++    amz, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
++    payload = (body or "").encode() if isinstance(body, str) else (body or b"")
++    hdrs = {"host": u.netloc, "x-amz-date": amz, **(extra or {})}
++    if creds.get("session_token"):
++        hdrs["x-amz-security-token"] = creds["session_token"]
++    hdrs = {k.lower(): v for k, v in hdrs.items()}
++    names = sorted(hdrs)
++    q = "&".join(sorted(u.query.split("&"))) if u.query else ""
++    canon = "\n".join([method.upper(), quote(u.path or "/", safe="/%"), q,
++                       "".join(f"{n}:{hdrs[n].strip()}\n" for n in names), ";".join(names),
++                       hashlib.sha256(payload).hexdigest()])
++    scope = f"{day}/{region}/{service}/aws4_request"
++    sts = "\n".join(["AWS4-HMAC-SHA256", amz, scope, hashlib.sha256(canon.encode()).hexdigest()])
++    k = _sig(_sig(_sig(_sig(("AWS4" + creds.get("secret_access_key", "")).encode(), day), region), service),
++             "aws4_request")
++    sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
++    hdrs["authorization"] = (f"AWS4-HMAC-SHA256 Credential={creds.get('access_key_id', '')}/{scope}, "
++                             f"SignedHeaders={';'.join(names)}, Signature={sig}")
++    return hdrs
++
++
++def _call(method, service, region, path, creds, query=None, body=None, form=None):
++    """One signed call -> (status, body). Network errors and throttling never raise."""
++    host = "iam.amazonaws.com" if service == "iam" else f"{service}.{region}.amazonaws.com"
++    url = f"https://{host}{path}"
++    if query:
++        url += "?" + "&".join(f"{k}={quote(str(v), safe='')}" for k, v in query.items() if v is not None)
++    data, extra = None, {}
++    if form is not None:
++        data = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in {**form, "Version": "2010-05-08"}.items())
++        extra = {"content-type": "application/x-www-form-urlencoded; charset=utf-8"}
++    elif body is not None:
++        data = json.dumps(body)
++        extra = {"content-type": "application/json"}
++    sign_region = "us-east-1" if service == "iam" else region
++    for attempt in range(3):
++        try:
++            hdrs = _sigv4(method, url, data, creds or {}, service, sign_region, extra)
++            st, h, js = _http(method, url, headers=hdrs, data=data)
++        except (OSError, ValueError) as e:  # network error: degrade, never raise
++            return 0, {"message": str(e)}
++        if st == 429 and attempt < 2:
++            time.sleep(min(float((h or {}).get("Retry-After") or (h or {}).get("retry-after") or 1) , 5))
++            continue
++        return st, js if isinstance(js, (dict, list)) else {}
++    return st, js
++
++
++def _deep(o, key):
++    """First value for `key` anywhere in a nested structure (IAM XML wraps results; recordings do not)."""
++    if isinstance(o, dict):
++        if key in o:
++            return o[key]
++        for v in o.values():
++            r = _deep(v, key)
++            if r is not None:
++                return r
++    elif isinstance(o, list):
++        for v in o:
++            r = _deep(v, key)
++            if r is not None:
++                return r
++    return None
++
++
++def _as_list(v):
++    if v is None:
++        return []
++    if isinstance(v, dict) and "member" in v:
++        v = v["member"]
++    return v if isinstance(v, list) else [v]
++
++
++def _denied(st, body):
++    t = str((body or {}).get("__type") or (body or {}).get("code") or "")
++    return st in (401, 403) or "AccessDenied" in t or "UnauthorizedOperation" in t
++
++
++def _missing_action(body, default):
++    m = re.search(r"perform:\s*([A-Za-z0-9-]+:[A-Za-z*]+)", str((body or {}).get("message") or ""))
++    return m.group(1) if m else default
++
++
++def _fix_missing(action):
++    return f"The ACT role is missing {action}. {TEMPLATE_FIX}"
++
++
++# ------------------------------------------------------------------ pure helpers
++def _statements(policy_docs):
++    out = []
++    for d in policy_docs:
++        if isinstance(d, str):
++            try:
++                d = json.loads(d if d.lstrip().startswith("{") else unquote(d))
++            except ValueError:
++                continue
++        st = (d or {}).get("Statement") or []
++        out += [st] if isinstance(st, dict) else list(st)
++    return out
++
++
++def _actions(stmts):
++    acts = []
++    for s in stmts:
++        if s.get("Effect", "Allow") != "Allow":
++            continue
++        acts += _as_list(s.get("Action"))
++    return list(dict.fromkeys(acts))
++
++
++def write_actions(stmts):
++    """Granted actions that can invoke or change something."""
++    bad = []
++    for a in _actions(stmts):
++        verb = a.split(":", 1)[-1]
++        if a == "*" or verb == "*" or not verb.startswith(READ_VERBS):
++            bad.append(a)
++    return bad
++
++
++def data_scopes(stmts):
++    """Resource names (not whole ARNs) of data stores the role can touch."""
++    out = []
++    for s in stmts:
++        if s.get("Effect", "Allow") != "Allow":
++            continue
++        for r in _as_list(s.get("Resource")):
++            parts = str(r).split(":", 5)
++            if len(parts) < 6 or parts[0] != "arn" or parts[2] not in DATA_SERVICES:
++                continue
++            name = parts[5]
++            name = name.split("/", 1)[1] if name.startswith(("table/", "secret/")) else name
++            if name and name != "*":
++                out.append(name)
++    return list(dict.fromkeys(out))
++
++
++def _tool_names(targets):
++    tools, systems = [], []
++    for it in _as_list((targets or {}).get("items") if isinstance(targets, dict) else targets):
++        tc = (it.get("targetConfiguration") or {}).get("mcp") or {}
++        for t in ((tc.get("lambda") or {}).get("toolSchema") or {}).get("inlinePayload") or []:
++            if t.get("name"):
++                tools.append(t["name"])
++        ep = (tc.get("mcpServer") or {}).get("endpoint")
++        if ep:
++            systems.append(urlparse(ep).hostname or ep)
++    return list(dict.fromkeys(tools)), list(dict.fromkeys(systems))
++
++
++def _limits(tags):
++    out = {}
++    for k, v in (tags or {}).items():
++        m = re.fullmatch(r"act:limit:(.+)", k)
++        n = re.fullmatch(r"\s*([\d.]+)\s*([A-Za-z]{3})?\s*", str(v))
++        if m and n:
++            amt = float(n.group(1))
++            out[m.group(1)] = {"amount": int(amt) if amt == int(amt) else amt, "currency": (n.group(2) or "USD").upper()}
++    return out
++
++
++def _owner(tags):
++    for k in ("owner", "Owner", "team", "CreatedBy"):
++        if (tags or {}).get(k):
++            return tags[k]
++    return None
++
++
++def _redact(o):
++    try:
++        from backend.normalize_span import redact
++        return redact(o)
++    except Exception:  # pragma: no cover
++        return o
++
++
++def _gateway_id(env):
++    m = re.match(r"https?://([^./]+)\.gateway\.bedrock-agentcore\.", str((env or {}).get("GATEWAY_URL") or ""))
++    return m.group(1) if m else None
++
++
++def _models(env):
++    return [str(v) for k, v in (env or {}).items() if "MODEL" in k.upper() and v]
++
++
++def _build(summary, get=None, tags=None, stmts=None, targets=None, overlay=None, rec=None, shared=None,
++           native_id=None, issues=None):
++    """One SourceAgent from whatever the APIs returned. `get` is None when GetAgentRuntime failed."""
++    overlay = overlay or {}
++    g = get or {}
++    arn = summary.get("agentRuntimeArn") or g.get("agentRuntimeArn")
++    rid = summary.get("agentRuntimeId") or g.get("agentRuntimeId")
++    parts = (arn or "").split(":")
++    region, acct = (parts[3], parts[4]) if len(parts) > 5 else ("", "")
++    env = g.get("environmentVariables") or {}
++    tools, gw_systems = _tool_names(targets)
++    tools = list(dict.fromkeys(tools + [t for t in overlay.get("tools", [])]))
++    limits = {**_limits(tags), **(overlay.get("value_limits") or {})}
++    role = g.get("roleArn")
++    writes = write_actions(stmts or [])
++    criteria = dict(overlay.get("criteria") or {})
++    if writes:
++        criteria["write_actions"] = writes
++    if role and not shared:
++        identity = {"type": "iam_role", "principal": role, "distinct": True}
++        wi = (g.get("workloadIdentityDetails") or {}).get("workloadIdentityArn")
++        if wi:
++            identity["workload_identity"] = wi
++    else:
++        identity = {}  # no identity of its own (shared role) or not readable
++    version = str(g.get("agentRuntimeVersion") or summary.get("agentRuntimeVersion") or "unknown")
++    updated = g.get("lastUpdatedAt") or summary.get("lastUpdatedAt")
++    raw_get = copy.deepcopy(g)
++    if "environmentVariables" in raw_get:
++        raw_get["environmentVariables"] = {k: "[REDACTED]" for k in env}
++    prov = [p for p in (rec or {}).get("provenance", []) if isinstance(p, dict)]
++    return SourceAgent(
++        platform="aws", native_id=native_id or arn or rid, name=summary.get("agentRuntimeName") or g.get("agentRuntimeName") or rid,
++        description=summary.get("description") or g.get("description") or "", version=version,
++        owner=_owner(tags) or "unknown", status=g.get("status") or summary.get("status") or "unknown",
++        last_updated=updated,
++        url=(f"https://{region}.console.aws.amazon.com/bedrock-agentcore/home?region={region}#/agents/{rid}" if region else None),
++        provider=PROVIDER, tools=tools, data_scopes=data_scopes(stmts or []),
++        systems=list(dict.fromkeys(list(overlay.get("systems") or []) + gw_systems)), value_limits=limits,
++        criteria=criteria, identity=identity,
++        versions=[{"version": version, "created": updated}] if get or summary.get("agentRuntimeVersion") else [],
++        dependencies={"models": [Dep(m) for m in (_models(env) or ([] if get else ["unknown"]))],
++                      "mcp_servers": [Dep(env["GATEWAY_URL"])] if env.get("GATEWAY_URL") else []},
++        extra={"kind": "runtime", "arn": arn, "runtime_id": rid, "account": acct, "region": region,
++               "protocol": (g.get("protocolConfiguration") or {}).get("serverProtocol"),
++               "network_mode": (g.get("networkConfiguration") or {}).get("networkMode"),
++               "env_var_keys": sorted(env), "role_arn": role,
++               "registry_status": (rec or {}).get("status"), "registry_record": (rec or {}).get("recordId"),
++               "details_readable": bool(get), "gaps": list(issues or []),
++               **({"shared_role": role} if role and shared else {})},
++        raw=_redact({"runtime": raw_get or dict(summary), "registry": rec, "provenance": prov}))
++
++
++# ------------------------------------------------------------------ adapter
+ class AwsAdapter(AdapterBase):
+     platform = "aws"
+ 
+-    def _docs(self):
+-        if live_enabled("aws"):
+-            return (http_get_json("aws", "/agent-runtimes"),
+-                    http_get_json("aws", "/discoverable-registry-records"))
+-        return (load_fixture("aws/list-agent-runtimes.json"),
+-                load_fixture("aws/list-discoverable-registry-records.json"))
++    # ---- legacy replay (jobs/intake.py)
++    def _replay_docs(self):
++        runtimes = load_fixture("aws/list-agent-runtimes.json")
++        registry = load_fixture("aws/list-discoverable-registry-records.json")
++        p = fixtures_dir() / "aws" / "runtime-details.json"
++        details = json.loads(p.read_text()).get("runtimes", {}) if p.exists() else {}
++        return runtimes, registry, details
++
++    @staticmethod
++    def _from_detail(summary, d, overlay=None, rec=None, native_id=None, shared=None):
++        d = d or {}
++        shared = shared if shared is not None else (d.get("roleUsage") or {}).get("distinct") is False
++        return _build(summary, d.get("getAgentRuntime"), d.get("tags"),
++                      _statements([(d.get("rolePolicy") or {}).get("PolicyDocument")] if d.get("rolePolicy") else []),
++                      d.get("gatewayTargets"), overlay, rec, shared, native_id)
+ 
+     def list_agents(self):
+-        runtimes, registry = self._docs()
+-        recs = {r.get("descriptors", {}).get("agent", {}).get("runtimeArn"): r
+-                for r in registry.get("registryRecords", [])}
++        if live_enabled("aws"):
++            cfg = {"sample": False, "account_id": os.environ.get("ACT_AWS_ACCOUNT_ID", ""),
++                   "regions": [r for r in os.environ.get("ACT_AWS_REGIONS", "us-east-1").split(",") if r]}
++            creds = {"access_key_id": os.environ.get("AWS_ACCESS_KEY_ID", ""),
++                     "secret_access_key": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
++                     "session_token": os.environ.get("AWS_SESSION_TOKEN", "")}
++            return self.discover(cfg, creds, [])
++        runtimes, registry, details = self._replay_docs()
++        recs = {p.get("sourceId"): r for r in registry.get("registryRecords", []) for p in r.get("provenance", [])}
+         out = []
+         for rt in runtimes.get("agentRuntimes", []):
+-            md = rt.get("metadata") or {}
+-            rec = recs.get(rt.get("agentRuntimeArn")) or {}
+-            out.append(SourceAgent(
+-                platform="aws", native_id=rt["agentRuntimeId"], name=rt.get("agentRuntimeName") or rt["agentRuntimeId"],
+-                description=rt.get("description") or rec.get("description") or "",
+-                version=str(rt.get("agentRuntimeVersion") or rec.get("version") or "1"),
+-                owner=md.get("owner") or (rt.get("tags") or {}).get("owner"),
+-                status=rt.get("status", ""), last_updated=rt.get("lastUpdatedAt"),
+-                provider="AWS", tools=list(md.get("tools") or []), data_scopes=list(md.get("data_scopes") or []),
+-                systems=list(md.get("systems") or []), value_limits=dict(md.get("value_limits") or {}),
+-                criteria=dict(md.get("criteria") or {}), identity=dict(rt.get("identity") or {}),
+-                versions=[{"version": str(rt.get("agentRuntimeVersion") or "1"), "created": rt.get("lastUpdatedAt")}],
+-                extra={"arn": rt.get("agentRuntimeArn"), "registry_status": rec.get("status"),
+-                       "registry_record": rec.get("recordId")},
+-                raw={"runtime": rt, "registry": rec}))
++            out.append(self._from_detail(rt, details.get(rt["agentRuntimeId"]), rt.get("metadata"),
++                                         recs.get(rt.get("agentRuntimeArn")), native_id=rt["agentRuntimeId"]))
+         return out
++
++    # ---- connections contract
++    def auth_methods(self):
++        return ["oidc_role_quick_create",   # primary: CloudFormation role that trusts this Domino's OIDC issuer, no secrets
++                "external_id_role"]         # fallback: same template, ExternalId trust
++
++    @staticmethod
++    def _sample(cfg):
++        return bool((cfg or {}).get("sample"))
++
++    @staticmethod
++    def _home(cfg):
++        return ((cfg or {}).get("regions") or ["us-east-1"])[0]
++
++    def test_connection(self, cfg, creds):
++        if self._sample(cfg):
++            from backend.connections import sample
++            return sample.permissions("aws", recheck=True)
++        region = self._home(cfg)
++        items = []
++        st, body = _call("POST", "bedrock-agentcore-control", region, "/runtimes/", creds,
++                         query={"maxResults": 1}, body={})
++        action = "bedrock-agentcore:ListAgentRuntimes"
++        if 200 <= st < 300:
++            items.append({"name": "Read AgentCore runtimes", "detail": action, "required": True, "ok": True, "fix": None})
++        elif _denied(st, body):
++            items.append({"name": "Read AgentCore runtimes", "detail": action, "required": True, "ok": False,
++                          "fix": _fix_missing(_missing_action(body, action))})
++        else:
++            items.append({"name": "Read AgentCore runtimes", "detail": action, "required": True, "ok": False,
++                          "fix": f"AWS answered {st or 'with a network error'} in {region}. AgentCore may not be offered in "
++                                 f"that Region, or AWS is unavailable; pick another Region or try again."})
++        role = (cfg or {}).get("role_arn") or ""
++        role_name = role.rsplit("/", 1)[-1] or "ACT-ReadOnly"
++        stmts, st2, body2 = self._role_statements(role_name, creds)
++        if 200 <= st2 < 300:
++            items.append({"name": "Read IAM role policies", "detail": "iam:ListRolePolicies, iam:GetRolePolicy",
++                          "required": False, "ok": True, "fix": None})
++            for a in write_actions(stmts):
++                items.append({"name": f"Read-only check: {a}",
++                              "detail": f"ACT asked for read-only; this role can also {a}",
++                              "required": False, "ok": False,
++                              "fix": f"Remove {a} from the ACT role, or Update stack to the read-only template, then check again."})
++        else:
++            items.append({"name": "Read IAM role policies", "detail": "iam:ListRolePolicies, iam:GetRolePolicy",
++                          "required": False, "ok": False,
++                          "fix": _fix_missing(_missing_action(body2, "iam:ListRolePolicies"))})
++        return items
++
++    def _role_statements(self, role_name, creds):
++        st, body = _call("POST", "iam", "us-east-1", "/", creds, form={"Action": "ListRolePolicies", "RoleName": role_name})
++        if not 200 <= st < 300:
++            return [], st, body
++        names = _as_list(_deep(body, "PolicyNames")) or ([_deep(body, "PolicyName")] if _deep(body, "PolicyName") else [])
++        docs = []
++        for n in dict.fromkeys(names):
++            s2, b2 = _call("POST", "iam", "us-east-1", "/", creds,
++                           form={"Action": "GetRolePolicy", "RoleName": role_name, "PolicyName": n})
++            if 200 <= s2 < 300 and _deep(b2, "PolicyDocument") is not None:
++                docs.append(_deep(b2, "PolicyDocument"))
++        return _statements(docs), st, body
++
++    # ---- scopes
++    def list_scopes(self, cfg, creds):
++        def node(i, label, kind, children):
++            return {"id": i, "label": label, "name": label, "kind": kind, "selected": True, "children": children}
++        if self._sample(cfg):
++            from backend.connections import sample
++            out = []
++            for a in sample.tree("aws"):
++                out.append(node(a["id"], a["label"], "account",
++                                [node(c["id"], c["label"], "region", []) for c in a.get("children", [])]))
++            return out
++        acct = (cfg or {}).get("account_id")
++        if not acct:
++            st, body = _call("POST", "sts", "us-east-1", "/", creds, form={"Action": "GetCallerIdentity"})
++            acct = (_deep(body, "Account") or "") if 200 <= st < 300 else ""
++        regions = list((cfg or {}).get("regions") or [])
++        st, body = _call("POST", "account", self._home(cfg), "/listRegions", creds,
++                         body={"RegionOptStatusContains": ["ENABLED", "ENABLED_BY_DEFAULT"]})
++        if 200 <= st < 300 and isinstance(body.get("Regions"), list):
++            avail = [r["RegionName"] for r in body["Regions"] if r.get("RegionName")]
++            regions = [r for r in regions if r in avail] or regions or avail
++        regions = regions or ["us-east-1"]
++        return [node(f"aws:acct:{acct}", f"AWS account {acct}", "account",
++                     [node(f"aws:acct:{acct}:{r}", r, "region", []) for r in regions])]
++
++    # ---- discovery
++    @staticmethod
++    def _scope_pairs(scopes, cfg):
++        pairs = []
++        for s in scopes or []:
++            m = re.fullmatch(r"aws:acct:([\d-]+):([a-z0-9-]+)", str(s))
++            if m:
++                pairs.append((m.group(1).replace("-", ""), m.group(2)))
++        if not pairs:
++            pairs = [((cfg or {}).get("account_id", ""), r) for r in (cfg or {}).get("regions") or ["us-east-1"]]
++        return list(dict.fromkeys(pairs))
++
++    def _crawl(self, cfg, creds, scopes, progress=None):
++        """-> (agents, issues[{reason, fix}])"""
++        issues, agents = [], []
++        pairs = self._scope_pairs(scopes, cfg)
++        for n, (acct, region) in enumerate(pairs):
++            listed, token = [], None
++            while True:
++                st, body = _call("POST", "bedrock-agentcore-control", region, "/runtimes/", creds,
++                                 query={"maxResults": 100, "nextToken": token}, body={})
++                if not 200 <= st < 300:
++                    if _denied(st, body):
++                        a = _missing_action(body, "bedrock-agentcore:ListAgentRuntimes")
++                        issues.append({"reason": f"ACT cannot list AgentCore runtimes in {region}: missing {a}.",
++                                       "fix": _fix_missing(a)})
++                    elif st == 404 or st == 0:
++                        issues.append({"reason": f"AgentCore is not reachable in {region}; its agents are not listed.",
++                                       "fix": "AgentCore may not be offered in this Region or the Region is disabled; deselect it, or check the Region is enabled."})
++                    else:
++                        issues.append({"reason": f"AWS returned {st} listing runtimes in {region}.",
++                                       "fix": "Check again in a few minutes; AWS may be throttling or unavailable."})
++                    break
++                listed += body.get("agentRuntimes") or []
++                token = body.get("nextToken")
++                if not token:
++                    break
++            for rt in listed:
++                agents.append(self._read_one(rt, region, creds, issues))
++            if progress:
++                progress(n + 1, len(pairs), f"{acct} / {region}: {len(listed)} runtimes")
++        # a role used by more than one runtime is not a distinct identity
++        counts = {}
++        for a in agents:
++            r = a.extra.get("role_arn")
++            if r:
++                counts[r] = counts.get(r, 0) + 1
++        for a in agents:
++            r = a.extra.get("role_arn")
++            if r and counts[r] > 1:
++                a.identity = {}
++                a.extra["shared_role"] = r
++        return agents, issues
++
++    def _read_one(self, rt, region, creds, issues):
++        rid, arn, gaps = rt["agentRuntimeId"], rt["agentRuntimeArn"], []
++        st, get = _call("GET", "bedrock-agentcore-control", region, f"/runtimes/{quote(rid, safe='')}/", creds)
++        if not (200 <= st < 300 and isinstance(get, dict) and get.get("agentRuntimeId")):
++            gaps.append("details")
++            issues.append({"reason": f"Could not read the details of {rt.get('agentRuntimeName', rid)} (HTTP {st}); its role, "
++                                     f"tools and model are unknown.",
++                           "fix": "Make sure the ACT role allows bedrock-agentcore:GetAgentRuntime (" + TEMPLATE_FIX.lower() + ")"
++                           if _denied(st, get) else "It may have been deleted during the scan; ACT marks it Missing on the next crawl."})
++            return _build(rt, None, None, None, None, native_id=arn, issues=gaps)
++        stt, tg = _call("GET", "bedrock-agentcore-control", region, f"/tags/{quote(arn, safe='')}", creds)
++        tags = tg.get("tags") if 200 <= stt < 300 and isinstance(tg, dict) else None
++        if tags is None:
++            gaps.append("tags")
++        stmts = []
++        if get.get("roleArn"):
++            stmts, sti, _ = self._role_statements(get["roleArn"].rsplit("/", 1)[-1], creds)
++            if not 200 <= sti < 300:
++                gaps.append("role policy")
++        targets, gid = None, _gateway_id(get.get("environmentVariables"))
++        if gid:
++            stg, tgt = _call("GET", "bedrock-agentcore-control", region, f"/gateways/{quote(gid, safe='')}/targets/", creds)
++            if 200 <= stg < 300:
++                targets = tgt
++            else:
++                gaps.append("gateway targets")
++        else:
++            gaps.append("gateway")
++        if tags is None:
++            issues.append({"reason": f"Owner and value limits of {rt['agentRuntimeName']} are unknown (tags not readable).",
++                           "fix": "Allow bedrock-agentcore:ListTagsForResource on the ACT role and tag the runtime with owner and act:limit:<tool>."})
++        if "gateway targets" in gaps or "gateway" in gaps:
++            issues.append({"reason": f"Tools of {rt['agentRuntimeName']} are unknown (no readable gateway targets).",
++                           "fix": "Allow bedrock-agentcore:ListGatewayTargets, or set GATEWAY_URL on the runtime so ACT can find its gateway."})
++        if "role policy" in gaps:
++            issues.append({"reason": f"Data scopes of {rt['agentRuntimeName']} are unknown (role policies not readable).",
++                           "fix": "Allow iam:ListRolePolicies and iam:GetRolePolicy on the ACT role. " + TEMPLATE_FIX})
++        return _build(rt, get, tags, stmts, targets, native_id=arn, issues=gaps)
++
++    def discover(self, cfg, creds, scopes, progress=None):
++        if self._sample(cfg):
++            return self._sample_agents()
++        agents, issues = self._crawl(cfg, creds, scopes, progress)
++        self._last_issues = issues
++        return agents
++
++    def _sample_agents(self):
++        from backend.connections import sample
++        out = self.list_agents_replay()
++        for d in sample.tenant("aws").get("agents") or []:
++            g = d.get("getAgentRuntime") or {}
++            out.append(self._from_detail(g, d, native_id=g.get("agentRuntimeArn")))
++        return out
++
++    def list_agents_replay(self):
++        saved = os.environ.pop("ACT_LIVE_AWS", None)
++        try:
++            return self.list_agents()
++        finally:
++            if saved is not None:
++                os.environ["ACT_LIVE_AWS"] = saved
++
++    # ---- coverage (PO-3.5)
++    def coverage(self, cfg, creds, scopes=None):
++        static = [{"reason": "Only AgentCore Runtimes are inventoried. AgentCore harnesses and classic Bedrock Agents are not read yet.",
++                   "fix": "Register them in the ACT import review by hand, or ask for the harness and Bedrock Agents adapter."},
++                  {"reason": "Agents in AWS accounts or Regions you did not select are not scanned.",
++                   "fix": "Connect each additional account (or the whole AWS Organization) from the Connect a provider page."}]
++        if self._sample(cfg):
++            return static
++        _, issues = self._crawl(cfg, creds, scopes if scopes is not None else None)
++        return issues + static
+diff --git a/adapters/snowflake.py b/adapters/snowflake.py
+new file mode 100644
+index 0000000..4b453a7
+--- /dev/null
++++ b/adapters/snowflake.py
+@@ -0,0 +1,415 @@
++"""Snowflake adapter: Cortex Agents through the SQL API (SHOW AGENTS, DESCRIBE AGENT, SHOW VERSIONS, SHOW GRANTS).
++
++Read-only: ACT never runs or changes agents. Auth is Workload Identity Federation with the Domino token (primary) or
++OAuth / key pair (fallback); `creds` is {"token", "token_type"}.
++
++Mapping notes (see research/providers/snowflake.md section 3): a Cortex Agent has no identity of its own (tools run
++under the caller's roles), no status field and no value limits. Unreadable values are "unknown" (scalars) or empty
++(lists), never invented. `agent_spec` free text (instructions, filters, auth headers, URLs) is never kept: raw holds a
++structural projection that is also scrubbed for keys and tokens.
++
++All network calls go through the module-level `_http(method, url, **kw) -> (status, headers, json)`.
++Sample mode (cfg["sample"]) never calls it. Snowflake is not part of jobs/intake.py.
++"""
++import datetime as _dt
++import hashlib
++import json
++import re
++import time
++
++from .base import AdapterBase, SourceAgent
++
++PROVIDER = "Snowflake Cortex"
++READ_PRIVS = {"USAGE", "MONITOR", "SELECT", "REFERENCES", "READ", "IMPORTED PRIVILEGES"}
++GRANT_FIX = ("ACT can't see your agents yet. Run the grant snippet again as ACCOUNTADMIN "
++             "(GRANT MONITOR ON ALL AGENTS IN SCHEMA <db>.<schema> TO ROLE ACT_READER; ACT regenerates it for you).")
++ADMIN_FIX = ("Run this as ACCOUNTADMIN (first line USE ROLE ACCOUNTADMIN), or ask your Snowflake admin "
++             "(use Send to admin).")
++
++
++class Dep(dict):
++    """A dependency record ({"name": ...}) as backend.normalize expects. It also equals its plain name, so the
++    adapter contract's `"model-id" in agent.dependencies["models"]` holds."""
++
++    def __init__(self, name):
++        super().__init__(name=str(name))
++
++    def __eq__(self, other):
++        return self["name"] == other if isinstance(other, str) else dict.__eq__(self, other)
++
++    def __ne__(self, other):
++        return not self.__eq__(other)
++
++    __hash__ = None
++
++
++# ------------------------------------------------------------------ transport
++def _http(method, url, **kw):
++    """The only place that touches the network. -> (status, headers, json)."""
++    import requests
++    r = requests.request(method, str(url), headers=kw.get("headers"), json=kw.get("json"),
++                         params=kw.get("params"), timeout=kw.get("timeout", 60))
++    try:
++        body = r.json()
++    except ValueError:
++        body = {"message": r.text[:300]}
++    return r.status_code, dict(r.headers), body
++
++
++def _host(cfg):
++    return (cfg.get("host") or f"{cfg.get('account', '')}.snowflakecomputing.com").replace("_", "-")
++
++
++def _headers(creds):
++    tok, tt = (creds or {}).get("token", ""), (creds or {}).get("token_type") or "OAUTH"
++    bearer = f"WIF.OIDC.{tok}" if tt == "WORKLOAD_IDENTITY_FEDERATION" else tok
++    return {"Authorization": f"Bearer {bearer}", "X-Snowflake-Authorization-Token-Type": tt,
++            "Content-Type": "application/json", "Accept": "application/json", "User-Agent": "ACT/1.0"}
++
++
++def _send(method, url, creds, **kw):
++    """One request with 429 backoff (honours Retry-After). Never raises: -> (status, body)."""
++    st, h, body = 0, {}, {"message": "no response"}
++    for attempt in range(3):
++        try:
++            st, h, body = _http(method, url, headers=_headers(creds), **kw)
++        except (OSError, ValueError) as e:
++            return 0, {"message": str(e)}
++        if st == 429 and attempt < 2:
++            ra = {k.lower(): v for k, v in (h or {}).items()}.get("retry-after")
++            time.sleep(min(float(ra or 1), 5))
++            continue
++        break
++    return st, body if isinstance(body, dict) else {}
++
++
++def _cols(body):
++    return [c["name"].lower() for c in (body.get("resultSetMetaData") or {}).get("rowType") or []]
++
++
++def _rows(body):
++    cols = _cols(body)
++    return [dict(zip(cols, r)) for r in body.get("data") or []]
++
++
++def _sql(cfg, creds, statement):
++    """Run one statement and gather every partition. -> (rows, error) where error is None or
++    {"status", "code", "message"}."""
++    base = f"https://{_host(cfg)}/api/v2/statements"
++    payload = {"statement": statement, "timeout": 60, "role": cfg.get("role"), "warehouse": cfg.get("warehouse")}
++    st, body = _send("POST", base, creds, json={k: v for k, v in payload.items() if v})
++    polls = 0
++    while st == 202 and polls < 30:  # still running: poll the status URL
++        polls += 1
++        time.sleep(1)
++        st, body = _send("GET", f"https://{_host(cfg)}{body.get('statementStatusUrl') or '/api/v2/statements/' + str(body.get('statementHandle'))}", creds)
++    if st != 200:
++        return [], {"status": st, "code": str(body.get("code") or ""), "message": str(body.get("message") or "")}
++    rows = _rows(body)
++    handle = body.get("statementHandle")
++    parts = (body.get("resultSetMetaData") or {}).get("partitionInfo") or []
++    for n in range(1, len(parts)):
++        stp, bp = _send("GET", f"{base}/{handle}?partition={n}", creds)
++        if stp != 200:
++            return rows, {"status": stp, "code": str(bp.get("code") or ""), "message": f"partition {n} failed"}
++        rows += [dict(zip(_cols(bp) or _cols(body), r)) for r in bp.get("data") or []]
++    return rows, None
++
++
++def _fix_for(err, what="this"):
++    code, st, msg = err.get("code", ""), err.get("status", 0), (err.get("message") or "").lower()
++    if code == "003001" or "insufficient privileges" in msg:
++        return ADMIN_FIX
++    if st == 401:
++        return ("Snowflake didn't accept ACT's Domino identity. The App must run as the service account that the "
++                "setup SQL trusts; re-generate the SQL, or ask your Snowflake admin to switch to key pair.")
++    if code == "390422":
++        return "Your account restricts IPs. Add the Domino egress IPs ACT shows to a network policy on ACT_SVC."
++    if code == "390189":
++        return "Re-run the setup SQL; ACT_READER wasn't granted to ACT_SVC."
++    if code == "000606":
++        return "ACT_WH is missing or suspended without AUTO_RESUME; re-run the setup SQL."
++    if code == "002003":
++        return "ACT's role has no access to that object. " + GRANT_FIX
++    if st == 429 or code == "000625":
++        return "Snowflake asked ACT to slow down. Check again in a minute."
++    return f"Snowflake answered {st or 'with a network error'} {code}. Check again, or ask your Snowflake admin."
++
++
++# ------------------------------------------------------------------ pure helpers
++_SCRUB = [re.compile(r"(?i)bearer\s+\S+"), re.compile(r"\bsk-[A-Za-z0-9_-]{6,}"), re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
++          re.compile(r"(?i)([?&;]\s*)?(token|api[_-]?key|password|secret)=[^&\s\"']+")]
++
++
++def _scrub(o):
++    if isinstance(o, str):
++        if "token=" in o.lower():
++            return "[REDACTED]"
++        for p in _SCRUB:
++            o = p.sub("[REDACTED]", o)
++        return o
++    if isinstance(o, dict):
++        return {k: _scrub(v) for k, v in o.items()}
++    if isinstance(o, list):
++        return [_scrub(v) for v in o]
++    return o
++
++
++def _redact(o):
++    try:
++        from backend.normalize_span import redact
++        o = redact(o)
++    except Exception:  # pragma: no cover
++        pass
++    return _scrub(o)
++
++
++def _iso(v):
++    try:
++        return _dt.datetime.fromtimestamp(float(v), _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
++    except (TypeError, ValueError):
++        return v or None
++
++
++def _display(row):
++    try:
++        return json.loads(row.get("profile") or "{}").get("display_name") or row["name"]
++    except (ValueError, AttributeError):
++        return row["name"]
++
++
++def write_grants(rows):
++    """Privileges granted to the role that can invoke, modify or operate something."""
++    out = []
++    for r in rows:
++        p = str(r.get("privilege") or "").upper()
++        if p and p not in READ_PRIVS:
++            out.append(f"{p} on {r.get('granted_on', 'object')} {r.get('name', '')}".strip())
++    return list(dict.fromkeys(out))
++
++
++def _project_spec(spec):
++    """Structural projection of agent_spec: no instructions, filters, descriptions, URLs or auth headers."""
++    res = spec.get("tool_resources") or {}
++    keep = ("semantic_view", "search_service", "identifier", "type")
++    return {"models": spec.get("models") or {},
++            "orchestration": {"budget": (spec.get("orchestration") or {}).get("budget"),
++                              "tool_not_accessible": (spec.get("orchestration") or {}).get("tool_not_accessible")},
++            "tools": [{"type": (t.get("tool_spec") or {}).get("type"), "name": (t.get("tool_spec") or {}).get("name")}
++                      for t in spec.get("tools") or []],
++            "tool_resources": {k: {f: v[f] for f in keep if f in v} for k, v in res.items() if isinstance(v, dict)},
++            "mcp_servers": [{"name": (m.get("server_spec") or {}).get("name")} for m in spec.get("mcp_servers") or []]}
++
++
++def _build(account, host, show, desc=None, versions=None, grants=None, issues=None):
++    """One SourceAgent from a SHOW AGENTS row plus whatever DESCRIBE / SHOW VERSIONS / SHOW GRANTS returned.
++    `desc` is the DESCRIBE row, or None when it could not be read."""
++    db, sch, name = show.get("database_name", ""), show.get("schema_name", ""), show["name"]
++    spec, spec_state = None, "unreadable"
++    if desc is not None:
++        raw_spec = desc.get("agent_spec")
++        if raw_spec:
++            try:
++                spec, spec_state = json.loads(raw_spec), "read"
++            except ValueError:
++                spec_state = "invalid"
++        else:
++            spec_state = "hidden" if str(show.get("is_secure")).lower() == "true" else "empty"
++    tools, scopes, systems, models, mcp = [], [], [], ["unknown"], []
++    criteria = {"is_secure": str(show.get("is_secure")).lower() == "true"}
++    if spec is not None:
++        tools = [t["tool_spec"]["name"] for t in spec.get("tools") or [] if (t.get("tool_spec") or {}).get("name")]
++        mcp = [m["server_spec"]["name"] for m in spec.get("mcp_servers") or [] if (m.get("server_spec") or {}).get("name")]
++        tools += [m for m in mcp if m not in tools]
++        for r in (spec.get("tool_resources") or {}).values():
++            for k in ("semantic_view", "search_service", "identifier"):
++                if isinstance(r, dict) and r.get(k):
++                    scopes.append(r[k])
++        models = [(spec.get("models") or {}).get("orchestration") or "auto"]
++        b = (spec.get("orchestration") or {}).get("budget") or {}
++        criteria.update(budget_seconds=b.get("seconds"), budget_tokens=b.get("tokens"),
++                        tool_not_accessible=(spec.get("orchestration") or {}).get("tool_not_accessible"))
++        types = {(t.get("tool_spec") or {}).get("type") for t in spec.get("tools") or []}
++        criteria["has_web_search"] = "web_search" in types
++        criteria["has_code_execution"] = bool(types & {"code_interpreter", "code_execution"})
++        criteria["has_generic_tools"] = "generic" in types
++        systems = ["web_search"] if criteria["has_web_search"] else []
++    invokers = [r["grantee_name"] for r in grants or [] if str(r.get("privilege")).upper() == "USAGE" and r.get("grantee_name")]
++    if invokers:
++        criteria["invokers"] = len(invokers)
++        criteria["public_invokers"] = "PUBLIC" in invokers
++    vers = [{"version": v["name"], "created": _iso(v.get("created_on")), **({"alias": v["alias"]} if v.get("alias") else {})}
++            for v in versions or [] if v.get("name")]
++    default = next((v["name"] for v in versions or [] if str(v.get("is_default")).lower() == "true"), None) \
++        or (vers[0]["version"] if vers else "unknown")
++    created = [c for c in [_iso(show.get("created_on"))] + [v["created"] for v in vers] if c]
++    owner = show.get("owner") or "unknown"
++    status = "SECURE_SPEC_HIDDEN" if spec_state == "hidden" and criteria["is_secure"] else "ACTIVE"
++    comment = show.get("comment") or ""
++    if not comment and spec and (spec.get("instructions") or {}).get("response"):
++        comment = _scrub(spec["instructions"]["response"].splitlines()[0])
++    projected = _project_spec(spec) if spec is not None else None
++    sha = hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest() if spec is not None else None
++    return SourceAgent(
++        platform="snowflake", native_id=f"{account}/{db}.{sch}.{name}", name=_display(show), description=comment,
++        version=default, owner=owner, status=status, last_updated=max(created) if created else None,
++        url=f"https://{host}/", provider=PROVIDER, tools=tools, data_scopes=list(dict.fromkeys(scopes)),
++        systems=systems, value_limits={}, criteria=criteria,
++        identity={"type": "caller_rights", "principal": owner, "distinct": False, "invokers": invokers},
++        versions=vers, dependencies={"models": [Dep(m) for m in models], "mcp_servers": [Dep(m) for m in mcp]},
++        extra={"account_host": host, "database": db, "schema": sch, "spec_state": spec_state, "spec_sha256": sha,
++               "default_version": default if vers else None, "profile": _scrub(show.get("profile")),
++               "gaps": list(issues or [])},
++        raw=_redact({"show": show, "describe": {"agent_spec": projected} if projected is not None else None}))
++
++
++# ------------------------------------------------------------------ adapter
++class SnowflakeAdapter(AdapterBase):
++    platform = "snowflake"
++
++    def list_agents(self):
++        return []  # Snowflake is connection-driven (discover); it is not part of the intake job
++
++    def auth_methods(self):
++        return ["workload_identity_federation",  # primary: Domino OIDC token, secretless
++                "oauth_pkce",                      # fallback: Snowflake OAuth custom client
++                "key_pair"]                        # fallback: key-pair JWT
++
++    @staticmethod
++    def _sample(cfg):
++        return bool((cfg or {}).get("sample"))
++
++    @staticmethod
++    def _acct(cfg):
++        return (cfg or {}).get("account") or "unknown"
++
++    def test_connection(self, cfg, creds):
++        if self._sample(cfg):
++            from backend.connections import sample
++            return sample.permissions("snowflake", recheck=True)
++        items = []
++        rows, err = _sql(cfg, creds, "SHOW AGENTS IN ACCOUNT")
++        det = "SHOW AGENTS IN ACCOUNT"
++        if err:
++            items.append({"name": "Agents visible", "detail": det, "required": True, "ok": False, "fix": _fix_for(err)})
++        elif not rows:
++            items.append({"name": "Agents visible", "detail": det + " (0 agents)", "required": True, "ok": False,
++                          "fix": GRANT_FIX})
++        else:
++            items.append({"name": "Agents visible", "detail": f"{det} ({len(rows)} agents)", "required": True,
++                          "ok": True, "fix": None})
++        role = cfg.get("role") or "ACT_READER"
++        grows, gerr = _sql(cfg, creds, f"SHOW GRANTS TO ROLE {role}")
++        gdet = f"SHOW GRANTS TO ROLE {role}"
++        if gerr:
++            items.append({"name": "Role privileges", "detail": gdet, "required": True, "ok": False, "fix": _fix_for(gerr)})
++        else:
++            items.append({"name": "Role privileges", "detail": gdet, "required": True, "ok": True, "fix": None})
++            for w in write_grants(grows):
++                items.append({"name": f"Read-only check: {w}",
++                              "detail": f"ACT asked for read-only; this role can also {w}",
++                              "required": False, "ok": False,
++                              "fix": f"Revoke it: REVOKE {w.split(' on ')[0]} ... FROM ROLE {role}, or re-run ACT's setup SQL, then check again."})
++        return items
++
++    def list_scopes(self, cfg, creds):
++        def node(i, label, kind, children, n=None):
++            d = {"id": i, "label": label, "name": label, "kind": kind, "selected": True, "children": children}
++            if n is not None:
++                d["count"] = n
++            return d
++        if self._sample(cfg):
++            from backend.connections import sample
++            return [node(d["id"], d["label"], "database",
++                         [node(c["id"], c["label"], "schema", [], c.get("agents")) for c in d.get("children", [])])
++                    for d in sample.tree("snowflake")]
++        rows, err = _sql(cfg, creds, "SHOW AGENTS IN ACCOUNT")
++        if err:
++            return []
++        acct, groups = self._acct(cfg), {}
++        for r in rows:
++            groups.setdefault(r["database_name"], {}).setdefault(r["schema_name"], 0)
++            groups[r["database_name"]][r["schema_name"]] += 1
++        return [node(f"{acct}/{db}", db, "database",
++                     [node(f"{acct}/{db}.{s}", f"{db}.{s}", "schema", [], n) for s, n in sorted(schemas.items())],
++                     sum(schemas.values()))
++                for db, schemas in sorted(groups.items())]
++
++    # ---- discovery
++    def _crawl(self, cfg, creds, scopes, progress=None):
++        """-> (agents, issues[{reason, fix}], visible_rows)"""
++        issues, agents = [], []
++        rows, err = _sql(cfg, creds, "SHOW AGENTS IN ACCOUNT")
++        if err:
++            issues.append({"reason": f"ACT cannot list agents (Snowflake {err.get('code') or err.get('status')}).",
++                           "fix": _fix_for(err)})
++            return [], issues, []
++        acct, host = self._acct(cfg), _host(cfg)
++        want = {str(s) for s in scopes or []}
++        if want:
++            rows = [r for r in rows if f"{acct}/{r['database_name']}.{r['schema_name']}" in want
++                    or f"{acct}/{r['database_name']}" in want]
++        for n, row in enumerate(rows):
++            agents.append(self._read_one(cfg, creds, acct, host, row, issues))
++            if progress:
++                progress(n + 1, len(rows), f"{row['database_name']}.{row['schema_name']}.{row['name']}")
++        return agents, issues, rows
++
++    def _read_one(self, cfg, creds, acct, host, row, issues):
++        fq = f'"{row["database_name"]}"."{row["schema_name"]}"."{row["name"]}"'
++        label = f"{row['database_name']}.{row['schema_name']}.{row['name']}"
++        gaps = []
++        d, derr = _sql(cfg, creds, f"DESCRIBE AGENT {fq}")
++        desc = d[0] if d and not derr else None
++        if desc is None:
++            gaps.append("describe")
++            issues.append({"reason": f"Could not read the spec of {label}; its tools, model and data are unknown.",
++                           "fix": "Grant MONITOR on the agent to ACT_READER: GRANT MONITOR ON AGENT " + label + " TO ROLE ACT_READER;"})
++        elif not desc.get("agent_spec") and str(row.get("is_secure")).lower() == "true":
++            issues.append({"reason": f"{label} is a secure agent, so its tools are hidden from ACT.",
++                           "fix": "Ask the agent's owner to grant OWNERSHIP-level visibility, or accept a partial record; ACT infers tools from traces."})
++        v, verr = _sql(cfg, creds, f"SHOW VERSIONS IN AGENT {fq}")
++        if verr:
++            gaps.append("versions")
++        g, gerr = _sql(cfg, creds, f"SHOW GRANTS ON AGENT {fq}")
++        if gerr:
++            gaps.append("grants")
++        return _build(acct, host, row, desc, None if verr else v, None if gerr else g, gaps)
++
++    def discover(self, cfg, creds, scopes, progress=None):
++        if self._sample(cfg):
++            from backend.connections import sample
++            acct, host = "EXAMPLEBANK-PROD", "examplebank-prod.snowflakecomputing.com"
++            return [_build(acct, host, a["show"], a.get("describe"), a.get("versions"), a.get("grants"))
++                    for a in sample.tenant("snowflake").get("agents") or []]
++        agents, issues, _ = self._crawl(cfg, creds, scopes, progress)
++        self._last_issues = issues
++        return agents
++
++    # ---- coverage (PO-3.5)
++    def coverage(self, cfg, creds, scopes=None):
++        if self._sample(cfg):
++            return [{"reason": "Agents published only in Snowflake Intelligence can't be listed: Snowflake has no command for that.",
++                     "fix": "Share the agent's schema with ACT_READER (MONITOR), so it shows up under SHOW AGENTS."}]
++        _, issues, rows = self._crawl(cfg, creds, scopes)
++        out = list(issues)
++        if not rows and not issues:
++            out.append({"reason": "ACT sees 0 agents.", "fix": GRANT_FIX})
++        elif not rows:
++            pass
++        if len(rows) >= 10000:
++            out.append({"reason": "SHOW AGENTS returned its 10,000 row cap, so some agents may be missing.",
++                        "fix": "Select fewer databases so ACT lists them one database at a time."})
++        used, uerr = _sql(cfg, creds, "SELECT DISTINCT agent_database_name, agent_schema_name, agent_name "
++                                      "FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_AGENT_USAGE_HISTORY "
++                                      "WHERE start_time > DATEADD(day,-90,CURRENT_TIMESTAMP())")
++        if uerr:
++            out.append({"reason": "Usage history isn't readable, so ACT can't tell whether agents are hidden from it.",
++                        "fix": "Run GRANT DATABASE ROLE SNOWFLAKE.USAGE_VIEWER TO ROLE ACT_READER; as ACCOUNTADMIN."})
++        else:
++            seen = {(r["database_name"], r["schema_name"], r["name"]) for r in rows}
++            missing = {(u.get("agent_database_name"), u.get("agent_schema_name"), u.get("agent_name")) for u in used} - seen
++            if missing:
++                out.append({"reason": f"{len(missing)} agents are used in the last 90 days but ACT can't see them.",
++                            "fix": GRANT_FIX})
++        return out
+diff --git a/fixtures/aws/list-agent-runtimes.json b/fixtures/aws/list-agent-runtimes.json
+index e4bbf91..92c6e7c 100644
+--- a/fixtures/aws/list-agent-runtimes.json
++++ b/fixtures/aws/list-agent-runtimes.json
+@@ -8,17 +8,7 @@
+       "description": "Sweeps excess cash between treasury accounts and posts journals.",
+       "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
+       "status": "READY",
+-      "tags": {
+-        "owner": "treasury-ops@example-bank.com",
+-        "cost-center": "CC-2e4e"
+-      },
+-      "identity": {
+-        "type": "iam_role",
+-        "principal": "arn:aws:iam::123456789012:role/agentcore-treasury-sweep-agent",
+-        "distinct": true
+-      },
+       "metadata": {
+-        "owner": "treasury-ops@example-bank.com",
+         "tools": [
+           "get_balance",
+           "sweep_plan",
+@@ -26,26 +16,22 @@
+           "transfer_funds",
+           "post_journal_entry"
+         ],
+-        "data_scopes": [
+-          "treasury.cash_positions",
+-          "treasury.nostro_balances"
+-        ],
+         "systems": [
+           "TMS",
+           "CoreBanking",
+           "SWIFT-gateway"
+         ],
+-        "value_limits": {
+-          "transfer_funds": {
+-            "amount": 250000,
+-            "currency": "USD"
+-          }
+-        },
+         "criteria": {
+           "autonomy": "autonomous",
+           "consequence": "moves_money",
+           "human_in_loop": false,
+           "customer_impact": "high"
++        },
++        "value_limits": {
++          "transfer_funds": {
++            "amount": 250000,
++            "currency": "USD"
++          }
+         }
+       }
+     },
+@@ -57,27 +43,13 @@
+       "description": "Prepares periodic KYC refresh requests for corporate customers.",
+       "lastUpdatedAt": "2026-10-28T09:05:12.087Z",
+       "status": "READY",
+-      "tags": {
+-        "owner": "kyc-operations@example-bank.com",
+-        "cost-center": "CC-c6f7"
+-      },
+-      "identity": {
+-        "type": "iam_role",
+-        "principal": "arn:aws:iam::123456789012:role/agentcore-kyc-refresh-agent",
+-        "distinct": true
+-      },
+       "metadata": {
+-        "owner": "kyc-operations@example-bank.com",
+         "tools": [
+           "lookup_customer",
+           "fetch_sanctions_list",
+           "draft_refresh_request",
+           "update_kyc_status"
+         ],
+-        "data_scopes": [
+-          "customer.pii",
+-          "kyc.documents"
+-        ],
+         "systems": [
+           "KYC-platform",
+           "CRM"
+@@ -97,27 +69,13 @@
+       "description": "Classifies equity and FX trade breaks and opens tickets.",
+       "lastUpdatedAt": "2026-11-05T16:41:30.944Z",
+       "status": "READY",
+-      "tags": {
+-        "owner": "markets-ops@example-bank.com",
+-        "cost-center": "CC-ee9a"
+-      },
+-      "identity": {
+-        "type": "none",
+-        "principal": "arn:aws:iam::123456789012:role/agentcore-markets-shared-runtime",
+-        "note": "shares the markets runtime execution role"
+-      },
+       "metadata": {
+-        "owner": "markets-ops@example-bank.com",
+         "tools": [
+           "get_trade",
+           "get_confirmation",
+           "classify_break",
+           "open_ticket"
+         ],
+-        "data_scopes": [
+-          "trades.equities",
+-          "trades.fx"
+-        ],
+         "systems": [
+           "OMS",
+           "ServiceNow"
+diff --git a/fixtures/aws/list-discoverable-registry-records.json b/fixtures/aws/list-discoverable-registry-records.json
+index 9e74245..d761882 100644
+--- a/fixtures/aws/list-discoverable-registry-records.json
++++ b/fixtures/aws/list-discoverable-registry-records.json
+@@ -3,98 +3,98 @@
+     {
+       "registryId": "reg-bank-prod",
+       "recordId": "rec-xk3lq9zpt2",
+-      "name": "treasury-sweep-agent",
+-      "descriptorType": "AGENT",
++      "recordArn": "arn:aws:agent-registry:us-east-1:123456789012:registry/reg-bank-prod/record/rec-xk3lq9zpt2",
++      "name": "aws-autodetected-123456789012-us-east-1-treasury_sweep_agent-Xk3Lq9ZpT2",
++      "displayName": "treasury-sweep-agent",
+       "description": "Sweeps excess cash between treasury accounts and posts journals.",
++      "recordType": "AGENT",
++      "recordVersion": "3",
+       "status": "APPROVED",
+-      "version": "3",
++      "createdAt": "2026-09-01T10:00:00Z",
+       "updatedAt": "2026-11-03T14:22:41.512Z",
+       "descriptors": {
+-        "agent": {
+-          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
+-          "protocol": "HTTP",
+-          "owner": "treasury-ops@example-bank.com",
+-          "tools": [
+-            {
+-              "name": "get_balance"
+-            },
+-            {
+-              "name": "sweep_plan"
+-            },
+-            {
+-              "name": "get_fx_rate"
+-            },
+-            {
+-              "name": "transfer_funds"
+-            },
+-            {
+-              "name": "post_journal_entry"
++        "custom": {
++          "data": "{\"protocol\": \"HTTP\"}"
++        }
++      },
++      "provenance": [
++        {
++          "relation": "DETECTED_FROM",
++          "sourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
++          "sourceType": "AWS::BedrockAgentCore::Runtime",
++          "sourceDetails": {
++            "agentcoreRuntime": {
++              "protocolConfiguration": {
++                "serverProtocol": "HTTP"
++              }
+             }
+-          ]
++          }
+         }
+-      }
++      ]
+     },
+     {
+       "registryId": "reg-bank-prod",
+       "recordId": "rec-rt7hn4wvb8",
+-      "name": "kyc-refresh-agent",
+-      "descriptorType": "AGENT",
++      "recordArn": "arn:aws:agent-registry:us-east-1:123456789012:registry/reg-bank-prod/record/rec-rt7hn4wvb8",
++      "name": "aws-autodetected-123456789012-us-east-1-kyc_refresh_agent-Rt7Hn4WvB8",
++      "displayName": "kyc-refresh-agent",
+       "description": "Prepares periodic KYC refresh requests for corporate customers.",
++      "recordType": "AGENT",
++      "recordVersion": "3",
+       "status": "APPROVED",
+-      "version": "3",
++      "createdAt": "2026-09-01T10:00:00Z",
+       "updatedAt": "2026-10-28T09:05:12.087Z",
+       "descriptors": {
+-        "agent": {
+-          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
+-          "protocol": "HTTP",
+-          "owner": "kyc-operations@example-bank.com",
+-          "tools": [
+-            {
+-              "name": "lookup_customer"
+-            },
+-            {
+-              "name": "fetch_sanctions_list"
+-            },
+-            {
+-              "name": "draft_refresh_request"
+-            },
+-            {
+-              "name": "update_kyc_status"
++        "custom": {
++          "data": "{\"protocol\": \"HTTP\"}"
++        }
++      },
++      "provenance": [
++        {
++          "relation": "DETECTED_FROM",
++          "sourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
++          "sourceType": "AWS::BedrockAgentCore::Runtime",
++          "sourceDetails": {
++            "agentcoreRuntime": {
++              "protocolConfiguration": {
++                "serverProtocol": "HTTP"
++              }
+             }
+-          ]
++          }
+         }
+-      }
++      ]
+     },
+     {
+       "registryId": "reg-bank-prod",
+       "recordId": "rec-mc2fd6yjq5",
+-      "name": "trade-break-triage",
+-      "descriptorType": "AGENT",
++      "recordArn": "arn:aws:agent-registry:us-east-1:123456789012:registry/reg-bank-prod/record/rec-mc2fd6yjq5",
++      "name": "aws-autodetected-123456789012-us-east-1-trade_break_triage-Mc2Fd6YjQ5",
++      "displayName": "trade-break-triage",
+       "description": "Classifies equity and FX trade breaks and opens tickets.",
++      "recordType": "AGENT",
++      "recordVersion": "3",
+       "status": "APPROVED",
+-      "version": "3",
++      "createdAt": "2026-09-01T10:00:00Z",
+       "updatedAt": "2026-11-05T16:41:30.944Z",
+       "descriptors": {
+-        "agent": {
+-          "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
+-          "protocol": "HTTP",
+-          "owner": "markets-ops@example-bank.com",
+-          "tools": [
+-            {
+-              "name": "get_trade"
+-            },
+-            {
+-              "name": "get_confirmation"
+-            },
+-            {
+-              "name": "classify_break"
+-            },
+-            {
+-              "name": "open_ticket"
++        "custom": {
++          "data": "{\"protocol\": \"HTTP\"}"
++        }
++      },
++      "provenance": [
++        {
++          "relation": "DETECTED_FROM",
++          "sourceId": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
++          "sourceType": "AWS::BedrockAgentCore::Runtime",
++          "sourceDetails": {
++            "agentcoreRuntime": {
++              "protocolConfiguration": {
++                "serverProtocol": "HTTP"
++              }
+             }
+-          ]
++          }
+         }
+-      }
++      ]
+     }
+   ]
+ }
+diff --git a/fixtures/aws/runtime-details.json b/fixtures/aws/runtime-details.json
+new file mode 100644
+index 0000000..8d003e8
+--- /dev/null
++++ b/fixtures/aws/runtime-details.json
+@@ -0,0 +1,386 @@
++{
++  "runtimes": {
++    "treasury_sweep_agent-Xk3Lq9ZpT2": {
++      "getAgentRuntime": {
++        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/treasury_sweep_agent-Xk3Lq9ZpT2",
++        "agentRuntimeId": "treasury_sweep_agent-Xk3Lq9ZpT2",
++        "agentRuntimeName": "treasury-sweep-agent",
++        "agentRuntimeVersion": "3",
++        "description": "Sweeps excess cash between treasury accounts and posts journals.",
++        "status": "READY",
++        "createdAt": "2026-09-01T10:00:00.000Z",
++        "lastUpdatedAt": "2026-11-03T14:22:41.512Z",
++        "roleArn": "arn:aws:iam::123456789012:role/agentcore-treasury-sweep-agent",
++        "workloadIdentityDetails": {
++          "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/treasury_sweep_agent-Xk3Lq9ZpT2"
++        },
++        "protocolConfiguration": {
++          "serverProtocol": "HTTP"
++        },
++        "networkConfiguration": {
++          "networkMode": "PUBLIC"
++        },
++        "authorizerConfiguration": {
++          "customJWTAuthorizer": {
++            "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
++            "allowedClients": [
++              "act-agents"
++            ]
++          }
++        },
++        "agentRuntimeArtifact": {
++          "containerConfiguration": {
++            "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/treasury_sweep_agent:v3"
++          }
++        },
++        "environmentVariables": {
++          "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
++          "GATEWAY_URL": "https://treasury-gw-7q2k9x.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
++          "MEMORY_ID": "mem-treasury-01",
++          "CORE_BANKING_API_KEY": "sk-live-9f3a7c21d4e84b6aa0"
++        }
++      },
++      "tags": {
++        "owner": "treasury-ops@example-bank.com",
++        "cost-center": "CC-2e4e",
++        "act:limit:transfer_funds": "250000USD"
++      },
++      "rolePolicy": {
++        "PolicyName": "agentcore-treasury-sweep-agent-data",
++        "PolicyDocument": {
++          "Version": "2012-10-17",
++          "Statement": [
++            {
++              "Sid": "ReadData",
++              "Effect": "Allow",
++              "Action": [
++                "dynamodb:GetItem",
++                "dynamodb:Query",
++                "dynamodb:Scan"
++              ],
++              "Resource": [
++                "arn:aws:dynamodb:us-east-1:123456789012:table/treasury.cash_positions",
++                "arn:aws:dynamodb:us-east-1:123456789012:table/treasury.nostro_balances"
++              ]
++            }
++          ]
++        }
++      },
++      "gatewayTargets": {
++        "items": [
++          {
++            "targetId": "TREASURYRE01",
++            "name": "treasury-reads",
++            "status": "READY",
++            "description": "treasury-reads tools",
++            "createdAt": "2026-09-01T10:05:00.000Z",
++            "updatedAt": "2026-10-20T08:00:00.000Z",
++            "targetConfiguration": {
++              "mcp": {
++                "lambda": {
++                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:treasury-reads",
++                  "toolSchema": {
++                    "inlinePayload": [
++                      {
++                        "name": "get_balance",
++                        "description": "get balance",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "sweep_plan",
++                        "description": "sweep plan",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "get_fx_rate",
++                        "description": "get fx rate",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      }
++                    ]
++                  }
++                }
++              }
++            }
++          },
++          {
++            "targetId": "TREASURYWR01",
++            "name": "treasury-writes",
++            "status": "READY",
++            "description": "treasury-writes tools",
++            "createdAt": "2026-09-01T10:05:00.000Z",
++            "updatedAt": "2026-10-20T08:00:00.000Z",
++            "targetConfiguration": {
++              "mcp": {
++                "lambda": {
++                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:treasury-writes",
++                  "toolSchema": {
++                    "inlinePayload": [
++                      {
++                        "name": "transfer_funds",
++                        "description": "transfer funds",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "post_journal_entry",
++                        "description": "post journal entry",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      }
++                    ]
++                  }
++                }
++              }
++            }
++          }
++        ]
++      }
++    },
++    "kyc_refresh_agent-Rt7Hn4WvB8": {
++      "getAgentRuntime": {
++        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/kyc_refresh_agent-Rt7Hn4WvB8",
++        "agentRuntimeId": "kyc_refresh_agent-Rt7Hn4WvB8",
++        "agentRuntimeName": "kyc-refresh-agent",
++        "agentRuntimeVersion": "3",
++        "description": "Prepares periodic KYC refresh requests for corporate customers.",
++        "status": "READY",
++        "createdAt": "2026-09-01T10:00:00.000Z",
++        "lastUpdatedAt": "2026-10-28T09:05:12.087Z",
++        "roleArn": "arn:aws:iam::123456789012:role/agentcore-kyc-refresh-agent",
++        "workloadIdentityDetails": {
++          "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/kyc_refresh_agent-Rt7Hn4WvB8"
++        },
++        "protocolConfiguration": {
++          "serverProtocol": "HTTP"
++        },
++        "networkConfiguration": {
++          "networkMode": "PUBLIC"
++        },
++        "authorizerConfiguration": {
++          "customJWTAuthorizer": {
++            "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
++            "allowedClients": [
++              "act-agents"
++            ]
++          }
++        },
++        "agentRuntimeArtifact": {
++          "containerConfiguration": {
++            "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/kyc_refresh_agent:v3"
++          }
++        },
++        "environmentVariables": {
++          "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
++          "GATEWAY_URL": "https://kyc-gw-3m8c4d.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
++          "MEMORY_ID": "mem-kyc-01",
++          "CORE_BANKING_API_KEY": "sk-live-51c0be77a2d94f10b3"
++        }
++      },
++      "tags": {
++        "owner": "kyc-operations@example-bank.com",
++        "cost-center": "CC-c6f7"
++      },
++      "rolePolicy": {
++        "PolicyName": "agentcore-kyc-refresh-agent-data",
++        "PolicyDocument": {
++          "Version": "2012-10-17",
++          "Statement": [
++            {
++              "Sid": "ReadData",
++              "Effect": "Allow",
++              "Action": [
++                "dynamodb:GetItem",
++                "dynamodb:Query",
++                "dynamodb:Scan"
++              ],
++              "Resource": [
++                "arn:aws:dynamodb:us-east-1:123456789012:table/customer.pii",
++                "arn:aws:dynamodb:us-east-1:123456789012:table/kyc.documents"
++              ]
++            }
++          ]
++        }
++      },
++      "gatewayTargets": {
++        "items": [
++          {
++            "targetId": "KYCTOOLS01",
++            "name": "kyc-tools",
++            "status": "READY",
++            "description": "kyc-tools tools",
++            "createdAt": "2026-09-01T10:05:00.000Z",
++            "updatedAt": "2026-10-20T08:00:00.000Z",
++            "targetConfiguration": {
++              "mcp": {
++                "lambda": {
++                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:kyc-tools",
++                  "toolSchema": {
++                    "inlinePayload": [
++                      {
++                        "name": "lookup_customer",
++                        "description": "lookup customer",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "fetch_sanctions_list",
++                        "description": "fetch sanctions list",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "draft_refresh_request",
++                        "description": "draft refresh request",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "update_kyc_status",
++                        "description": "update kyc status",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      }
++                    ]
++                  }
++                }
++              }
++            }
++          }
++        ]
++      }
++    },
++    "trade_break_triage-Mc2Fd6YjQ5": {
++      "getAgentRuntime": {
++        "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/trade_break_triage-Mc2Fd6YjQ5",
++        "agentRuntimeId": "trade_break_triage-Mc2Fd6YjQ5",
++        "agentRuntimeName": "trade-break-triage",
++        "agentRuntimeVersion": "3",
++        "description": "Classifies equity and FX trade breaks and opens tickets.",
++        "status": "READY",
++        "createdAt": "2026-09-01T10:00:00.000Z",
++        "lastUpdatedAt": "2026-11-05T16:41:30.944Z",
++        "roleArn": "arn:aws:iam::123456789012:role/agentcore-markets-shared-runtime",
++        "workloadIdentityDetails": {
++          "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/trade_break_triage-Mc2Fd6YjQ5"
++        },
++        "protocolConfiguration": {
++          "serverProtocol": "HTTP"
++        },
++        "networkConfiguration": {
++          "networkMode": "PUBLIC"
++        },
++        "authorizerConfiguration": {
++          "customJWTAuthorizer": {
++            "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
++            "allowedClients": [
++              "act-agents"
++            ]
++          }
++        },
++        "agentRuntimeArtifact": {
++          "containerConfiguration": {
++            "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/trade_break_triage:v3"
++          }
++        },
++        "environmentVariables": {
++          "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
++          "GATEWAY_URL": "https://markets-gw-8d1z6w.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
++          "MEMORY_ID": "mem-markets-01",
++          "CORE_BANKING_API_KEY": "sk-live-c84e19b05e3a47d2f6"
++        }
++      },
++      "tags": {
++        "owner": "markets-ops@example-bank.com",
++        "cost-center": "CC-ee9a"
++      },
++      "rolePolicy": {
++        "PolicyName": "agentcore-markets-shared-runtime-data",
++        "PolicyDocument": {
++          "Version": "2012-10-17",
++          "Statement": [
++            {
++              "Sid": "ReadData",
++              "Effect": "Allow",
++              "Action": [
++                "dynamodb:GetItem",
++                "dynamodb:Query",
++                "dynamodb:Scan"
++              ],
++              "Resource": [
++                "arn:aws:dynamodb:us-east-1:123456789012:table/trades.equities",
++                "arn:aws:dynamodb:us-east-1:123456789012:table/trades.fx"
++              ]
++            }
++          ]
++        }
++      },
++      "gatewayTargets": {
++        "items": [
++          {
++            "targetId": "MARKETSTOO01",
++            "name": "markets-tools",
++            "status": "READY",
++            "description": "markets-tools tools",
++            "createdAt": "2026-09-01T10:05:00.000Z",
++            "updatedAt": "2026-10-20T08:00:00.000Z",
++            "targetConfiguration": {
++              "mcp": {
++                "lambda": {
++                  "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:markets-tools",
++                  "toolSchema": {
++                    "inlinePayload": [
++                      {
++                        "name": "get_trade",
++                        "description": "get trade",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "get_confirmation",
++                        "description": "get confirmation",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "classify_break",
++                        "description": "classify break",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      },
++                      {
++                        "name": "open_ticket",
++                        "description": "open ticket",
++                        "inputSchema": {
++                          "type": "object"
++                        }
++                      }
++                    ]
++                  }
++                }
++              }
++            }
++          }
++        ]
++      },
++      "roleUsage": {
++        "distinct": false,
++        "note": "the execution role is shared with other markets runtimes"
++      }
++    }
++  }
++}
+diff --git a/fixtures/sample_tenants/aws.json b/fixtures/sample_tenants/aws.json
+index b1d2f21..7ebd5de 100644
+--- a/fixtures/sample_tenants/aws.json
++++ b/fixtures/sample_tenants/aws.json
+@@ -69,5 +69,211 @@
+     }
+    ]
+   }
++ ],
++ "agents": [
++  {
++   "getAgentRuntime": {
++    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/payments_recon_agent-Hn5Vc2QwR7",
++    "agentRuntimeId": "payments_recon_agent-Hn5Vc2QwR7",
++    "agentRuntimeName": "payments-recon-agent",
++    "agentRuntimeVersion": "2",
++    "description": "Matches card settlement files to the ledger and drafts exception reports.",
++    "status": "READY",
++    "createdAt": "2026-09-01T10:00:00.000Z",
++    "lastUpdatedAt": "2026-11-09T11:30:00.000Z",
++    "roleArn": "arn:aws:iam::123456789012:role/agentcore-payments-recon-agent",
++    "workloadIdentityDetails": {
++     "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/payments_recon_agent-Hn5Vc2QwR7"
++    },
++    "protocolConfiguration": {
++     "serverProtocol": "HTTP"
++    },
++    "networkConfiguration": {
++     "networkMode": "PUBLIC"
++    },
++    "authorizerConfiguration": {
++     "customJWTAuthorizer": {
++      "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
++      "allowedClients": [
++       "act-agents"
++      ]
++     }
++    },
++    "agentRuntimeArtifact": {
++     "containerConfiguration": {
++      "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/payments_recon_agent:v3"
++     }
++    },
++    "environmentVariables": {
++     "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
++     "GATEWAY_URL": "https://payments-gw-4t9b2k.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
++     "MEMORY_ID": "mem-payments-01",
++     "CORE_BANKING_API_KEY": "sk-live-2b7e40c9a1f34d85e6"
++    }
++   },
++   "tags": {
++    "owner": "payments-ops@example-bank.com"
++   },
++   "rolePolicy": {
++    "PolicyName": "agentcore-payments-recon-agent-data",
++    "PolicyDocument": {
++     "Version": "2012-10-17",
++     "Statement": [
++      {
++       "Sid": "ReadData",
++       "Effect": "Allow",
++       "Action": [
++        "dynamodb:GetItem",
++        "dynamodb:Query",
++        "dynamodb:Scan"
++       ],
++       "Resource": [
++        "arn:aws:dynamodb:us-east-1:123456789012:table/payments.settlements",
++        "arn:aws:dynamodb:us-east-1:123456789012:table/payments.ledger_entries"
++       ]
++      }
++     ]
++    }
++   },
++   "gatewayTargets": {
++    "items": [
++     {
++      "targetId": "TGT0000001",
++      "name": "payments-recon-agent-tools",
++      "status": "READY",
++      "targetConfiguration": {
++       "mcp": {
++        "lambda": {
++         "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:payments-recon-agent-tools",
++         "toolSchema": {
++          "inlinePayload": [
++           {
++            "name": "get_settlement_file",
++            "description": "get settlement file",
++            "inputSchema": {
++             "type": "object"
++            }
++           },
++           {
++            "name": "match_entries",
++            "description": "match entries",
++            "inputSchema": {
++             "type": "object"
++            }
++           },
++           {
++            "name": "draft_exception_report",
++            "description": "draft exception report",
++            "inputSchema": {
++             "type": "object"
++            }
++           }
++          ]
++         }
++        }
++       }
++      }
++     }
++    ]
++   }
++  },
++  {
++   "getAgentRuntime": {
++    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/fx_quote_assistant-Pd8Js3LmK1",
++    "agentRuntimeId": "fx_quote_assistant-Pd8Js3LmK1",
++    "agentRuntimeName": "fx-quote-assistant",
++    "agentRuntimeVersion": "2",
++    "description": "Answers FX quote questions for relationship managers.",
++    "status": "READY",
++    "createdAt": "2026-09-01T10:00:00.000Z",
++    "lastUpdatedAt": "2026-11-09T11:30:00.000Z",
++    "roleArn": "arn:aws:iam::123456789012:role/agentcore-fx-quote-assistant",
++    "workloadIdentityDetails": {
++     "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/fx_quote_assistant-Pd8Js3LmK1"
++    },
++    "protocolConfiguration": {
++     "serverProtocol": "HTTP"
++    },
++    "networkConfiguration": {
++     "networkMode": "PUBLIC"
++    },
++    "authorizerConfiguration": {
++     "customJWTAuthorizer": {
++      "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
++      "allowedClients": [
++       "act-agents"
++      ]
++     }
++    },
++    "agentRuntimeArtifact": {
++     "containerConfiguration": {
++      "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/fx_quote_assistant:v3"
++     }
++    },
++    "environmentVariables": {
++     "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
++     "GATEWAY_URL": "https://fx-gw-6r1n8v.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
++     "MEMORY_ID": "mem-fx-01",
++     "CORE_BANKING_API_KEY": "sk-live-7d1a93b8c0e24f56a7"
++    }
++   },
++   "tags": {
++    "owner": "fx-desk@example-bank.com"
++   },
++   "rolePolicy": {
++    "PolicyName": "agentcore-fx-quote-assistant-data",
++    "PolicyDocument": {
++     "Version": "2012-10-17",
++     "Statement": [
++      {
++       "Sid": "ReadData",
++       "Effect": "Allow",
++       "Action": [
++        "dynamodb:GetItem",
++        "dynamodb:Query",
++        "dynamodb:Scan"
++       ],
++       "Resource": [
++        "arn:aws:dynamodb:us-east-1:123456789012:table/markets.fx_quotes"
++       ]
++      }
++     ]
++    }
++   },
++   "gatewayTargets": {
++    "items": [
++     {
++      "targetId": "TGT0000001",
++      "name": "fx-quote-assistant-tools",
++      "status": "READY",
++      "targetConfiguration": {
++       "mcp": {
++        "lambda": {
++         "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:fx-quote-assistant-tools",
++         "toolSchema": {
++          "inlinePayload": [
++           {
++            "name": "get_fx_quote",
++            "description": "get fx quote",
++            "inputSchema": {
++             "type": "object"
++            }
++           },
++           {
++            "name": "get_fx_history",
++            "description": "get fx history",
++            "inputSchema": {
++             "type": "object"
++            }
++           }
++          ]
++         }
++        }
++       }
++      }
++     }
++    ]
++   }
++  }
+  ]
+-}
+\ No newline at end of file
++}
+diff --git a/fixtures/sample_tenants/snowflake.json b/fixtures/sample_tenants/snowflake.json
+index e6449e7..7b11442 100644
+--- a/fixtures/sample_tenants/snowflake.json
++++ b/fixtures/sample_tenants/snowflake.json
+@@ -69,5 +69,99 @@
+     }
+    ]
+   }
++ ],
++ "agents": [
++  {
++   "show": {
++    "created_on": "1730000000.000000000",
++    "name": "SERVICE_COPILOT",
++    "database_name": "CUSTOMER360",
++    "schema_name": "SERVICE",
++    "owner": "CUSTOMER_OWNER",
++    "comment": "Helps service agents look up customer history.",
++    "profile": "{\"display_name\": \"Service Copilot\"}",
++    "is_secure": "false"
++   },
++   "describe": {
++    "agent_spec": "{\"models\": {\"orchestration\": \"auto\"}, \"orchestration\": {\"budget\": {\"seconds\": 45, \"tokens\": 12000}}, \"tools\": [{\"tool_spec\": {\"type\": \"cortex_analyst_text_to_sql\", \"name\": \"customer_metrics\", \"description\": \"Customer metrics\"}}, {\"tool_spec\": {\"type\": \"cortex_search\", \"name\": \"case_notes\", \"description\": \"Search case notes\"}}], \"tool_resources\": {\"customer_metrics\": {\"semantic_view\": \"CUSTOMER360.SEM.CUSTOMER_METRICS\"}, \"case_notes\": {\"search_service\": \"CUSTOMER360.SERVICE.CASE_NOTES_SEARCH\"}}}"
++   },
++   "versions": [
++    {
++     "created_on": "1730000000.000000000",
++     "name": "VERSION$1",
++     "alias": "",
++     "comment": "first",
++     "is_default": "false",
++     "spec_file_path": ""
++    },
++    {
++     "created_on": "1731000000.000000000",
++     "name": "VERSION$2",
++     "alias": "",
++     "comment": "added case notes",
++     "is_default": "true",
++     "spec_file_path": ""
++    }
++   ],
++   "grants": [
++    {
++     "created_on": "1730500000.000000000",
++     "privilege": "USAGE",
++     "granted_on": "AGENT",
++     "name": "CUSTOMER360.SERVICE.SERVICE_COPILOT",
++     "granted_to": "ROLE",
++     "grantee_name": "SERVICE_AGENT",
++     "grant_option": "false",
++     "granted_by": "ACCOUNTADMIN"
++    },
++    {
++     "created_on": "1730500000.000000000",
++     "privilege": "USAGE",
++     "granted_on": "AGENT",
++     "name": "CUSTOMER360.SERVICE.SERVICE_COPILOT",
++     "granted_to": "ROLE",
++     "grantee_name": "PUBLIC",
++     "grant_option": "false",
++     "granted_by": "ACCOUNTADMIN"
++    }
++   ]
++  },
++  {
++   "show": {
++    "created_on": "1731500000.000000000",
++    "name": "SALES_SANDBOX_BOT",
++    "database_name": "ANALYTICS",
++    "schema_name": "SANDBOX",
++    "owner": "DATA_SCIENCE_OWNER",
++    "comment": "",
++    "profile": "{\"display_name\": \"Sales Sandbox Bot\"}",
++    "is_secure": "false"
++   },
++   "describe": {
++    "agent_spec": "{\"models\": {\"orchestration\": \"claude-sonnet-4-6\"}, \"tools\": [{\"tool_spec\": {\"type\": \"cortex_analyst_text_to_sql\", \"name\": \"sandbox_sales\", \"description\": \"Sales sandbox\"}}], \"tool_resources\": {\"sandbox_sales\": {\"semantic_view\": \"ANALYTICS.SANDBOX.SALES_VIEW\"}}}"
++   },
++   "versions": [
++    {
++     "created_on": "1731500000.000000000",
++     "name": "LIVE",
++     "alias": "",
++     "comment": "working copy",
++     "is_default": "true",
++     "spec_file_path": ""
++    }
++   ],
++   "grants": [
++    {
++     "created_on": "1730500000.000000000",
++     "privilege": "USAGE",
++     "granted_on": "AGENT",
++     "name": "ANALYTICS.SANDBOX.SALES_SANDBOX_BOT",
++     "granted_to": "ROLE",
++     "grantee_name": "DATA_SCIENCE",
++     "grant_option": "false",
++     "granted_by": "ACCOUNTADMIN"
++    }
++   ]
++  }
+  ]
+-}
+\ No newline at end of file
++}
