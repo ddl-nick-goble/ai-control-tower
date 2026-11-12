@@ -553,9 +553,10 @@ class DatabricksAdapter(AdapterBase):
     def _replay(self):
         doc = load_fixture("databricks/agent-services.json")
         try:
-            ctx = load_fixture("databricks/agent-service-context.json")
+            rows = load_fixture("databricks/agent-service-context.json").get("agent_context") or []
         except OSError:
-            ctx = {}
+            rows = []
+        ctx = {r["full_name"]: r for r in rows if isinstance(r, dict) and r.get("full_name")}
         out = []
         for s in doc.get("agent_services", []):
             full = str(s.get("name", "")).split("/", 1)[-1]
