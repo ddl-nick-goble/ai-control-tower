@@ -185,7 +185,7 @@ def test_s2_page_header(page, shot):
     txt = head.inner_text().strip()
     assert 15 < len(txt) < 200 and "\n" not in txt, txt
     btn = page.get_by_test_id("register-external-button")
-    expect(btn).to_have_text(re.compile("Register external agent"))
+    expect(btn).to_have_text(re.compile("Add by URL|Register external agent"))  # PO-6.4 relabel
     h = page.get_by_role("heading", level=1, name="Fleet").bounding_box()
     b = btn.bounding_box()
     assert b["x"] > h["x"] + 400, "primary action should sit at the right of the header"
