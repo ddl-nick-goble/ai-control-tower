@@ -40,8 +40,7 @@ def build(provider: str, state: str, base_url: str) -> dict:
            "issuer": issuer(), "subject": subject(), "audience": AUDIENCE}
     if provider == "aws":
         out["template_text"] = out["text"]
-        out["note"] = ("One-click quick-create needs the template hosted in S3 (CloudFormation can't fetch it from "
-                       "a private App URL). Until then, create the stack from the template text.")
+        out["note"] = "Your AWS admin can also upload this template in the CloudFormation console."
         template_url = f"{base_url}/api/connections/template?state={state}"
         out["open_url"] = ("https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate"
                            f"?templateURL={quote(template_url, safe='')}&stackName=ACT-ReadOnly"

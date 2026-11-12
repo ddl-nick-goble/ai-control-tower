@@ -67,7 +67,7 @@ a.ds-btn:not(.ds-btn-primary):not(.ds-btn-ghost) { color: var(--ds-ink) }
 @media (max-width: 899px) { .po-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
 .po-card { display: flex; flex-direction: column; gap: 12px; padding: 20px; min-width: 0; transition: border-color var(--ds-dur-1) var(--ds-ease), box-shadow var(--ds-dur-1) var(--ds-ease) }
 .po-card:hover { border-color: var(--ds-line-strong); box-shadow: 0 2px 8px rgba(16, 24, 40, .08) }
-.po-card-head { display: flex; gap: 12px; align-items: flex-start }
+.po-card-head { min-height: 66px; display: flex; gap: 12px; align-items: flex-start }
 .po-card-titles { flex: 1; min-width: 0 }
 .po-card-title { margin: 0; font-size: 16px; line-height: 24px; font-weight: 600; color: var(--ds-ink); text-transform: none; letter-spacing: 0 }
 .po-card-products { margin: 2px 0 0; font-size: 13px; line-height: 20px; color: var(--ds-muted) }
@@ -75,7 +75,7 @@ a.ds-btn:not(.ds-btn-primary):not(.ds-btn-ghost) { color: var(--ds-ink) }
 .po-card-meta div { display: flex; gap: 6px; color: var(--ds-muted) }
 .po-card-meta dt { flex: none }
 .po-card-meta dd { margin: 0; color: var(--ds-text); min-width: 0; overflow-wrap: anywhere }
-.po-card-actions { margin-top: auto; padding-top: 4px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.po-card-actions { margin-top: auto; padding-top: 4px; display: flex; flex-wrap: nowrap; gap: 4px; align-items: center }
 .po-card-other { background: transparent; border-style: dashed; box-shadow: none }
 
 /* step rail */
@@ -118,7 +118,8 @@ a.po-rail-item:hover { color: var(--ds-ink); text-decoration: none; border-botto
 .po-cmd pre { margin: 0; padding: 14px 112px 14px 16px; font: 13px/20px var(--ds-mono); white-space: pre-wrap; word-break: break-all; max-height: 104px; overflow: auto; background: transparent; color: inherit; border-radius: var(--ds-radius) }
 .po-cmd .po-copy { position: absolute; top: 8px; right: 8px; height: 32px; padding: 0 12px; font-size: 13px; background: #2a3242; border-color: #3b4558; color: #fff }
 .po-cmd .po-copy:hover:not(:disabled) { background: #343e52 }
-.po-cmd-cap { margin: 6px 0 0; font-size: 12px; line-height: 18px; color: var(--ds-muted) }
+.po-cmd-cap:has(+ .po-cmd-cap) { margin-bottom: 0 }
+.po-cmd-cap { margin: 6px 0 var(--ds-s2); font-size: 12px; line-height: 18px; color: var(--ds-muted) }
 details.po-more { margin-top: 12px; font-size: 13px }
 details.po-more > summary { cursor: pointer; font-weight: 600; color: var(--ds-accent); width: fit-content; border-radius: 4px }
 details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflow: auto; font: 12px/18px var(--ds-mono); background: #f8f9fb; border: 1px solid var(--ds-line); border-radius: var(--ds-radius); white-space: pre-wrap; overflow-wrap: anywhere }
@@ -198,7 +199,7 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-empty-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center }
 
 /* footer bar */
-.po-footer { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-height: 72px; padding: 12px 0; background: var(--ds-bg); border-top: 1px solid var(--ds-line); box-shadow: 0 -8px 8px -8px rgba(16, 24, 40, .12) }
+.po-footer { margin-top: var(--ds-s3); display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-height: 72px; padding: 12px 0; background: var(--ds-bg); border-top: 1px solid var(--ds-line) }
 .po-footer-l { flex: 1 1 260px; min-width: 0; font-size: 14px }
 .po-footer-r { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
 

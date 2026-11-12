@@ -8,14 +8,18 @@ import { PROVIDERS, spaced } from './providers'
 
 function fmtElapsed(s) { return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` }
 
-export function Listener({ provider, status, since }) {
+export function Listener({ provider, status, since, found }) {
   const p = PROVIDERS[provider]
   const [now, setNow] = React.useState(() => Date.now())
   useInterval(() => setNow(Date.now()), status === 'waiting' ? 1000 : null)
   const elapsed = since ? Math.max(0, Math.round((now - since) / 1000)) : 0
   const long = status === 'waiting' && elapsed > 600
   let body
-  if (status === 'detected') body = <strong>{p.detected}</strong>
+  if (status === 'detected') {
+    body = found?.role
+      ? <><strong>Role detected.</strong> {found.role}{found.account ? ` in account ${spaced(found.account)}` : ''}. Checking access…</>
+      : <strong>{p.detected}</strong>
+  }
   else if (status === 'waiting') {
     body = <><strong>{p.waiting[0]}</strong> {p.waiting[1]}{long ? ` Haven't seen it yet. Check the ${p.name} tab for a red status, or paste the value below.` : ''}</>
   } else body = p.idle
@@ -115,7 +119,7 @@ function OtherWays({ provider, artifact, conn }) {
   )
 }
 
-export default function HandshakePanel({ provider, conn, listener, since, onPasteHold, onUse }) {
+export default function HandshakePanel({ provider, conn, found, listener, since, onPasteHold, onUse }) {
   const p = PROVIDERS[provider]
   const artifact = conn?.artifact
   const { copy, note, last } = useCopy()
@@ -161,7 +165,7 @@ export default function HandshakePanel({ provider, conn, listener, since, onPast
             <pre>{p.script}</pre>
           </details>
         )}
-        {!p.noListener && <Listener provider={provider} status={opened && listener === 'idle' ? 'waiting' : listener} since={since} />}
+        {!p.noListener && <Listener provider={provider} status={opened && listener === 'idle' ? 'waiting' : listener} since={since} found={found} />}
         <PasteAnything provider={provider} connId={conn.id} onHold={onPasteHold} onUse={onUse} />
         <OtherWays provider={provider} artifact={artifact} conn={conn} />
         <div className="ds-sr" role="status" aria-live="polite">{note}</div>

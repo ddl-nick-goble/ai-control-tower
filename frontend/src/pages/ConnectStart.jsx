@@ -23,6 +23,7 @@ export default function ConnectStart() {
   const [state, setState] = React.useState('draft')
   const [since, setSince] = React.useState(null)
   const [held, setHeld] = React.useState(false)
+  const [found, setFound] = React.useState(null)
 
   // Create the draft. Cancelled on unmount so a fast navigation never leaves a half-set-up page.
   React.useEffect(() => {
@@ -30,7 +31,7 @@ export default function ConnectStart() {
     let live = true
     setConn(null); setError(false); setState('draft')
     connectionsApi.create(provider, sample).then(
-      (c) => { if (live) { setConn(c); setState(c.state); setSince(Date.now()) } },
+      (c) => { if (live) { setConn(c); setState(c.state); setFound(c.found || null); setSince(Date.now()) } },
       () => { if (live) setError(true) })
     return () => { live = false }
   }, [provider, sample, rev, p])
@@ -44,7 +45,7 @@ export default function ConnectStart() {
     if (!conn || TRUSTED.includes(state)) return undefined
     let live = true, timer
     const tick = async () => {
-      try { const c = await connectionsApi.get(conn.id); if (live) setState(c.state) } catch { /* keep waiting */ }
+      try { const c = await connectionsApi.get(conn.id); if (live) { setState(c.state); setFound(c.found || null) } } catch { /* keep waiting */ }
       if (live) timer = setTimeout(tick, document.visibilityState === 'visible' ? 3000 : 15000)
     }
     timer = setTimeout(tick, 1200)
@@ -94,7 +95,7 @@ export default function ConnectStart() {
         </Alert>
       )}
       {conn && (
-        <HandshakePanel provider={provider} conn={conn} onPasteHold={setHeld} onUse={go} since={since}
+        <HandshakePanel provider={provider} conn={conn} found={found} onPasteHold={setHeld} onUse={go} since={since}
                         listener={detected ? 'detected' : sample ? 'waiting' : 'idle'} />
       )}
       <p className="ds-helper po-cancel"><Link to="/connections" data-testid="wizard-cancel" onClick={cancel}>Cancel setup</Link> · Nothing is created in ACT until you import agents.</p>

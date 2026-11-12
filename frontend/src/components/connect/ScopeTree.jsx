@@ -41,8 +41,6 @@ function Node({ node, sel, setMany, uid, nounPlural }) {
   const checked = ls.length > 0 && n === ls.length
   const mixed = n > 0 && n < ls.length
   const children = kids(node)
-  const active = children.filter((c) => leavesOf(c).length > 0 || isPending(c))
-  const empty = children.filter((c) => isLeaf(c) && c.agents === 0)
   const cid = `${uid}-${node.id.replace(/[^a-zA-Z0-9]/g, '_')}`
   const count = agentsOf(node)
   const hasCount = typeof node.agents === 'number' || children.length > 0
@@ -59,18 +57,12 @@ function Node({ node, sel, setMany, uid, nounPlural }) {
                data-testid={`scope-checkbox-${node.id}`} onChange={(e) => toggle(e.target.checked)} aria-describedby={pending ? `${cid}-note` : undefined} />
         <label htmlFor={cid}><span className="po-node-name">{node.label}</span></label>
         {pending && <span className="po-node-sub po-pending" id={`${cid}-note`}><Spinner />Waiting for the role to reach this account. Retrying every 5 minutes.</span>}
-        {!pending && hasCount && <span className={`po-count${count > 0 ? ' po-count-hi' : ''}`} data-testid={`scope-count-${node.id}`}>{count} {count === 1 ? 'agent' : 'agents'}</span>}
+        {!pending && isLeaf(node) && node.agents === 0 && <span className="po-node-sub">No agents found</span>}
+        {!pending && hasCount && !(isLeaf(node) && node.agents === 0) && <span className={`po-count${count > 0 ? ' po-count-hi' : ''}`} data-testid={`scope-count-${node.id}`}>{count} {count === 1 ? 'agent' : 'agents'}</span>}
       </div>
       {children.length > 0 && (
         <ul id={`${cid}-kids`} hidden={!open}>
-          {active.map((c) => <Node key={c.id} node={c} sel={sel} setMany={setMany} uid={uid} nounPlural={nounPlural} />)}
-          {empty.length > 0 && (
-            <li><div className="po-node is-dim">
-              <span className="po-toggle-gap" /><span className="po-check-gap" />
-              <span className="po-node-name po-grow">{empty.length} {empty.length === 1 ? nounPlural.replace(/s$/, '') : nounPlural} with no agents</span>
-              <span className="po-node-sub">Not scanned. New agents there are picked up by daily sync.</span>
-            </div></li>
-          )}
+          {children.map((c) => <Node key={c.id} node={c} sel={sel} setMany={setMany} uid={uid} nounPlural={nounPlural} />)}
         </ul>
       )}
     </li>
