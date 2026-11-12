@@ -380,3 +380,4 @@ Touches: scripts/restore_db.py, backend/db.py, tests/test_t50*.py (test-author).
 Touches: frontend/src/pages/Settings.jsx, backend/settings.py (only if needed), tests/e2e/test_t39_settings.py, tests/e2e/test_t48_settings_reachable.py, frontend/dist.
 Waves: W3a = T-20, T-19f, T-50f (no shared files). T-48f joins when a slot frees.
 - T-50f test baseline f2fccc8 (8 red, 2 regression guards).
+- T-20 test baseline d1c51d5 (N-1..N-3 red; edited S-1/S-5 in test_t19a_shell_fleet.py for the N-1 nav change). Builder round 1 running. T-19f ui-tester writing tests.
