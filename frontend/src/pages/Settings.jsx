@@ -6,9 +6,13 @@ import '../settings.css'
 
 // Labels and help text come from the API (backend/settings.py DEFS). Placeholders are format examples only.
 const PLACEHOLDER = {
-  llm_gateway_url: 'https://', break_classifier_endpoint_url: 'https://',
-  external_allow_hosts: 'host.example.com, other.example.com', service_accounts: 'svc-agent-one, svc-agent-two',
-  admins: 'username, other.username',
+  llm_provider: 'mock | gateway', llm_gateway_url: 'https://…', break_classifier_endpoint_url: 'https://…',
+  trusted_jwks_path: '/path/to/jwks.json', policy_agentic_id: 'policy id', policy_model_id: 'policy id',
+  aws_role_arn: 'arn:aws:iam::123456789012:role/name', aws_external_id: 'external id', aws_access_key_id: 'AKIA…',
+  microsoft_tenant_id: 'tenant id (GUID)', microsoft_client_id: 'client id (GUID)',
+  databricks_host: 'https://…', databricks_client_id: 'client id',
+  external_allow_hosts: 'host1, host2', service_accounts: 'user1, user2',
+  admins: 'user1, user2',
 }
 const INTEGRATIONS = ['llm_provider', 'llm_gateway_url', 'break_classifier_endpoint_url', 'break_classifier_access_key', 'external_allow_hosts',
   'trusted_jwks_path', 'service_accounts', 'policy_agentic_id', 'policy_model_id']
@@ -206,7 +210,6 @@ function DemoCard({ entry, onChange }) {
         <div className="st-ctl">
           <button type="button" role="switch" aria-checked={on} aria-labelledby="st-demo-h" aria-describedby="st-demo-help"
                   className="st-switch" disabled={entry.locked || busy} onClick={() => setAsk(true)}><span className="st-knob" /></button>
-          <span className="st-switch-text" aria-hidden="true">{busy ? (on ? 'Switching…' : 'Switching…') : on ? 'On' : 'Off'}</span>
           {entry.locked && <Badge tone="lock">Set by project variable</Badge>}
           <span className="ds-sr" role="status">{busy ? (on ? 'Switching to your real data' : 'Switching to demo data. Seeding can take a few seconds') : ''}</span>
         </div>

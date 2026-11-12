@@ -104,7 +104,9 @@ function LogoMark() {
 export function Shell({ children }) {
   const h = useHealth()
   const [admin, setAdmin] = React.useState(false)
-  React.useEffect(() => { settingsApi.access().then((r) => setAdmin(!!r.admin), () => setAdmin(false)) }, [])
+  const loc = useLocation()
+  // Re-check on every route change: a hash-only navigation does not reload the page, and the caller may have changed.
+  React.useEffect(() => { settingsApi.access().then((r) => setAdmin(!!r.admin), () => setAdmin(false)) }, [loc.pathname])
   return (
     <div className="app">
       <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
