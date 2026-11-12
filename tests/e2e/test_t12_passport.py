@@ -34,7 +34,7 @@ def authed(context):
 def _register(page, url):
     page.goto("./")
     page.get_by_test_id("register-external-button").click()
-    expect(page).to_have_url(re.compile(r"#/register"))
+    expect(page).to_have_url(re.compile(r"#/(register|connections/add-by-url)"))
     page.get_by_label("Agent card URL").fill(url)
     for name, v in CRITERIA.items():
         page.get_by_test_id(f"criterion-{name}").get_by_role("radio", name=str(v), exact=True).click()

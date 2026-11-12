@@ -43,9 +43,18 @@ def _trusted_sample(page, context, provider):
     """A sample connection that has already trusted itself (the page polls the API until it leaves draft/waiting)."""
     c = _create(context, provider, sample=True)
     page.goto("./")
-    page.wait_for_function(
-        """id => fetch('api/connections/' + id).then(r => r.json()).then(j => !['draft', 'waiting'].includes(j.state))""",
-        arg=c["id"], timeout=20000)
+    state = page.evaluate(
+        """async id => {
+            const end = performance.now() + 20000;
+            let state = 'waiting';
+            while (performance.now() < end) {
+                const r = await fetch('api/connections/' + id);
+                if (r.ok) { state = (await r.json()).state; if (!['draft', 'waiting'].includes(state)) break; }
+                await new Promise(res => setTimeout(res, 250));
+            }
+            return state;
+        }""", c["id"])
+    assert state not in ("draft", "waiting"), f"connection never trusted: {state}"
     return c
 
 

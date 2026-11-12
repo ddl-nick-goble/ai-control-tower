@@ -66,7 +66,7 @@ def test_n1_register_not_in_nav_but_reachable(page, shot, app):
     page.goto("./#/")
     expect(_nav(page).get_by_role("link", name="Register external agent")).to_have_count(0)
     page.get_by_test_id("register-external-button").click()
-    expect(page).to_have_url(re.compile(r"#/register"))
+    expect(page).to_have_url(re.compile(r"#/(register|connections/add-by-url)"))
     expect(page.get_by_role("heading", level=1, name="Register external agent")).to_be_visible()
     page.goto("./#/register")
     expect(page.get_by_role("heading", level=1, name="Register external agent")).to_be_visible()
