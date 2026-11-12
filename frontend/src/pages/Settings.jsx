@@ -121,7 +121,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
   const labelId = `${id}-l`, hintId = `${id}-h`
   const plainLocked = entry.locked
   return (
-    <div role="group" aria-labelledby={labelId} className={cx('st-f', `st-f-${layout}`, span && 'st-span', invalid && 'st-f-invalid')} data-testid={`setting-${entry.name}`}>
+    <div role="group" aria-labelledby={labelId} className={cx('st-f', `st-f-${layout}`, entry.locked && 'st-f-locked', span && 'st-span', invalid && 'st-f-invalid')} data-testid={`setting-${entry.name}`}>
       {showInput || plainLocked && !secret
         ? <label id={labelId} htmlFor={`${id}-i`} className="st-label">{label}</label>
         : <span id={labelId} className="st-label">{label}</span>}
