@@ -92,7 +92,7 @@ export function InlineError({ error, onRetry, what }) {
         <path d="M10 2l9 16H1L10 2z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /><path d="M10 8v4.5M10 15v.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
       </svg>
       <span className="ag-inline-error-text">{what ? `Could not load ${what}. ` : ''}{error && error.status ? `${error.status}: ` : ''}{msg}</span>
-      {onRetry && <button type="button" className="ds-btn ds-btn-ghost ag-sm" onClick={onRetry}>Try again</button>}
+      {onRetry && <button type="button" className="ds-btn ag-sm" onClick={onRetry}>Try again</button>}
     </div>
   )
 }

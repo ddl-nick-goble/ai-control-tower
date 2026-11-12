@@ -139,6 +139,7 @@ SMOKE = {
                               "test_s2_summary_tiles", "test_s2_whole_row_click_opens_agent"},
     "test_t9_console": {"test_ac5_timeline_matches_api_and_renders_fast",
                         "test_agent_page_tier_card_identity_manifest_approvals"},
+    "test_t19f_tables": {"test_f1_short_fleet_table_has_no_blank_viewport_under_it"},
     "test_t19b_agent_run_pages": {"test_s3_header_name_chip_tier_status_actions_right",
                                   "test_s4_header_run_id_copy_agent_link_range_count",
                                   "test_s6_existing_testids_on_agent_and_run"},
