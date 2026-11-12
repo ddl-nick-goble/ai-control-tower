@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db, demo, llm, routes, settings
 from .prefix import ProxyPrefixMiddleware
-from .domino_identity import get_user
+from .domino_identity import get_user, in_notebook_session
 
 log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parent.parent
@@ -134,7 +134,7 @@ app.add_middleware(ProxyPrefixMiddleware, host_path=os.environ.get("DOMINO_RUN_H
 
 
 def in_workspace() -> bool:
-    return "notebookSession" in os.environ.get("DOMINO_RUN_HOST_PATH", "")
+    return in_notebook_session()
 
 
 def get_port() -> int:

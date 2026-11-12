@@ -1,4 +1,5 @@
 """Settings API (T-39). Admins only: the project owner plus the "admins" setting."""
+import os
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from .. import settings
@@ -18,7 +19,8 @@ def require_admin(user: User = Depends(require_user)) -> User:
 @router.get("/api/settings/access")
 def access(user: User = Depends(require_user)):
     return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured(),
-            "user": user.username, "via": user.via}
+            "user": user.username, "via": user.via,
+            "owner": (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()}
 
 
 @router.get("/api/settings")

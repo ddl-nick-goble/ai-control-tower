@@ -37,7 +37,7 @@ export function useHealth() {
   return h
 }
 
-function DemoBanner({ health: h }) {
+function DemoBanner({ health: h, admin }) {
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState(null)
   const reset = async () => {
@@ -61,6 +61,10 @@ function DemoBanner({ health: h }) {
         <button type="button" className="demo-toggle" data-open={open} aria-expanded={open} aria-controls={h.stand_ins.map((s) => `demo-chip-${s.name}`).join(" ")} onClick={() => setOpen((o) => !o)}><strong>Demo mode:</strong> simulated data and stand-ins ({n})</button>
         <span className="demo-sep" aria-hidden="true">·</span>
         <button type="button" className="demo-reset" onClick={reset} disabled={busy}>Reset demo</button>
+        {admin && <>
+          <span className="demo-sep" aria-hidden="true">·</span>
+          <Link to="/settings" className="demo-settings">Demo settings</Link>
+        </>}
         <span className="demo-break" hidden={!open} />
         {h.stand_ins.map((s) => <span className="demo-chip" id={`demo-chip-${s.name}`} key={s.name} data-stand-in={s.name} hidden={!open}>{s.label}</span>)}
         {h.demo_guard && <div className="alert error" role="alert" data-testid="demo-guard">{h.demo_guard}</div>}
@@ -79,6 +83,15 @@ function FleetLink() {
   return <Link to="/" aria-current={exact ? 'page' : child ? 'true' : undefined}>Fleet</Link>
 }
 
+function GearIcon() {
+  return (
+    <svg data-testid="nav-settings-icon" className="ds-nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+    </svg>
+  )
+}
+
 function LogoMark() {
   return (
     <svg className="ds-logo" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
@@ -95,7 +108,7 @@ export function Shell({ children }) {
   return (
     <div className="app">
       <a href="#main" className="ds-skip" onClick={(e) => { e.preventDefault(); const m = document.getElementById('main'); if (m) m.focus() }}>Skip to content</a>
-      {h && h.demo_mode && <DemoBanner health={h} />}
+      {h && h.demo_mode && <DemoBanner health={h} admin={admin} />}
       <header className="ds-topbar" data-testid="app-topbar">
         <div className="ds-shell-inner ds-topbar-row">
           <Link to="/" className="ds-brand"><LogoMark />Agent Control Tower</Link>
@@ -103,7 +116,7 @@ export function Shell({ children }) {
           <nav aria-label="Primary" className="ds-nav">
             <FleetLink />
             <NavLink to="/register">Register external agent</NavLink>
-            {admin && <NavLink to="/settings">Settings</NavLink>}
+            <NavLink to="/settings"><GearIcon />Settings</NavLink>
           </nav>
         </div>
       </header>

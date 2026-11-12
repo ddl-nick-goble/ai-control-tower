@@ -147,6 +147,10 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .demo-sep { color: #b07a00 }
 .demo-toggle, .demo-reset { font: inherit; font-size: 13px; color: #6b4a00; background: transparent; border: 0; padding: 2px 6px 2px 0; margin: 0; border-radius: 4px; cursor: pointer; font-weight: 400 }
 .demo-toggle strong { font-weight: 700 }
+.demo-settings { font-size: 13px; color: #6b4a00; padding: 2px 6px; margin: 0 -2px; border-radius: 4px; text-decoration: underline; text-underline-offset: 2px }
+.demo-settings:hover { background: #fdebc2; color: #6b4a00 }
+.demo-settings:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
+.ds-nav-icon { margin-right: 6px; flex: none }
 .demo-toggle::after { content: " \25BE" } .demo-toggle[data-open=true]::after { content: " \25B4" }
 .demo-toggle:hover, .demo-reset:hover:not(:disabled) { background: #fdebc2 }
 .demo-toggle:focus-visible, .demo-reset:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }

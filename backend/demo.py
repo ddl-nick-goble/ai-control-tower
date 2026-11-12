@@ -186,7 +186,13 @@ class _Switch:
             with _cond:
                 _inflight -= self.own
                 _cond.notify_all()
-        _switch_mutex.acquire()
+        try:
+            _switch_mutex.acquire()
+        except BaseException:
+            if self.own:
+                with _cond:
+                    _inflight += self.own
+            raise
         if self.own:
             with _cond:
                 _inflight += self.own
@@ -204,6 +210,20 @@ class _Switch:
 
 
 from contextlib import contextmanager
+
+
+def acquire_outside_flight(lock, own=1) -> None:
+    """Take `lock` while this request is stepped out of the in-flight count, so the holder's switch never waits
+    (the 15 s drain stall) for a request that is itself only waiting for that lock. Counted back in once held."""
+    global _inflight
+    with _cond:
+        _inflight -= own
+        _cond.notify_all()
+    try:
+        lock.acquire()
+    finally:
+        with _cond:
+            _inflight += own
 
 
 @contextmanager
