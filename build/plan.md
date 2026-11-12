@@ -453,3 +453,20 @@ Shared files nobody touches in PB: adapters/base.py, backend/normalize.py, jobs/
 - PO-5 design review r1: changes needed. MAJOR: the step-2 sticky footer covers the missing item's fix box. Minors: ragged gallery card actions, the detected strip lacks role/account, the scope toolbar 'Select all with agents', step-1 caption spacing + S3 dev-caveat wording. Builder round 2 fixing those. Deferred follow-ups: the AWS account/org choice + CloudWatch traces checkbox (artifact doesn't vary yet), the 'Not requested' traces row.
 - PO-5 r2 ece5701: design re-check APPROVE (footer, alignment, detected strip "ACT-ReadOnly in account 1234 5678 9012", caption/note all pass). Full e2e 257 pass at 967105e; 60 targeted + smoke pass at ece5701. MERGED 5655cd8. Follow-ups: the code block breaks words mid-word (overflow-wrap); the AWS account/org choice + CloudWatch traces; "Select all with agents" visible only when partially selected (by design).
 - PO-4 r2 5398a3a + tests efb5a01: 960 pass. MERGED. PC end-of-wave suites running on main.
+- PO-4/PO-5 worktrees removed, costs logged ($120.43 cumulative). 9100 preview restarted on main 98759ac (real DB); 9202 scratch preview stopped.
+
+## Wave PD: PO-6 UI part 2 (+ the T-48f/T-50f slot is already done)
+ACs PO-6.1..PO-6.5 (plan section 4) + design spec sections 3.5-3.9, 4.7-4.10, 8 (testids), 9.
+Routes: #/connections/:connId/scans/:scanId (scan view), …/review, …/summary, #/connections/:connId (detail), #/connections/:connId/intake/:stagedId (single-agent intake). The PO-5 stub "Scan" screen becomes the real start: step 3 Continue -> POST scan -> scan view.
+PO-4 API (merged): all lists return {"rows":[...]}.
+- POST /api/connections/{id}/scans -> {scan_id, sample, job_id, job_url}
+- GET /api/scans/{id} -> {state queued|running|done|partial|failed, progress:[{scope,found,errors,state}], counts:{found,new,changed,unchanged,missing}, job_url, updated_at}
+- GET /api/connections/{id}/scans (recent; the view survives a reload)
+- GET /api/scans/{id}/staged?class=new|changed|unchanged|missing -> rows {id, class, diff, suggestion (overrides applied, tier, 7 criteria with reason), overrides, owner, flags, sample, summary}
+- PATCH /api/staged/{rid} {owner?, overrides?:{criterion:{score,reason}}} (422 without a reason)
+- POST /api/scans/{id}/import {ids:[int]} -> {imported, updated, no_owner, missing, skipped, agent_ids} (ownerless rows import as "Needs owner")
+- GET /api/connections/{id}/awaiting -> {rows, scan_id, count}; import via /api/scans/{scan_id}/import
+- PUT/GET /api/connections/{id}/schedule {schedule: off|daily, time?, job_id}; POST /api/connections/{id}/sync
+- DELETE /api/connections/{id} = disconnect (keeps agents)
+Fleet: the primary "Add agents" -> #/connections; "Add by URL" keeps data-testid register-external-button; the awaiting-import banner when any connection has awaiting rows; the agent page source chip links to its connection; the "Sample data" badge everywhere sample shows.
+Touches: frontend/src/pages/{ConnectScan,ScanReview,ImportSummary,ConnectionDetail,Intake}.jsx, components/connect/*, connect.css, main.jsx, api.js, pages/Fleet.jsx, pages/Agent.jsx (source chip only), dist. Builder: builder. QA: ui-tester, visual-reviewer, code-reviewer. Branch task/PO-6.
