@@ -157,7 +157,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
   )
 }
 
-function ConfirmDialog({ title, body, danger, confirmLabel, onConfirm, onCancel }) {
+function ConfirmDialog({ title, body, danger, confirmLabel, onConfirm, onCancel, busy }) {
   const ref = React.useRef(null)
   const tid = React.useId(), bid = React.useId()
   React.useEffect(() => {
@@ -181,7 +181,7 @@ function ConfirmDialog({ title, body, danger, confirmLabel, onConfirm, onCancel 
         <p id={bid} className="st-dlg-body">{body}</p>
         <div className="st-dlg-actions">
           <Button onClick={onCancel}>Cancel</Button>
-          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} data-autofocus>
+          <Button variant="primary" className={danger ? 'st-btn-danger' : undefined} onClick={onConfirm} disabled={busy} data-autofocus>
             {confirmLabel || 'Confirm'}</Button>
         </div>
       </div>
@@ -194,16 +194,24 @@ function DemoCard({ entry, onChange }) {
   const [err, setErr] = React.useState('')
   const on = !!entry.value
   const [realN, setRealN] = React.useState(null)
+  const token = React.useRef(0)
   const openAsk = () => {
     setAsk(true)
-    if (on) { setRealN(null); settingsApi.realAgentCount().then((r) => setRealN(r.real_agent_count)).catch(() => setRealN(undefined)) }
+    if (on) {
+      const mine = ++token.current
+      setRealN(null)
+      settingsApi.realAgentCount()
+        .then((r) => { if (token.current === mine) setRealN(r.real_agent_count == null ? undefined : r.real_agent_count) })
+        .catch(() => { if (token.current === mine) setRealN(undefined) })
+    }
   }
+  const cancel = () => { token.current++; setAsk(false); setRealN(null) }
   const offBody = realN === null ? 'Checking your real data…'
     : realN === undefined ? 'The app goes back to your real database. Demo data stays in its own database.'
     : realN > 0 ? `You'll see your ${realN} real agent${realN === 1 ? '' : 's'}. The app goes back to your real database; demo data stays in its own database.`
     : 'No real agents yet: Fleet will be empty until you register or import agents. Demo data stays in its own database.'
   const flip = async () => {
-    setAsk(false); setBusy(true); setErr('')
+    token.current++; setAsk(false); setRealN(null); setBusy(true); setErr('')
     try {
       onChange(await settingsApi.put('demo_mode', !on))
       refreshHealth()
@@ -235,7 +243,7 @@ function DemoCard({ entry, onChange }) {
           title={on ? 'Turn demo mode off?' : 'Turn demo mode on?'}
           body={on ? offBody
             : 'The app switches to a separate demo database with simulated agents, runs and a simulated approver. Your real database is not touched.'}
-          onConfirm={flip} onCancel={() => setAsk(false)} />
+          onConfirm={flip} onCancel={cancel} busy={on && realN === null} />
       )}
     </section>
   )
