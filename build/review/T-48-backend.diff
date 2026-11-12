@@ -1,0 +1,679 @@
+diff --git a/backend/demo.py b/backend/demo.py
+index 4b52a40..4325c1e 100644
+--- a/backend/demo.py
++++ b/backend/demo.py
+@@ -179,7 +179,17 @@ class _Switch:
+         self.own = own
+ 
+     def __enter__(self):
++        global _inflight
++        # The triggering request is counted in flight while it waits for another switch; that switch would wait
++        # for it to drain (a 15 s stall). Step out of the count while waiting, back in once the mutex is ours.
++        if self.own:
++            with _cond:
++                _inflight -= self.own
++                _cond.notify_all()
+         _switch_mutex.acquire()
++        if self.own:
++            with _cond:
++                _inflight += self.own
+         try:
+             _begin_switch(self.own)
+         except BaseException:
+diff --git a/backend/domino_identity.py b/backend/domino_identity.py
+index 3770fc1..a16a6dc 100644
+--- a/backend/domino_identity.py
++++ b/backend/domino_identity.py
+@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
+ class User:
+     user_id: str
+     username: str
++    via: str = "domino"  # "domino" (proxy headers or bearer) | "workspace" (workspace owner mode)
+ 
+ 
+ _jwks_client = None
+@@ -40,6 +41,22 @@ def _verify_bearer(token: str):
+     return User(user_id=str(uid), username=str(name)) if uid and name else None
+ 
+ 
++def workspace_owner_mode() -> bool:
++    """True when an anonymous caller is the project owner: the app runs inside a Domino Workspace, where only the
++    workspace owner can reach the port. ACT_WORKSPACE_OWNER_MODE=1 forces on, 0 forces off. Unset: on only when
++    DOMINO_RUN_HOST_PATH contains "/notebookSession/" (a Workspace, not a published App or Job) AND
++    DOMINO_PROJECT_OWNER is set. Any other value, or anything missing, is off (fail closed)."""
++    owner = (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()
++    if not owner:
++        return False
++    forced = (os.environ.get("ACT_WORKSPACE_OWNER_MODE") or "").strip().lower()
++    if forced in ("1", "true", "yes", "on"):
++        return True
++    if forced:
++        return False
++    return "/notebookSession/" in (os.environ.get("DOMINO_RUN_HOST_PATH") or "")
++
++
+ def get_user(request):
+     """Return the caller or None. A valid bearer wins over proxy headers.
+ 
+@@ -56,6 +73,11 @@ def get_user(request):
+     name = request.headers.get("X-Domino-User")
+     if uid and name:
+         return User(user_id=uid, username=name)
++    # Owner mode only for a caller that presented no credentials at all; a rejected bearer or a half set of
++    # identity headers is never upgraded to the owner.
++    if not auth and not uid and not name and workspace_owner_mode():
++        owner = os.environ["DOMINO_PROJECT_OWNER"].strip()
++        return User(user_id=f"workspace:{owner}", username=owner, via="workspace")
+     return None
+ 
+ 
+diff --git a/backend/routes/demo.py b/backend/routes/demo.py
+index 60a7711..9713e35 100644
+--- a/backend/routes/demo.py
++++ b/backend/routes/demo.py
+@@ -58,11 +58,13 @@ def _approve(agent_id, user):
+ def demo_run(agent_id: str, _user: User = Depends(require_user)):
+     from jobs import seed_demo
+     try:
+-        with demo.active_demo_engine() as eng:  # held for the whole run: the engine cannot change under it
++        with demo.active_demo_engine() as eng:  # the lock covers only the check, not the run
+             a = _agent(agent_id, eng)
+             if a.name != "recon-agent":
+                 raise HTTPException(409, "only recon-agent can be run in demo mode")
+-            run_id = seed_demo.run_recon_once(agent_id, eng)
++        # This request stays counted in flight, and a switch drains in-flight requests before it swaps the
++        # engine, so `eng` cannot change under the run even though _rt_lock is released.
++        run_id = seed_demo.run_recon_once(agent_id, eng)
+     except demo.DemoGuardError as e:
+         raise HTTPException(409, str(e))
+     except HTTPException:
+diff --git a/backend/routes/settings.py b/backend/routes/settings.py
+index c823806..93e8005 100644
+--- a/backend/routes/settings.py
++++ b/backend/routes/settings.py
+@@ -17,7 +17,8 @@ def require_admin(user: User = Depends(require_user)) -> User:
+ 
+ @router.get("/api/settings/access")
+ def access(user: User = Depends(require_user)):
+-    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured()}
++    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured(),
++            "user": user.username, "via": user.via}
+ 
+ 
+ @router.get("/api/settings")
+diff --git a/backend/settings.py b/backend/settings.py
+index b7ff27c..89f449d 100644
+--- a/backend/settings.py
++++ b/backend/settings.py
+@@ -34,7 +34,7 @@ class SettingError(Exception):
+         self.status, self.message = status, message
+ 
+ 
+-# name -> (section, secret, env name, kind, label)
++# name -> (section, secret, env name, kind); LABELS/HELP below give the Settings page its text
+ _DEFS = [
+     ("demo_mode", "demo", False, "ACT_DEMO_MODE", "bool"),
+     ("llm_provider", "integrations", False, "ACT_LLM_PROVIDER", "provider"),
+@@ -59,7 +59,32 @@ _DEFS = [
+     ("databricks_client_secret", "credentials", True, "ACT_DATABRICKS_CLIENT_SECRET", "text"),
+     ("admins", "access", False, "ACT_ADMINS", "text"),
+ ]
+-DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind}
++LABELS = {
++    "demo_mode": ("Demo mode", "Run on a simulated database with stand-in services. Never touches real data; turn off to return to the real database."),
++    "llm_provider": ("LLM provider", "Where model calls go: gateway (Domino LLM Gateway) or mock (canned answers)."),
++    "llm_gateway_url": ("LLM Gateway URL", "Base URL of the Domino LLM Gateway used when the provider is gateway."),
++    "break_classifier_endpoint_url": ("Break classifier endpoint URL", "URL of the Domino model endpoint that classifies reconciliation breaks."),
++    "break_classifier_access_key": ("Break classifier access key", "Access key for the break classifier endpoint. Stored encrypted and never shown."),
++    "external_allow_hosts": ("External agent allow-list", "Comma-separated hosts external agents may be registered from."),
++    "trusted_jwks_path": ("Trusted JWKS path", "Path of the JWKS file used to verify external agent tokens."),
++    "service_accounts": ("Service accounts", "Comma-separated service accounts allowed to call the API without a user."),
++    "policy_agentic_id": ("Governance policy id (agentic)", "Domino Governance policy id used for agent bundles."),
++    "policy_model_id": ("Governance policy id (model)", "Domino Governance policy id used for model bundles."),
++    "aws_role_arn": ("AWS role ARN", "IAM role the app assumes to read AWS data."),
++    "aws_external_id": ("AWS external id", "External id sent when assuming the AWS role."),
++    "aws_access_key_id": ("AWS access key id", "Access key id for AWS. Stored encrypted and never shown."),
++    "aws_secret_access_key": ("AWS secret access key", "Secret access key for AWS. Stored encrypted and never shown."),
++    "google_service_account_json": ("Google service account JSON", "Service account key (a JSON object) for Google Cloud. Stored encrypted and never shown."),
++    "microsoft_tenant_id": ("Microsoft tenant id", "Azure AD tenant for Microsoft access."),
++    "microsoft_client_id": ("Microsoft client id", "Azure AD application (client) id."),
++    "microsoft_client_secret": ("Microsoft client secret", "Azure AD client secret. Stored encrypted and never shown."),
++    "databricks_host": ("Databricks host", "Workspace URL of your Databricks deployment."),
++    "databricks_client_id": ("Databricks client id", "OAuth client id for Databricks."),
++    "databricks_client_secret": ("Databricks client secret", "OAuth client secret for Databricks. Stored encrypted and never shown."),
++    "admins": ("Admins", "Comma-separated usernames who can open Settings. The project owner is always an admin."),
++}
++DEFS = {n: {"name": n, "section": sec, "secret": secret, "env": env or f"ACT_{n.upper()}", "kind": kind,
++            "label": LABELS[n][0], "help": LABELS[n][1]}
+         for n, sec, secret, env, kind in _DEFS}
+ # Used while demo mode is on and neither the environment nor the app sets the value.
+ _DEMO_DEFAULTS = {"llm_provider": "mock", "external_allow_hosts": "127.0.0.1,localhost"}
+@@ -198,7 +223,8 @@ def _invalidate() -> None:
+ 
+ def _env_value(name):
+     env = DEFS[name]["env"]
+-    if env in demo.applied_env():
++    if env in demo.applied_env():  # demo mode filled this in itself: not a project variable, so not locked, and the
++        # banner must not claim it is (the value shows as a default that Settings can override)
+         return None
+     v = os.environ.get(env)
+     return v if v is not None and v.strip() else None
+@@ -255,7 +281,7 @@ def entry(name: str) -> dict:
+     row = _rows().get(name)
+     app_set = row is not None and row.value is not None
+     source = "env" if env_v is not None else "app" if app_set else "default"
+-    out = {"name": name, "section": d["section"], "secret": d["secret"], "env": d["env"], "is_set": source != "default",
++    out = {"name": name, "section": d["section"], "label": d["label"], "help": d["help"], "secret": d["secret"], "env": d["env"], "is_set": source != "default",
+            "source": source, "locked": source == "env",
+            "changed_by": row.changed_by if source == "app" else None,
+            "changed_at": row.changed_at if source == "app" else None}
+@@ -339,6 +365,32 @@ def _store(user, name, stored, action):
+     _invalidate()
+ 
+ 
++def _switch_off_or_409() -> None:
++    try:
++        demo.switch_off(own=1)
++    except demo.DemoGuardError as e:
++        raise SettingError(409, f"{e}; nothing was changed, try again")
++
++
++def _restore_demo_on() -> None:
++    """The switch-off happened but the value could not be saved: put the live mode back to match what is stored."""
++    try:
++        demo.switch_on(own=1)
++    except Exception:  # noqa: BLE001
++        log.exception("could not restore demo mode after a failed save")
++
++
++def _switch_off_retry() -> None:
++    """Rollback of a switch-on whose value was not saved: retry a few times (a drain timeout is transient)."""
++    for _ in range(3):
++        try:
++            demo.switch_off(own=1)
++            return
++        except demo.DemoGuardError:
++            time.sleep(0.05)
++    raise SettingError(503, "the value was not saved and demo mode could not be switched back off yet; try again")
++
++
+ def put_setting(user, name, value) -> dict:
+     _check_writable(name)
+     v = _validate(name, value)
+@@ -349,14 +401,21 @@ def put_setting(user, name, value) -> dict:
+                 demo.switch_on(own=1)  # atomic: on failure nothing has changed
+             except demo.DemoGuardError as e:
+                 raise SettingError(409, str(e))
+-        try:
+-            _store(user, name, v, "settings.update")
+-        except Exception:
+-            if v == "true" and not was_on:
+-                demo.switch_off(own=1)  # the value was not saved, so the app must not stay in demo mode
+-            raise
+-        if v == "false":
+-            demo.switch_off(own=1)
++            try:
++                _store(user, name, v, "settings.update")
++            except Exception:
++                if not was_on:
++                    _switch_off_retry()  # the value was not saved, so the app must not stay in demo mode
++                log.exception("demo_mode could not be saved")
++                raise SettingError(503, "the setting could not be saved; demo mode was left off, try again")
++        else:
++            _switch_off_or_409()  # first: if it cannot happen, nothing is stored and the two stay consistent
++            try:
++                _store(user, name, v, "settings.update")
++            except Exception:
++                if was_on:
++                    _restore_demo_on()
++                raise
+         return entry(name)
+     stored = key_state()[0].encrypt(v.encode()).decode() if DEFS[name]["secret"] else v
+     _store(user, name, stored, "settings.update")
+@@ -365,9 +424,17 @@ def put_setting(user, name, value) -> dict:
+ 
+ def delete_setting(user, name) -> dict:
+     _check_writable(name)
+-    _store(user, name, None, "settings.clear")
+     if name == "demo_mode":
+-        demo.switch_off(own=1)
++        was_on = demo.enabled()
++        _switch_off_or_409()
++        try:
++            _store(user, name, None, "settings.clear")
++        except Exception:
++            if was_on:
++                _restore_demo_on()
++            raise
++        return entry(name)
++    _store(user, name, None, "settings.clear")
+     return entry(name)
+ 
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 0674202..922772f 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -30,3 +30,11 @@ def db_mod(db_env):
+ def pytest_configure(config):
+     config.addinivalue_line("markers", "live: needs a live deployment; skipped unless its env var is set")
+     config.addinivalue_line("markers", "default_hosts: run with ACT_EXTERNAL_ALLOW_HOSTS unset")
++
++
++@pytest.fixture(autouse=True)
++def _hermetic_workspace_owner_mode(monkeypatch):
++    """The test host may itself be a Domino Workspace (DOMINO_RUN_HOST_PATH=/notebookSession/...), which would
++    switch SR-2 workspace owner mode on and turn anonymous 401s into owner calls. Pin it off by default;
++    tests that exercise owner mode set ACT_WORKSPACE_OWNER_MODE (or delenv it for auto mode) themselves."""
++    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")
+diff --git a/tests/test_t16_proxy_prefix.py b/tests/test_t16_proxy_prefix.py
+index 3fa0555..dc3187a 100644
+--- a/tests/test_t16_proxy_prefix.py
++++ b/tests/test_t16_proxy_prefix.py
+@@ -29,6 +29,7 @@ def dist(tmp_path):
+ @pytest.fixture
+ def client(db_env, monkeypatch, dist):
+     monkeypatch.setenv("DOMINO_RUN_HOST_PATH", RUN)
++    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")  # these tests cover prefix handling and the write guard, not SR-2
+     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
+         del sys.modules[m]
+diff --git a/tests/test_t17_preview_runtime.py b/tests/test_t17_preview_runtime.py
+index a5b8be9..548249c 100644
+--- a/tests/test_t17_preview_runtime.py
++++ b/tests/test_t17_preview_runtime.py
+@@ -51,6 +51,7 @@ def _load_app(monkeypatch, tmp_path, with_dist, host_path="/some/other/r/noteboo
+         (d / "index.html").write_text(INDEX_HTML)
+         (d / "assets" / "t17.js").write_text(ASSET_JS)
+     monkeypatch.setenv("DOMINO_RUN_HOST_PATH", host_path)
++    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")  # these tests cover prefix handling and the write guard, not SR-2
+     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+     for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
+         del sys.modules[m]
+diff --git a/tests/test_t48_settings_access.py b/tests/test_t48_settings_access.py
+new file mode 100644
+index 0000000..555663a
+--- /dev/null
++++ b/tests/test_t48_settings_access.py
+@@ -0,0 +1,381 @@
++"""T-48: Settings reachable in a Domino Workspace (SR-2, SR-4, SR-5) and demo-switch fixes (SF-1..SF-3).
++Written from the AC text and interface contract only."""
++import importlib
++import sys
++import threading
++import time
++from types import SimpleNamespace
++
++import pytest
++from fastapi.testclient import TestClient
++
++ADMIN = {"X-Domino-User-Id": "u-owner", "X-Domino-User": "owner"}
++LISTED = {"X-Domino-User-Id": "u-ann", "X-Domino-User": "ann"}
++OTHER = {"X-Domino-User-Id": "u-bob", "X-Domino-User": "bob"}
++WS_PATH = "/mnt/runs/notebookSession/abc123"
++SECRET = "S3cr3t-PLAINTEXT-value-9f8e7d"
++
++ENV_NAMES = ["ACT_SECRET_KEY", "ACT_DEMO_MODE", "ACT_ADMINS", "LLM_GATEWAY_URL", "ACT_LLM_PROVIDER",
++             "BREAK_CLASSIFIER_ENDPOINT_URL", "BREAK_CLASSIFIER_ACCESS_KEY", "ACT_EXTERNAL_ALLOW_HOSTS",
++             "ACT_TRUSTED_JWKS_PATH", "ACT_SERVICE_ACCOUNTS", "ACT_POLICY_AGENTIC_ID", "ACT_POLICY_MODEL_ID",
++             "ACT_WORKSPACE_OWNER_MODE", "DOMINO_RUN_HOST_PATH"]
++
++
++def _purge():
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++
++
++@pytest.fixture
++def env(db_env, tmp_path, monkeypatch):
++    for k in ENV_NAMES:
++        monkeypatch.delenv(k, raising=False)
++    monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
++    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
++    monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
++    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
++    return monkeypatch
++
++
++def _start(env):
++    from cryptography.fernet import Fernet
++    env.setenv("ACT_SECRET_KEY", Fernet.generate_key().decode())
++    _purge()
++    return importlib.import_module("backend.main")
++
++
++@pytest.fixture
++def client(env):
++    main = _start(env)
++    with TestClient(main.app, raise_server_exceptions=False) as c:
++        yield c
++    _purge()
++
++
++@pytest.fixture
++def demo_client(env, tmp_path):
++    main = _start(env)
++    from backend import demo
++    d = tmp_path / "demo-ds"
++    d.mkdir()
++    demo.DATASET_DIR = d
++    with TestClient(main.app, raise_server_exceptions=False) as c:
++        yield c
++    _purge()
++
++
++def _req(headers=None):
++    return SimpleNamespace(headers=headers or {})
++
++
++def _stored_demo(c):
++    r = c.get("/api/settings", headers=ADMIN)
++    assert r.status_code == 200, r.text
++    return next(s for s in r.json()["settings"] if s["name"] == "demo_mode")["value"]
++
++
++# ---- SR-2 workspace owner mode ----
++def _mode():
++    from backend import domino_identity
++    return domino_identity.workspace_owner_mode()
++
++
++@pytest.mark.parametrize("val,want", [("1", True), ("true", True), ("0", False), ("false", False)])
++def test_sr2_explicit_env_wins(env, val, want):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", val)
++    # opposite of what auto-detect would give
++    if want is False:
++        env.setenv("DOMINO_RUN_HOST_PATH", WS_PATH)
++    assert _mode() is want
++
++
++def test_sr2_auto_on_in_workspace_with_owner(env):
++    env.setenv("DOMINO_RUN_HOST_PATH", WS_PATH)
++    assert _mode() is True
++
++
++def test_sr2_auto_off_without_run_host_path(env):
++    assert _mode() is False
++    env.setenv("DOMINO_RUN_HOST_PATH", "")
++    assert _mode() is False
++
++
++def test_sr2_auto_off_for_job_run_path(env):
++    env.setenv("DOMINO_RUN_HOST_PATH", "/mnt/runs/jobs/abc")
++    assert _mode() is False
++
++
++def test_sr2_auto_off_without_project_owner(env):
++    env.setenv("DOMINO_RUN_HOST_PATH", WS_PATH)
++    env.delenv("DOMINO_PROJECT_OWNER")
++    assert _mode() is False
++
++
++def test_sr2_get_user_returns_owner_when_on(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
++    from backend import domino_identity
++    u = domino_identity.get_user(_req())
++    assert u is not None and u.username == "owner"
++
++
++def test_sr2_headers_win_over_owner_mode(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
++    from backend import domino_identity
++    u = domino_identity.get_user(_req({"X-Domino-User-Id": "u-bob", "X-Domino-User": "bob"}))
++    assert u is not None and u.username == "bob"
++
++
++def test_sr2_bearer_wins_over_owner_mode(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
++    from backend import domino_identity
++    env.setattr(domino_identity, "_verify_bearer", lambda t: domino_identity.User("u-c", "carl"))
++    u = domino_identity.get_user(_req({"Authorization": "Bearer abc"}))
++    assert u is not None and u.username == "carl"
++
++
++def test_sr2_off_get_user_anonymous_is_none(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "0")
++    from backend import domino_identity
++    assert domino_identity.get_user(_req()) is None
++
++
++def test_sr2_access_via_workspace_for_owner(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
++    main = _start(env)
++    with TestClient(main.app) as c:
++        r = c.get("/api/settings/access")
++        assert r.status_code == 200, r.text
++        b = r.json()
++        assert b["admin"] is True and b["admins_configured"] is True
++        assert b["user"] == "owner" and b["via"] == "workspace"
++        assert c.get("/api/settings").status_code == 200
++    _purge()
++
++
++def test_sr2_access_via_domino_with_headers(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
++    main = _start(env)
++    with TestClient(main.app) as c:
++        b = c.get("/api/settings/access", headers=OTHER).json()
++        assert b["user"] == "bob" and b["via"] == "domino" and b["admin"] is False
++        b = c.get("/api/settings/access", headers=ADMIN).json()
++        assert b["user"] == "owner" and b["via"] == "domino" and b["admin"] is True
++    _purge()
++
++
++def test_sr2_off_access_anonymous_401(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "0")
++    main = _start(env)
++    with TestClient(main.app) as c:
++        assert c.get("/api/settings/access").status_code == 401
++        assert c.get("/api/settings").status_code == 401
++    _purge()
++
++
++def test_sr2_default_not_workspace_fails_closed(client):
++    assert client.get("/api/settings/access").status_code == 401
++    assert client.post("/api/agents/external", json={}).status_code == 401
++
++
++def test_sr2_off_write_route_anonymous_401(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "false")
++    env.setenv("DOMINO_RUN_HOST_PATH", WS_PATH)
++    main = _start(env)
++    with TestClient(main.app) as c:
++        assert c.post("/api/agents/external", json={}).status_code == 401
++    _purge()
++
++
++def test_sr2_published_app_auto_write_guard_anonymous_401(env):
++    # published App (no /notebookSession/ in run path), mode unset = auto: anonymous writes stay rejected
++    env.setenv("DOMINO_RUN_HOST_PATH", "/mnt/runs/apps/app1")
++    main = _start(env)
++    with TestClient(main.app) as c:
++        assert c.post("/api/agents/external", json={}).status_code == 401
++        assert c.get("/api/settings/access").status_code == 401
++    _purge()
++
++
++# ---- SR-4 ----
++def test_sr4_lists_exactly_defs_with_flags(env):
++    env.setenv("LLM_GATEWAY_URL", "http://gw.example")
++    env.setenv("BREAK_CLASSIFIER_ACCESS_KEY", SECRET)
++    main = _start(env)
++    from backend import settings
++    with TestClient(main.app) as c:
++        r = c.get("/api/settings", headers=ADMIN)
++        assert r.status_code == 200
++        items = {s["name"]: s for s in r.json()["settings"]}
++        assert set(items) == set(settings.DEFS)
++        assert len(r.json()["settings"]) == len(settings.DEFS)
++        for n, s in items.items():
++            assert s["section"] == settings.DEFS[n]["section"]
++            assert s["section"] in ("demo", "integrations", "credentials", "access")
++            assert s["secret"] is settings.DEFS[n]["secret"]
++        assert items["llm_gateway_url"]["source"] == "env" and items["llm_gateway_url"]["locked"] is True
++        assert items["policy_model_id"]["source"] != "env"
++        assert items["break_classifier_access_key"]["is_set"] is True
++        assert SECRET not in r.text
++    _purge()
++
++
++def test_sr4_stored_secret_never_in_clear(client):
++    r = client.put("/api/settings/aws_secret_access_key", json={"value": SECRET}, headers=ADMIN)
++    assert r.status_code == 200 and SECRET not in r.text
++    r = client.get("/api/settings", headers=ADMIN)
++    assert SECRET not in r.text
++
++
++# ---- SR-5 ----
++def test_sr5_admins_list_and_owner_stays_admin(client):
++    assert client.get("/api/settings/access", headers=LISTED).json()["admin"] is False
++    r = client.put("/api/settings/admins", json={"value": "ann, carl"}, headers=ADMIN)
++    assert r.status_code == 200, r.text
++    assert client.get("/api/settings/access", headers=LISTED).json()["admin"] is True
++    assert client.get("/api/settings/access", headers=ADMIN).json()["admin"] is True  # owner not in the list
++    assert client.get("/api/settings/access", headers=OTHER).json()["admin"] is False
++    assert client.delete("/api/settings/admins", headers=ADMIN).status_code == 200
++    assert client.get("/api/settings/access", headers=ADMIN).json()["admin"] is True
++    assert client.get("/api/settings/access", headers=LISTED).json()["admin"] is False
++
++
++# ---- SF-1 DemoGuardError never 500 ----
++def _demo_on(c):
++    r = c.put("/api/settings/demo_mode", json={"value": True}, headers=ADMIN)
++    assert r.status_code == 200, r.text
++    from backend import demo
++    assert demo.enabled()
++
++
++def _fail_switch_off_once(env):
++    from backend import demo
++    real = demo.switch_off
++    state = {"n": 0}
++
++    def flaky(own=0):
++        state["n"] += 1
++        if state["n"] == 1:
++            raise demo.DemoGuardError("requests still running; try again")
++        return real(own)
++    env.setattr(demo, "switch_off", flaky)
++    return state
++
++
++def _check_conflict(r):
++    assert r.status_code in (409, 503), (r.status_code, r.text)
++    assert "try again" in r.text.lower()
++
++
++def test_sf1_delete_demo_mode_guard_error(demo_client, env):
++    _demo_on(demo_client)
++    _fail_switch_off_once(env)
++    _check_conflict(demo_client.delete("/api/settings/demo_mode", headers=ADMIN))
++    from backend import demo
++    assert _stored_demo(demo_client) is demo.enabled()
++
++
++def test_sf1_put_false_guard_error(demo_client, env):
++    _demo_on(demo_client)
++    _fail_switch_off_once(env)
++    _check_conflict(demo_client.put("/api/settings/demo_mode", json={"value": False}, headers=ADMIN))
++    from backend import demo
++    assert _stored_demo(demo_client) is demo.enabled()
++
++
++def test_sf1_store_failure_rollback_guard_error(demo_client, env):
++    from backend import settings, demo
++    _fail_switch_off_once(env)
++
++    def boom(*a, **k):
++        raise RuntimeError("db write failed")
++    env.setattr(settings, "_store", boom)
++    r = demo_client.put("/api/settings/demo_mode", json={"value": True}, headers=ADMIN)
++    assert r.status_code != 500 or "try again" in r.text.lower(), r.text
++    assert r.status_code in (409, 503), (r.status_code, r.text)
++    assert "try again" in r.text.lower()
++    # stored setting was never saved, so live demo must not be left on
++    assert demo.enabled() is False
++
++
++# ---- SF-2 simultaneous toggles ----
++@pytest.mark.parametrize("pair", [(True, False), (True, True), (False, False)])
++def test_sf2_simultaneous_toggles_do_not_stall(demo_client, env, pair):
++    from backend import demo
++    # Seeding is slow on a loaded box; stub it (fast, but long enough to overlap the two requests) so the
++    # time budget measures only the 15 s drain stall, not demo seeding.
++    env.setattr(demo, "_seed", lambda **kw: time.sleep(0.3))
++    c = demo_client
++    results = []
++    barrier = threading.Barrier(2)
++
++    def go(v):
++        barrier.wait()
++        t = time.time()
++        r = c.put("/api/settings/demo_mode", json={"value": v}, headers=ADMIN)
++        results.append((r.status_code, time.time() - t))
++    ts = [threading.Thread(target=go, args=(v,)) for v in pair]
++    t0 = time.time()
++    [t.start() for t in ts]
++    [t.join(30) for t in ts]
++    assert time.time() - t0 < 8, results  # old behaviour stalled for the 15 s drain timeout
++    assert len(results) == 2 and all(s != 500 for s, _ in results), results
++    assert _stored_demo(c) is demo.enabled()
++
++
++def test_sf2_simultaneous_deletes_do_not_stall(demo_client, env):
++    from backend import demo
++    env.setattr(demo, "_seed", lambda **kw: time.sleep(0.3))
++    c = demo_client
++    _demo_on(c)
++    barrier = threading.Barrier(2)
++    results = []
++
++    def go():
++        barrier.wait()
++        results.append(c.delete("/api/settings/demo_mode", headers=ADMIN).status_code)
++    ts = [threading.Thread(target=go) for _ in range(2)]
++    t0 = time.time()
++    [t.start() for t in ts]
++    [t.join(30) for t in ts]
++    assert time.time() - t0 < 8, results
++    assert all(s != 500 for s in results), results
++    assert _stored_demo(c) is demo.enabled()
++
++
++# ---- SF-3 demo run must not hold the runtime lock ----
++def test_sf3_demo_run_does_not_hold_rt_lock(demo_client, env):
++    from backend import demo
++    from jobs import seed_demo
++    c = demo_client
++    _demo_on(c)
++    agents = c.get("/api/agents").json()
++    agent_id = next(a["id"] for a in agents if a["name"] == "recon-agent")
++    started, release = threading.Event(), threading.Event()
++
++    def slow(agent_id, eng=None, *a, **k):
++        started.set()
++        release.wait(20)
++        return "run-stub"
++    env.setattr(seed_demo, "run_recon_once", slow)
++    out = {}
++    t = threading.Thread(target=lambda: out.update(r=c.post(f"/api/demo/run/{agent_id}", headers=ADMIN)))
++    t.start()
++    try:
++        assert started.wait(10), "stubbed run never started"
++        got = []
++
++        def other():
++            ok = demo._rt_lock.acquire(timeout=2)
++            got.append(ok)
++            if ok:
++                demo._rt_lock.release()
++        o = threading.Thread(target=other)
++        t0 = time.time()
++        o.start()
++        o.join(5)
++        assert got == [True], "demo runtime lock is held for the whole recon run"
++        assert time.time() - t0 < 2.5
++    finally:
++        release.set()
++        t.join(20)
++    assert out["r"].status_code == 200, out["r"].text
