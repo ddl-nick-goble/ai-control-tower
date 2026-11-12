@@ -1,6 +1,7 @@
-"""SQLite storage for ACT (single DB, WAL, pooled connections)."""
+"""SQLite storage for ACT (single DB, pooled connections; WAL on local disk, DELETE journal on network filesystems)."""
 import logging
 import os
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -27,22 +28,99 @@ try:
 except OSError:
     log.exception("could not create DB directory for %s", DB_PATH)
 
+_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3")
+
+
+def _read_mounts() -> list:
+    out = []
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3:
+                    out.append((parts[1].replace("\\040", " "), parts[2]))
+    except OSError:
+        pass
+    return out
+
+
+def fs_type(path, mounts=None) -> str:
+    """Filesystem type of `path`: longest-prefix match of its resolved path against the mount table."""
+    if mounts is None:
+        mounts = _read_mounts()
+    p = str(Path(path).expanduser().resolve())
+    best, best_len = "unknown", -1
+    for mp, fst in mounts:
+        mp_n = mp.rstrip("/")
+        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) > best_len:
+            best, best_len = fst, len(mp_n)
+    return best
+
+
+def is_network_fs(path, mounts=None) -> bool:
+    t = fs_type(path, mounts).lower()
+    return t in _NETWORK_FS or t.startswith("fuse.")
+
+
+def journal_mode_for(path, mounts=None) -> str:
+    override = os.environ.get("ACT_DB_JOURNAL_MODE")
+    if override:
+        if override.strip().upper() in ("WAL", "DELETE"):
+            return override.strip().upper()
+        log.warning("ignoring ACT_DB_JOURNAL_MODE=%r (must be WAL or DELETE)", override)
+    return "DELETE" if is_network_fs(path, mounts) else "WAL"
+
+
+def pool_size_for(path, mounts=None) -> int:
+    override = os.environ.get("ACT_DB_POOL_SIZE")
+    if override:
+        try:
+            if int(override) > 0:
+                return int(override)
+        except ValueError:
+            pass
+        log.warning("ignoring ACT_DB_POOL_SIZE=%r (must be a positive integer)", override)
+    return 4 if is_network_fs(path, mounts) else 20
+
+
+class DatabaseOpenError(Exception):
+    pass
+
+
+def check_open(path) -> None:
+    """Open the DB the way the app will; raise one clear DatabaseOpenError if that fails."""
+    mode = journal_mode_for(path)
+    try:
+        conn = sqlite3.connect(str(path), timeout=30)
+        try:
+            conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        raise DatabaseOpenError(
+            f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e}. "
+            "On a network filesystem the usual cause is stale -wal/-shm files left by a crash; "
+            "move them aside (or run scripts/restore_db.py) and restart.") from e
+
+
 def _make_engine(path: str):
+    mode = journal_mode_for(path)
     eng = create_engine(
         f"sqlite:///{path}",
         poolclass=QueuePool,
-        pool_size=20,
+        pool_size=pool_size_for(path),
         max_overflow=5,
         pool_pre_ping=False,
         connect_args={"check_same_thread": False, "timeout": 30},
     )
-    event.listen(eng, "connect", _on_connect)
+    event.listen(eng, "connect", lambda c, r: _on_connect(c, r, mode))
     return eng
 
 
-def _on_connect(dbapi_conn, _record):
+def _on_connect(dbapi_conn, _record, mode="WAL"):
     cur = dbapi_conn.cursor()
-    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute(f"PRAGMA journal_mode={mode}")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute("PRAGMA busy_timeout=30000")
     cur.close()
@@ -298,6 +376,8 @@ def _ensure_findings_index(engine) -> None:
 
 def init_db(eng=None) -> None:
     eng = eng or engine
+    if eng.url.database:
+        check_open(eng.url.database)
     try:
         metadata.create_all(eng)
     except Exception as e:
@@ -309,6 +389,6 @@ def init_db(eng=None) -> None:
 
 
 def prewarm(n: int) -> None:
-    conns = [engine.raw_connection() for _ in range(max(0, min(n, 20)))]
+    conns = [engine.raw_connection() for _ in range(max(0, min(n, engine.pool.size())))]
     for c in conns:
         c.close()
