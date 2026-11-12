@@ -226,3 +226,117 @@ def test_ac_no_benchmark_rule_still_rejects(db_env):
     crit["benchmark_score"] = 4
     with pytest.raises(tiering.TieringInputRejected):
         tiering.score_tier(crit)
+
+
+# ---- Review round 1: real seeded fixture agents -------------------------------------------------
+import dataclasses
+
+READ_ONLY_FIXTURE = "forecast"   # name fragment; resolved against the adapter output below
+
+
+def _fixture_agents():
+    from adapters.aws import AwsAdapter
+    from adapters.databricks import DatabricksAdapter
+    from adapters.google import GoogleAdapter
+    from adapters.microsoft import MicrosoftAdapter
+    out = []
+    for ad in (AwsAdapter(), GoogleAdapter(), MicrosoftAdapter(), DatabricksAdapter()):
+        out += [dataclasses.asdict(sa) for sa in ad.list_agents()]
+    return out
+
+
+def _fixture(name):
+    return next(a for a in _fixture_agents() if a["name"] == name)
+
+
+def test_ac1_real_fixture_treasury_sweep_is_tier_1_or_2(client):
+    a = _fixture("treasury-sweep-agent")
+    r = client.post("/api/suggest/scores", json={"agent": a}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json()["tier"] in (1, 2), r.json()
+
+
+def test_ac1_real_fixture_liquidity_forecast_agent_is_tier_3_or_4(client):
+    # liquidity-forecast-agent (databricks): query_cash_flows / run_forecast_model / publish_forecast, no value
+    # limits, no write scopes, internal_report consequence. Clearly a read-only reporting/forecast agent.
+    a = _fixture("liquidity-forecast-agent")
+    r = client.post("/api/suggest/scores", json={"agent": a}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert r.json()["tier"] in (3, 4), r.json()
+
+
+def test_ac1_every_fixture_agent_gets_seven_scores_no_crash(suggest):
+    agents = _fixture_agents()
+    assert len(agents) >= 10
+    for a in agents:
+        out = suggest.suggest_scores(a)
+        assert set(out) == set(CRITERIA), a["name"]
+        assert all(1 <= v["score"] <= 5 and v["reason"] for v in out.values()), a["name"]
+
+
+# ---- stored-record shape ----------------------------------------------------------------------
+def _stored(client, name):
+    from jobs.intake import run_intake
+    run_intake()
+    rows = client.get("/api/agents", headers=HDR).json()
+    rows = rows.get("agents", rows) if isinstance(rows, dict) else rows
+    aid = next(x["id"] for x in rows if x["name"] == name)
+    r = client.get(f"/api/agents/{aid}", headers=HDR)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.parametrize("name", ["treasury-sweep-agent"])
+def test_ac2_stored_record_scores_equal_flat_source_agent(client, suggest, name):
+    flat = suggest.suggest_scores(_fixture(name))
+    stored = _stored(client, name)
+    assert "manifest" in stored
+    assert suggest.suggest_scores(stored) == flat
+    r = client.post("/api/suggest/scores", json={"agent": stored}, headers=HDR)
+    assert r.status_code == 200, r.text
+    assert {k: v["score"] for k, v in r.json()["suggestions"].items()} == {k: v["score"] for k, v in flat.items()}
+
+
+def test_ac2_stored_record_every_seeded_agent_matches_flat(client, suggest):
+    from jobs.intake import run_intake
+    run_intake()
+    for a in _fixture_agents():
+        stored = _stored(client, a["name"])
+        assert suggest.suggest_scores(stored) == suggest.suggest_scores(a), a["name"]
+
+
+# ---- human_in_loop ----------------------------------------------------------------------------
+@pytest.mark.parametrize("shape", ["criteria", "manifest_permissions", "extra"])
+def test_ac1_human_in_loop_true_does_not_get_autonomy_4(suggest, shape):
+    # transfer_funds would trigger the "no human approval" autonomy-4 rule if hitl were read as false/missing
+    tools = ["read_balances", "transfer_funds"]
+    base = {"name": "x", "tools": tools, "data_scopes": [], "systems": [], "value_limits": {}}
+    if shape == "criteria":
+        a = {**base, "criteria": {"human_in_loop": True}}
+    elif shape == "manifest_permissions":
+        a = {"name": "x", "manifest": {"tools": tools, "data_scopes": [], "systems": [], "value_limits": {},
+                                       "permissions": {"human_in_loop": True}}}
+    else:
+        a = {**base, "extra": {"human_in_loop": True}}
+    assert suggest.suggest_scores(a)["autonomy"]["score"] < 4
+
+
+# ---- read verb first ---------------------------------------------------------------------------
+def test_ac1_read_transfer_history_not_higher_than_read_only_tool(suggest):
+    def mk(tool):
+        return {"name": "x", "tools": [tool], "data_scopes": [], "systems": [], "value_limits": {}}
+    base = suggest.suggest_scores(mk("read_document"))
+    got = suggest.suggest_scores(mk("read_transfer_history"))
+    for c in ("financial_exposure", "reversibility"):
+        assert got[c]["score"] <= base[c]["score"], (c, got[c])
+
+
+# ---- reasons for no-evidence criteria ---------------------------------------------------------
+def test_ac1_no_evidence_reason_names_what_was_checked(suggest):
+    out = suggest.suggest_scores({"name": "x", "tools": [], "data_scopes": [], "systems": [], "value_limits": {}})
+    for c, v in out.items():
+        r = v["reason"]
+        assert r.strip().lower() != "no evidence found", c
+        assert len(r) > 20, (c, r)
+        assert "no" in r.lower().split() or "no " in r.lower(), (c, r)
+        assert any(w in r.lower() for w in ("tool", "scope", "system", "limit", "setting", "identity", "human", "checked", "looked")), (c, r)
