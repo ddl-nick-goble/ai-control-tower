@@ -445,3 +445,4 @@ Shared files nobody touches in PB: adapters/base.py, backend/normalize.py, jobs/
   - Uses the PO-1 API (merged): POST/GET /api/connections, /paste, /check, /scopes, callback.
   - The gallery's "Use sample data" per card creates sample=true connections; the demo walk must work end to end on sample.
   - Touches: frontend/src/pages/Connections.jsx (replace placeholder), new frontend/src/pages/Connect*.jsx, new frontend/src/components/connect/*, new frontend/src/connect.css (po- prefix; new tokens per design spec section 6 go here, not in design.css), frontend/src/main.jsx (routes), frontend/src/pages/Register.jsx (route path only, if needed), frontend/src/api.js, frontend/dist. Builder: builder. QA: ui-tester, visual-reviewer (design source build/design/provider-onboarding.md + the .html prototype), code-reviewer. Branch task/PO-5.
+- PO-3a post-merge (c394b05) 852 pass / 3 skip. Worktree removed. PO-3a DONE.
