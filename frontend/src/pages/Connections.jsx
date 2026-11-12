@@ -58,7 +58,7 @@ function ProviderCard({ id, model, onChange }) {
               onClick={async () => { setBusy(true); try { await connectionsApi.remove(conn.id) } catch { /* shown again on reload */ } setBusy(false); onChange() }}>Discard setup</button>
     )
   } else if (kind === 'trusted') {
-    status = <StatusPill kind="busy" testid={`provider-card-${id}-status`}>Trust detected</StatusPill>
+    status = <StatusPill kind="info" testid={`provider-card-${id}-status`}>Trust detected</StatusPill>
     meta = [['Started', `${relTime(conn.created_at)}${conn.created_by ? ` by ${conn.created_by}` : ''}`], ['Next', 'Check access, then choose scope']]
     primary = { label: 'Continue setup', to: access, solid: true }
   } else if (kind === 'needs_attention') {

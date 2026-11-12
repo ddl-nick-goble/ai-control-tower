@@ -22,7 +22,7 @@ export function ProviderMark({ id, large }) {
 
 export function Spinner() { return <span className="po-spin" aria-hidden="true" /> }
 
-// Status pill: always carries text. kind: idle | ok | warn | err | busy
+// Status pill: always carries text. kind: idle | ok | warn | err | busy (spinner) | info (accent, no spinner)
 export function StatusPill({ kind, children, testid }) {
   const icon = kind === 'ok' ? <IconCheck /> : kind === 'warn' || kind === 'err' ? <IconAlert /> : kind === 'busy' ? <Spinner /> : null
   return <span className={`po-st po-st-${kind}`} data-testid={testid}>{icon}{children}</span>

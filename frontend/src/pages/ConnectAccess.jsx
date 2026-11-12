@@ -90,7 +90,7 @@ export default function ConnectAccess() {
       <div className="po-footer">
         <div className="po-footer-l">
           <span className="ds-helper po-flat" id="ck-foot">
-            {sum && sum.reqMissing.length ? 'Fix the required items above, then check again. ACT re-checks every 30 seconds.' : reason || (sum && sum.optMissing.length ? 'Only optional items are missing. You can continue now and add them later from the connection.' : '')}
+            {sum && sum.reqMissing.length ? 'Fix the required items above, then check again. ACT re-checks every 30 seconds.' : reason || (sum && sum.optMissing.length ? 'Only optional items are missing. You can continue now and add them later.' : '')}
           </span>
         </div>
         <div className="po-footer-r">

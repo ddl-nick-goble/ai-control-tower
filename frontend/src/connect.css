@@ -40,7 +40,7 @@ a.ds-btn:not(.ds-btn-primary):not(.ds-btn-ghost) { color: var(--ds-ink) }
 .po-st-ok { background: var(--ds-ok-bg); color: var(--ds-ok); border-color: var(--ds-ok-line) }
 .po-st-warn { background: var(--ds-warn-bg); color: var(--ds-warn); border-color: var(--ds-warn-line) }
 .po-st-err { background: var(--ds-danger-bg); color: #912018; border-color: var(--ds-danger-line) }
-.po-st-busy { background: var(--ds-accent-soft); color: #3b2ba8 }
+.po-st-busy, .po-st-info { background: var(--ds-accent-soft); color: #3b2ba8 }
 .po-sample { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px 0 4px; border-radius: 11px; font-size: 12px; font-weight: 700; color: #5c3f00; background: #fff7e6; border: 1px solid #b07a00; white-space: nowrap }
 .po-sample::before { content: ""; width: 12px; height: 12px; border-radius: 6px; background: var(--ds-sample-stripe) }
 .po-banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px 12px 20px; border-radius: var(--ds-radius); border: 1px solid #b07a00; background: #fff7e6; color: #5c3f00; font-size: 14px; position: relative; overflow: hidden }
