@@ -69,5 +69,99 @@
     }
    ]
   }
+ ],
+ "agents": [
+  {
+   "show": {
+    "created_on": "1730000000.000000000",
+    "name": "SERVICE_COPILOT",
+    "database_name": "CUSTOMER360",
+    "schema_name": "SERVICE",
+    "owner": "CUSTOMER_OWNER",
+    "comment": "Helps service agents look up customer history.",
+    "profile": "{\"display_name\": \"Service Copilot\"}",
+    "is_secure": "false"
+   },
+   "describe": {
+    "agent_spec": "{\"models\": {\"orchestration\": \"auto\"}, \"orchestration\": {\"budget\": {\"seconds\": 45, \"tokens\": 12000}}, \"tools\": [{\"tool_spec\": {\"type\": \"cortex_analyst_text_to_sql\", \"name\": \"customer_metrics\", \"description\": \"Customer metrics\"}}, {\"tool_spec\": {\"type\": \"cortex_search\", \"name\": \"case_notes\", \"description\": \"Search case notes\"}}], \"tool_resources\": {\"customer_metrics\": {\"semantic_view\": \"CUSTOMER360.SEM.CUSTOMER_METRICS\"}, \"case_notes\": {\"search_service\": \"CUSTOMER360.SERVICE.CASE_NOTES_SEARCH\"}}}"
+   },
+   "versions": [
+    {
+     "created_on": "1730000000.000000000",
+     "name": "VERSION$1",
+     "alias": "",
+     "comment": "first",
+     "is_default": "false",
+     "spec_file_path": ""
+    },
+    {
+     "created_on": "1731000000.000000000",
+     "name": "VERSION$2",
+     "alias": "",
+     "comment": "added case notes",
+     "is_default": "true",
+     "spec_file_path": ""
+    }
+   ],
+   "grants": [
+    {
+     "created_on": "1730500000.000000000",
+     "privilege": "USAGE",
+     "granted_on": "AGENT",
+     "name": "CUSTOMER360.SERVICE.SERVICE_COPILOT",
+     "granted_to": "ROLE",
+     "grantee_name": "SERVICE_AGENT",
+     "grant_option": "false",
+     "granted_by": "ACCOUNTADMIN"
+    },
+    {
+     "created_on": "1730500000.000000000",
+     "privilege": "USAGE",
+     "granted_on": "AGENT",
+     "name": "CUSTOMER360.SERVICE.SERVICE_COPILOT",
+     "granted_to": "ROLE",
+     "grantee_name": "PUBLIC",
+     "grant_option": "false",
+     "granted_by": "ACCOUNTADMIN"
+    }
+   ]
+  },
+  {
+   "show": {
+    "created_on": "1731500000.000000000",
+    "name": "SALES_SANDBOX_BOT",
+    "database_name": "ANALYTICS",
+    "schema_name": "SANDBOX",
+    "owner": "DATA_SCIENCE_OWNER",
+    "comment": "",
+    "profile": "{\"display_name\": \"Sales Sandbox Bot\"}",
+    "is_secure": "false"
+   },
+   "describe": {
+    "agent_spec": "{\"models\": {\"orchestration\": \"claude-sonnet-4-6\"}, \"tools\": [{\"tool_spec\": {\"type\": \"cortex_analyst_text_to_sql\", \"name\": \"sandbox_sales\", \"description\": \"Sales sandbox\"}}], \"tool_resources\": {\"sandbox_sales\": {\"semantic_view\": \"ANALYTICS.SANDBOX.SALES_VIEW\"}}}"
+   },
+   "versions": [
+    {
+     "created_on": "1731500000.000000000",
+     "name": "LIVE",
+     "alias": "",
+     "comment": "working copy",
+     "is_default": "true",
+     "spec_file_path": ""
+    }
+   ],
+   "grants": [
+    {
+     "created_on": "1730500000.000000000",
+     "privilege": "USAGE",
+     "granted_on": "AGENT",
+     "name": "ANALYTICS.SANDBOX.SALES_SANDBOX_BOT",
+     "granted_to": "ROLE",
+     "grantee_name": "DATA_SCIENCE",
+     "grant_option": "false",
+     "granted_by": "ACCOUNTADMIN"
+    }
+   ]
+  }
  ]
 }

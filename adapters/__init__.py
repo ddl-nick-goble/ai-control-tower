@@ -1,13 +1,14 @@
 """Source adapters: one per agent platform, resolved by class through a small registry."""
 import importlib
 
-# provider -> (module, class). Snowflake has no adapter yet.
+# provider -> (module, class).
 REGISTRY = {
     "aws": ("adapters.aws", "AwsAdapter"),
     "google": ("adapters.google", "GoogleAdapter"),
     "microsoft": ("adapters.microsoft", "MicrosoftAdapter"),
     "databricks": ("adapters.databricks", "DatabricksAdapter"),
     "domino": ("adapters.domino", "DominoAdapter"),
+    "snowflake": ("adapters.snowflake", "SnowflakeAdapter"),
 }
 
 
