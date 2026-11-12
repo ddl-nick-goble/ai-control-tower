@@ -379,3 +379,166 @@ def test_sf3_demo_run_does_not_hold_rt_lock(demo_client, env):
         release.set()
         t.join(20)
     assert out["r"].status_code == 200, out["r"].text
+
+
+# ---- SR-2 spoofing / fail-closed ----
+@pytest.fixture
+def ws_client(env):
+    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
+    main = _start(env)
+    with TestClient(main.app, raise_server_exceptions=False) as c:
+        yield c
+    _purge()
+
+
+def test_sr2_mode_on_only_user_header_is_401(ws_client):
+    assert ws_client.get("/api/settings/access", headers={"X-Domino-User": "owner"}).status_code == 401
+    assert ws_client.get("/api/settings", headers={"X-Domino-User": "owner"}).status_code == 401
+
+
+def test_sr2_mode_on_only_user_id_header_is_401(ws_client):
+    assert ws_client.get("/api/settings/access", headers={"X-Domino-User-Id": "u-owner"}).status_code == 401
+    assert ws_client.get("/api/settings", headers={"X-Domino-User-Id": "u-owner"}).status_code == 401
+
+
+def test_sr2_mode_on_invalid_bearer_is_401_not_owner(ws_client):
+    h = {"Authorization": "Bearer not-a-real-token"}
+    assert ws_client.get("/api/settings/access", headers=h).status_code == 401
+    assert ws_client.get("/api/settings", headers=h).status_code == 401
+
+
+def test_sr2_forced_on_without_project_owner_is_off(env):
+    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
+    env.delenv("DOMINO_PROJECT_OWNER")
+    assert _mode() is False
+    main = _start(env)
+    with TestClient(main.app, raise_server_exceptions=False) as c:
+        assert c.get("/api/settings/access").status_code == 401
+    _purge()
+
+
+@pytest.mark.parametrize("junk", ["maybe", "2", "enabled", "tru"])
+def test_sr2_garbage_flag_with_workspace_path_is_off(env, junk):
+    env.setenv("ACT_WORKSPACE_OWNER_MODE", junk)
+    env.setenv("DOMINO_RUN_HOST_PATH", WS_PATH)
+    assert _mode() is False
+    main = _start(env)
+    with TestClient(main.app, raise_server_exceptions=False) as c:
+        assert c.get("/api/settings/access").status_code == 401
+    _purge()
+
+
+def test_sr2_anonymous_write_in_workspace_mode_succeeds_as_owner(ws_client):
+    r = ws_client.put("/api/settings/external_allow_hosts", json={"value": "a.example.com"})
+    assert r.status_code == 200, r.text
+    items = {s["name"]: s for s in ws_client.get("/api/settings").json()["settings"]}
+    assert items["external_allow_hosts"]["changed_by"] == "owner"
+
+
+# ---- SR-4 labels and help ----
+def test_sr4_every_def_has_label_and_help(client):
+    from backend import settings
+    items = {s["name"]: s for s in client.get("/api/settings", headers=ADMIN).json()["settings"]}
+    assert set(items) >= set(settings.DEFS)
+    for n in settings.DEFS:
+        assert isinstance(items[n].get("label"), str) and items[n]["label"].strip(), n
+        assert isinstance(items[n].get("help"), str) and items[n]["help"].strip(), n
+
+
+# ---- SF-1 more ----
+def test_sf1_put_false_store_failure_restores_demo_and_not_500(demo_client, env):
+    from backend import settings, demo
+    _demo_on(demo_client)
+    assert _stored_demo(demo_client) is True
+
+    def boom(*a, **k):
+        raise RuntimeError("db write failed")
+    env.setattr(settings, "_store", boom)
+    r = demo_client.put("/api/settings/demo_mode", json={"value": False}, headers=ADMIN)
+    assert r.status_code in (409, 503), (r.status_code, r.text)
+    assert demo.enabled() is True  # live mode restored to match the stored (still true) value
+
+
+def test_sf1_switch_off_retries_exhausted_503_try_again(demo_client, env):
+    from backend import settings, demo
+
+    def boom(*a, **k):
+        raise RuntimeError("db write failed")
+
+    def always_guard(own=0):
+        raise demo.DemoGuardError("requests still running; try again")
+    env.setattr(settings, "_store", boom)
+    env.setattr(demo, "switch_off", always_guard)
+    r = demo_client.put("/api/settings/demo_mode", json={"value": True}, headers=ADMIN)
+    assert r.status_code == 503, (r.status_code, r.text)
+    assert "try again" in r.text.lower()
+
+
+def test_sf1_interleaved_toggles_stored_equals_live(demo_client, env):
+    """Force: toggle A (True) has switched on and is inside its store when toggle B (False) runs in full."""
+    from backend import settings, demo
+    env.setattr(demo, "_seed", lambda **kw: None)
+    env.setattr(demo, "DRAIN_TIMEOUT", 1.0)
+    real_store = settings._store
+    a_in_store, b_done = threading.Event(), threading.Event()
+    first = {"done": False}
+
+    def gated(user, name, stored, action):
+        if name == "demo_mode" and stored == "true" and not first["done"]:
+            first["done"] = True
+            a_in_store.set()
+            b_done.wait(5)  # B finishes entirely (or is blocked by a fix) before A stores
+        return real_store(user, name, stored, action)
+    env.setattr(settings, "_store", gated)
+    res = {}
+
+    def a():
+        res["a"] = demo_client.put("/api/settings/demo_mode", json={"value": True}, headers=ADMIN)
+
+    def b():
+        assert a_in_store.wait(10)
+        try:
+            res["b"] = demo_client.put("/api/settings/demo_mode", json={"value": False}, headers=ADMIN)
+        finally:
+            b_done.set()
+    ts = [threading.Thread(target=a), threading.Thread(target=b)]
+    [t.start() for t in ts]
+    [t.join(30) for t in ts]
+    assert all(r.status_code != 500 for r in res.values()), {k: (v.status_code, v.text) for k, v in res.items()}
+    assert _stored_demo(demo_client) is demo.enabled()
+
+
+# ---- SF-3 switch-off during a demo run ----
+def test_sf3_switch_off_during_run_409_and_engine_unchanged(demo_client, env):
+    from backend import demo, db
+    from jobs import seed_demo
+    c = demo_client
+    _demo_on(c)
+    env.setattr(demo, "DRAIN_TIMEOUT", 1.0)
+    agent_id = next(a["id"] for a in c.get("/api/agents").json() if a["name"] == "recon-agent")
+    started, release = threading.Event(), threading.Event()
+    seen = {}
+
+    def slow(agent_id, eng=None, *a, **k):
+        seen["before"] = db.engine
+        started.set()
+        release.wait(20)
+        seen["after"] = db.engine
+        seen["eng"] = eng
+        return "run-stub"
+    env.setattr(seed_demo, "run_recon_once", slow)
+    out = {}
+    t = threading.Thread(target=lambda: out.update(r=c.post(f"/api/demo/run/{agent_id}", headers=ADMIN)))
+    t.start()
+    try:
+        assert started.wait(10)
+        r = c.put("/api/settings/demo_mode", json={"value": False}, headers=ADMIN)
+        assert r.status_code in (409, 503), (r.status_code, r.text)
+        assert "try again" in r.text.lower()
+        assert db.engine is seen["before"]
+    finally:
+        release.set()
+        t.join(20)
+    assert out["r"].status_code == 200, out["r"].text
+    assert seen["after"] is seen["before"] and seen["eng"] is seen["before"]
+    assert demo.enabled() is True and _stored_demo(c) is True

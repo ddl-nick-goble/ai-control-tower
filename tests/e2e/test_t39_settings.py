@@ -160,7 +160,7 @@ def test_st1_nav_link_and_sections(page, shot, owner, base_url):
     expect(page).to_have_url(re.compile(r"#/settings$"))
     expect(page.get_by_test_id("settings-page")).to_be_visible()
     expect(nav.get_by_role("link", name="Settings")).to_have_attribute("aria-current", "page")
-    for h in ("Demo mode", "Platform credentials", "Integrations"):
+    for h in ("Demo mode", "Credentials", "Integrations"):
         expect(page.get_by_role("heading", name=h, exact=True)).to_be_visible()
     for blk in ("AWS AgentCore", "Google Agent Platform", "Microsoft Agent 365", "Databricks"):
         g = _field(page, blk)
@@ -289,7 +289,7 @@ def test_st6_anonymous_gets_401_and_sign_in_message(page, context, shot, base_ur
     assert page.request.get("./api/settings").status == 401
     page.goto("./#/settings")
     expect(page.get_by_text(re.compile(r"sign in|sign-in|log in", re.I)).first).to_be_visible()
-    expect(page.get_by_role("heading", name="Platform credentials")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Credentials")).to_have_count(0)
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
     shot("then")
 
@@ -305,7 +305,7 @@ def test_st6_non_admin_link_present_no_access(page, context, shot, base_url):
     na = page.get_by_test_id("settings-no-access")
     expect(na).to_be_visible()
     expect(na).to_contain_text(re.compile("no access|read-only", re.I))
-    expect(page.get_by_role("heading", name="Platform credentials")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Credentials")).to_have_count(0)
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
     assert page.request.get("./api/settings", headers=PLAIN).status in (401, 403)
     shot("then")
