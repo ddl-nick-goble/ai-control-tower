@@ -131,13 +131,24 @@ def _src(tmp_path):
     return src
 
 
+def _valid_dest(path, marker=1):
+    """A real, valid (rollback-journal) SQLite db: an existing dest that is openable."""
+    c = sqlite3.connect(path)
+    c.execute("PRAGMA journal_mode=DELETE")
+    c.execute("CREATE TABLE old_marker (x)")
+    c.execute("INSERT INTO old_marker VALUES (?)", (marker,))
+    c.commit()
+    c.close()
+    return Path(path).read_bytes()
+
+
 def test_ac4_dry_run_changes_nothing(tmp_path):
     src = _src(tmp_path)
     dest = tmp_path / "dest.db"
-    dest.write_bytes(b"existing")
+    existing = _valid_dest(dest)
     r = _run("--from", str(src), "--to", str(dest), env_db=tmp_path / "x.db")
     assert r.returncode == 0, r.stderr
-    assert dest.read_bytes() == b"existing"
+    assert dest.read_bytes() == existing
     assert glob.glob(str(dest) + ".broken-*") == []
     assert "widgets" in r.stdout and "3" in r.stdout
 
@@ -146,28 +157,33 @@ def test_ac4_refuses_corrupt_source(tmp_path):
     bad = tmp_path / "bad.db"
     bad.write_bytes(b"garbage not a database" * 500)
     dest = tmp_path / "dest.db"
-    dest.write_bytes(b"existing")
+    existing = _valid_dest(dest)
     assert SCRIPT.exists()
     r = _run("--from", str(bad), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
     assert r.returncode != 0
     assert "No such file" not in r.stderr
-    assert dest.read_bytes() == b"existing"
+    assert dest.read_bytes() == existing
     assert glob.glob(str(dest) + ".broken-*") == []
 
 
 def test_ac4_apply_moves_aside_copies_and_migrates(tmp_path):
     src = _src(tmp_path)
     dest = tmp_path / "dest.db"
-    dest.write_bytes(b"old-main")
+    # Truly corrupt dest (+ siblings): DBF-1 requires --force to move it aside.
+    # (A valid dest's probe would legitimately rewrite a stale -shm, so exact
+    # sibling bytes are only meaningful for the unopenable case.)
+    old_main = b"old-main"
+    dest.write_bytes(old_main)
     Path(str(dest) + "-wal").write_bytes(b"old-wal")
     Path(str(dest) + "-shm").write_bytes(b"old-shm")
-    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    r = _run("--from", str(src), "--to", str(dest), "--apply", "--force",
+             env_db=tmp_path / "x.db")
     assert r.returncode == 0, r.stdout + r.stderr
     main = glob.glob(str(dest) + ".broken-*")
     main = [p for p in main if not p.endswith(("-wal", "-shm"))]
     assert len(main) == 1
     stamp = main[0][len(str(dest)):]
-    assert Path(main[0]).read_bytes() == b"old-main"
+    assert Path(main[0]).read_bytes() == old_main
     assert Path(str(dest) + stamp + "-wal").read_bytes() == b"old-wal"
     assert Path(str(dest) + stamp + "-shm").read_bytes() == b"old-shm"
     c = sqlite3.connect(dest)
@@ -263,9 +279,12 @@ def test_ac4_local_dest_header_is_wal(tmp_path):
 def test_ac4_moves_journal_sibling_aside(tmp_path):
     src = _src(tmp_path)
     dest = tmp_path / "dest.db"
-    dest.write_bytes(b"old-main")
+    # Valid dest + hot -journal and no lock is the DBF-2 case: refused without
+    # --force; with --force the journal sibling is moved aside too.
+    _valid_dest(dest)
     Path(str(dest) + "-journal").write_bytes(b"old-journal")
-    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    r = _run("--from", str(src), "--to", str(dest), "--apply", "--force",
+             env_db=tmp_path / "x.db")
     assert r.returncode == 0, r.stdout + r.stderr
     j = glob.glob(str(dest) + ".broken-*-journal")
     assert len(j) == 1 and Path(j[0]).read_bytes() == b"old-journal"
@@ -275,7 +294,7 @@ def test_ac4_moves_journal_sibling_aside(tmp_path):
 def test_ac4_second_apply_same_second_never_loses_moved_aside_files(tmp_path):
     src = _src(tmp_path)
     dest = tmp_path / "dest.db"
-    dest.write_bytes(b"old-main")
+    old_main = _valid_dest(dest)
     Path(str(dest) + "-wal").write_bytes(b"old-wal")
     r1 = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
     assert r1.returncode == 0, r1.stdout + r1.stderr
@@ -283,7 +302,7 @@ def test_ac4_second_apply_same_second_never_loses_moved_aside_files(tmp_path):
     contents = {p: Path(p).read_bytes() for p in glob.glob(str(dest) + ".broken-*")
                 if not p.endswith(("-wal", "-shm", "-journal"))}
     # first set of moved-aside files always survives
-    assert b"old-main" in contents.values()
+    assert old_main in contents.values()
     assert any(Path(p).read_bytes() == b"old-wal" for p in glob.glob(str(dest) + ".broken-*-wal"))
     if r2.returncode == 0:
         assert len(contents) == 2  # both sets kept (or distinct timestamps)
