@@ -1,5 +1,7 @@
 # Suggested criteria scores (PO-2). Read by backend/suggest.py; override the path with ACT_CRITERIA_RULES.
-# Each criterion has a `default` score (used with the reason "no evidence found") and a list of rules.
+# Each criterion has a `default` score, a `checked` phrase (what was looked at; used in the reason when nothing matches) and a list of rules.
+# Names are normalised before matching (lowercase, "-", "_" and "." stripped), so CoreBanking matches core-banking.
+# Words of 3 chars or fewer (gl, pii) must equal a whole token of the name. Tools: a read verb first (read/get/list/view/describe/fetch/search/query) makes the tool read-only.
 # A rule fires when ALL its conditions hold; the highest `score` among fired rules wins (first in file on a tie).
 # The reason reads "<evidence> <why> -> <criterion> <score>", so every reason cites what drove it.
 # Conditions:
@@ -13,20 +15,23 @@
 criteria:
   decision_impact:
     default: 2
+    checked: "No approve/deny decision tool or record-changing tool found"
     rules:
       - {tool_verbs: [approve, deny, reject, decide, underwrite], score: 5, why: "makes approval decisions"}
-      - {tool_verbs: [transfer, pay, wire, delete, write, update, create], score: 3, why: "takes actions that change records or money"}
+      - {tool_verbs: [transfer, pay, wire, delete, write, update, create, post, hold, release], score: 3, why: "takes actions that change records or money"}
       - {tool_verbs: [read, get, list, search, fetch, view, query, summarize], score: 1, why: "only reads or searches, it decides nothing"}
   financial_exposure:
     default: 2
+    checked: "No money-moving tool, value limit or payments/ledger scope found"
     rules:
       - {value_limit_min: 1000000, score: 4, why: "can move large sums"}
       - {value_limit_min: 1, score: 3, why: "has a stated value limit"}
       - {tool_verbs: [transfer, pay, wire, settle, refund], score: 3, why: "can move money with no stated limit"}
-      - {scope_contains: [payments], score: 3, why: "touches payments data"}
+      - {scope_contains: [nostro, ledger, swift, payments], score: 3, why: "touches money-movement data"}
       - {tool_verbs: [read, get, list, search, fetch, view, query, summarize], score: 1, why: "cannot move money"}
   customer_impact:
     default: 2
+    checked: "No customer-data scope or customer-contact tool found"
     rules:
       - {scope_contains: [customer], scope_access: write, score: 4, why: "can change customer data"}
       - {tool_verbs: [email, sms, message], score: 3, why: "can contact customers directly"}
@@ -34,30 +39,36 @@ criteria:
       - {scope_contains: [public], score: 1, why: "works on public data only"}
   autonomy:
     default: 2
+    checked: "No state-changing tool, distinct identity or human-in-the-loop setting found"
     rules:
-      - {tool_verbs: [transfer, pay, wire, delete, write, update, approve, deny], human_in_loop: false, score: 4, why: "acts with no human approval recorded"}
+      - {tool_verbs: [transfer, pay, wire, delete, write, update, approve, deny, post, hold, release], human_in_loop: false, score: 4, why: "acts with no human approval recorded"}
       - {identity_distinct: true, score: 3, why: "runs under its own service identity"}
       - {human_in_loop: true, score: 1, why: "has human-in-the-loop review recorded"}
   data_sensitivity:
     default: 2
+    checked: "No pii, customer, payments, cash or ledger scope found"
     rules:
       - {scope_contains: [pii], scope_access: write, score: 5, why: "can write personal data"}
       - {scope_contains: [customer, payments], scope_access: write, score: 4, why: "can write customer or payment data"}
       - {scope_contains: [pii], score: 3, why: "reads personal data"}
+      - {scope_contains: [treasury, cash, nostro, ledger, swift, gl], score: 3, why: "reads treasury or ledger data"}
       - {scope_contains: [customer, payments], score: 3, why: "reads customer or payment data"}
       - {scope_contains: [public], score: 1, why: "public data only"}
   reversibility:
     default: 2
+    checked: "No delete, money-moving or record-changing tool found"
     rules:
       - {tool_verbs: [delete, purge, drop], score: 5, why: "deletes data, hard to undo"}
-      - {tool_verbs: [transfer, pay, wire, send, settle], score: 4, why: "moves money or messages that cannot be recalled"}
+      - {tool_verbs: [transfer, pay, wire, send, settle, post], score: 4, why: "moves money or messages that cannot be recalled"}
       - {tool_verbs: [write, update, create], score: 3, why: "changes records, undo needs a repair"}
       - {tool_verbs: [read, get, list, search, fetch, view, query, summarize], score: 1, why: "read-only, nothing to undo"}
   regulatory_exposure:
     default: 2
+    checked: "No pii, customer, payments scope or regulated system found"
     rules:
       - {scope_contains: [pii], score: 4, why: "handles personal data"}
       - {tool_verbs: [approve, deny, reject, underwrite], score: 4, why: "makes regulated decisions"}
       - {scope_contains: [customer, payments], score: 3, why: "handles customer or payment data"}
-      - {systems_contain: [core-banking, payments, ledger], score: 3, why: "is connected to a regulated system"}
+      - {scope_contains: [treasury, nostro, ledger, swift, gl], score: 3, why: "handles treasury or ledger data"}
+      - {systems_contain: [core-banking, payments, ledger, swift, gl], score: 3, why: "is connected to a regulated system"}
       - {scope_contains: [public], score: 1, why: "public data only"}
