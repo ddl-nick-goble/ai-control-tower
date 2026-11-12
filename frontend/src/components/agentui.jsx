@@ -136,7 +136,7 @@ export function ErrorPage({ title, message, onRetry, back }) {
         <h2 className="ds-empty-title">{title}</h2>
         <p className="ds-helper">{message}</p>
         <div className="ag-row">
-          <button type="button" className="ds-btn" onClick={onRetry}>Try again</button>
+          <button type="button" className="ds-btn ds-btn-ghost" onClick={onRetry}>Try again</button>
           {back}
         </div>
       </div>

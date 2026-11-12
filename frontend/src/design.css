@@ -443,9 +443,13 @@ body { font-family: var(--ds-font); -webkit-font-smoothing: antialiased; backgro
 .ag-card:has(> .ag-card-body > .ag-findings) { overflow: hidden }
 
 /* T-19b r3 */
-.ds-table th.c-name-h, .ds-table th:nth-child(2) { min-width: 180px }
-.ds-table th { box-shadow: 0 1px 0 var(--ds-line), 0 2px 4px -2px rgba(16, 24, 40, .12) }
-.ds-table-wrap { min-height: 100vh }
+.ds-table:has(col.c-name) th:nth-child(2) { min-width: 180px }
+.ds-table-card > .ds-table th { box-shadow: 0 1px 0 var(--ds-line), 0 2px 4px -2px rgba(16, 24, 40, .12) }
+.ag-runs col.c-rgo { width: 56px } .ag-runs td.ag-go { padding-right: var(--ds-s2) }
+.ag-runs th.num, .ag-runs td.num { padding-right: var(--ds-s4) }
+.ag-cols:has(.ag-main .ag-empty) .ag-side { flex: 0 0 34% }
+.rt-seg-btn:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
+.ag-copy:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px }
 .ag-card-body:has(> .ag-findings) { padding: 0 }
 .ag-skel-dependencies { justify-content: center }
 .ag-ph { display: block } 
