@@ -1,6 +1,6 @@
 """T-18 e2e: redesigned "Register external agent" page (R-1..R-9).
 
-Own app on port 9889 (the shared suite app on 9888 is never touched). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
+Own app on a free port (shared helper _server.py). Screenshots: /mnt/data/ai-control-tower/qa/T-18/.
 data-testid contract (role/label locators are primary):
   register-page         page root           register-section (x3)   numbered card, contains a heading "1 Agent card" etc.
   register-summary      sticky panel with tier-badge (data-tier, text "Tier N"), summary-score, summary-host, summary-scopes-count
@@ -13,77 +13,26 @@ data-testid contract (role/label locators are primary):
 import json
 import os
 import re
-import shutil
-import signal
-import subprocess
-import sys
-import time
-import urllib.request
 
 import pytest
 from playwright.sync_api import expect
 
+from _waits import round_trip, settle, stays_true, wait_true
+
+
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
-PORT = "9889"
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-18"
 NAMES = ["Decision impact", "Financial exposure", "Customer impact", "Autonomy", "Data sensitivity",
          "Reversibility", "Regulatory exposure"]
 KEYS = ["decision_impact", "financial_exposure", "customer_impact", "autonomy", "data_sensitivity",
         "reversibility", "regulatory_exposure"]
 
 
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
-
-
-# Module-scoped app on its own port; never starts the 9888 app. The conftest's session-scoped base_url is shadowed
+# Unseeded app shared per run (conftest registry; DB restored per module). The conftest's session-scoped base_url is shadowed
 # here, and browser_context_args is overridden at function scope (not chaining to the session one, which would
-# cache this module's URL for every later module or start the 9888 app).
+# cache this module's URL for every later module or start the shared app).
 @pytest.fixture(scope="module")
-def base_url(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("t18")
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{PORT}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PORT": PORT, "HOST": "0.0.0.0",
-           "ACT_DB": str(tmp / "act.db"), "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
-           "ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost",
-           "ACT_TRUSTED_JWKS_PATH": str(ROOT / "fixtures" / "external" / "signing-key.pub.jwk.json")}
-    log = tmp / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env,
-                            start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{PORT}/"
-    try:
-        yield url
-    finally:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=20)
-        logf.close()
+def base_url(apps):
+    return apps().url
 
 
 @pytest.fixture
@@ -146,7 +95,8 @@ def test_r1_two_columns_sticky_at_1440(page, shot):
     expect(summary.get_by_test_id("summary-scopes-count")).to_be_visible()
     assert _no_hscroll(page)
     page.mouse.wheel(0, 900)
-    page.wait_for_timeout(300)
+    settle(page)
+    wait_true(page, "window.scrollY > 100", 2000)
     assert page.evaluate("window.scrollY") > 100, "page too short to scroll: form not substantial"
     top = summary.bounding_box()["y"]
     assert 0 <= top < 200, f"summary not sticky, top={top}"
@@ -322,8 +272,9 @@ def test_r7_busy_and_no_double_submit(page, shot, card_urls):
     expect(busy).to_have_text(re.compile("Registering…"))
     busy.click(force=True)
     page.keyboard.press("Enter")
-    page.wait_for_timeout(500)
-    assert len(held) == 1, f"{len(held)} submissions while busy"
+    settle(page)
+    round_trip(page)  # any second submission would have reached the route by now
+    assert stays_true(page, lambda: len(held) == 1), f"{len(held)} submissions while busy"  # holds for >= 600 ms
     shot("then")
     held[0].continue_()  # release the held request
     expect(page).to_have_url(re.compile(r"#/agents/"), timeout=20000)

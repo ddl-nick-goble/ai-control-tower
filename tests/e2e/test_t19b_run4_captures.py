@@ -1,31 +1,44 @@
-"""T-19b run 4 full-page captures (1440 and 1024). Output: /mnt/data/ai-control-tower/qa/T-19b-run4/captures/."""
+"""T-19b run 4 full-page captures (1440 and 1024). Output: $QA_RUN_DIR/captures/ (default test-results/captures/). Marked capture: not part of regression runs."""
 import json
 import os
 import re
-import time
-
 import pytest
 from playwright.sync_api import expect
 
-from test_t19a_shell_fleet import (PORT, DEMO_PORT, _start, _stop, app, authed, base_url,  # noqa: F401
-                                   browser_context_args, demo_url, seeded)
+from _waits import settle
+from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
+                                   seeded)
 from test_t19b_agent_run_pages import _mock_fleet
 
-OUT = "/mnt/data/ai-control-tower/qa/T-19b-run4/captures"
+OUT = os.path.join(os.environ.get("QA_RUN_DIR", "test-results"), "captures")  # honours QA_RUN_DIR
+pytestmark = pytest.mark.capture
 WIDTHS = [(1440, 900), (1024, 768)]
 
 
+_HELD = []
+
+
 @pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
+def _out_dir():
     os.makedirs(OUT, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", "/mnt/data/ai-control-tower/qa/T-19b-run4")
+    yield
+    release()
+
+
+def release():
+    """Let held (slow) requests through."""
+    while _HELD:
+        try:
+            _HELD.pop().continue_()
+        except Exception:
+            pass  # page/context closed
 
 
 def _cap(page, name, setup):
     for w, h in WIDTHS:
         page.set_viewport_size({"width": w, "height": h})
         setup()
-        page.wait_for_timeout(400)
+        settle(page)
         page.screenshot(path=f"{OUT}/{name}-{w}.png", full_page=True)
 
 
@@ -39,11 +52,8 @@ def _longest_run(page, seeded):
 
 
 def _slow(route):
-    time.sleep(3)
-    try:
-        route.continue_()
-    except Exception:
-        pass
+    """Hold the request (loading state) until release() / the end of the test."""
+    _HELD.append(route)
 
 
 def test_cap_agent_tier1_findings(page, seeded):
@@ -115,7 +125,7 @@ def test_cap_run_from_finding_span(page, seeded):
         page.goto(f"./#/agents/{seeded['treasury_id']}")
         page.get_by_test_id("finding-timeline-link").first.click()
         expect(page.get_by_test_id("timeline-event").first).to_be_visible()
-        page.wait_for_timeout(600)
+        settle(page)
     _cap(page, "run-from-finding-span", s)
 
 
@@ -196,7 +206,7 @@ def test_cap_fleet_long_list_scrolled(page, seeded):
         expect(page.get_by_test_id("fleet-row")).to_have_count(60)
         page.mouse.move(600, 500)
         page.mouse.wheel(0, 1500)
-        page.wait_for_timeout(400)
+        settle(page)
     for w, h in WIDTHS:
         page.set_viewport_size({"width": w, "height": h})
         s()
@@ -242,7 +252,7 @@ def test_cap_fleet_banner_scrolled(page, demo_url, seeded, base_url):
         expect(page.get_by_test_id("fleet-row")).to_have_count(60)
         page.mouse.move(600, 500)
         page.mouse.wheel(0, 1500)
-        page.wait_for_timeout(400)
+        settle(page)
         page.screenshot(path=f"{OUT}/fleet-banner-scrolled-{w}.png", full_page=False)
 
 

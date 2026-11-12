@@ -9,7 +9,7 @@
     holding its label and help text; env-set values read "set by environment variable <ENV>" and are read-only.
   Access: setting-admins editable; data-testid=admins-fixed-owner shows the project owner as a fixed admin.
   Clear: secret fields' confirm button is exactly "Clear key"; non-secret fields' is exactly "Clear value".
-Apps: W (workspace owner mode, no headers = owner.user) on 9896, N (owner mode off) on 9897, D (demo on, owner mode) on 9898.
+Apps: W (workspace owner mode, no headers = owner.user), N (owner mode off), D (demo on, owner mode); each on a free port, started once per run (conftest registry).
 """
 import os
 import pathlib
@@ -28,84 +28,29 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 from backend.settings import DEFS  # noqa: E402
 
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-48-run1"
 PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
 OWNER_NAME = "owner.user"
 SECRET = "s3cr3t-VALUE-48aa"
 _MANAGED = {d["env"] for d in DEFS.values()} | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "DOMINO_RUN_HOST_PATH"}
 
 
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
-
-
-def _start(tmp, port, extra):
-    if shutil.which("fuser"):
-        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True)
-    time.sleep(1)
-    env = {k: v for k, v in os.environ.items() if k not in _MANAGED and not k.startswith("ACT_")}
-    env.update({"PYTHONDONTWRITEBYTECODE": "1", "PORT": port, "HOST": "0.0.0.0", "ACT_DB": str(tmp / "act.db"),
-                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"), "DOMINO_PROJECT_OWNER": OWNER_NAME})
-    env.update(extra)
-    log = tmp / "app.log"
-    logf = open(log, "w")
-    proc = subprocess.Popen(["bash", "app.sh"], cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-    url, deadline = None, time.time() + 300
-    while time.time() < deadline and url is None and proc.poll() is None:
-        m = re.search(r"APP_URL=(\S+)", log.read_text())
-        if m:
-            url = m.group(1)
-        else:
-            time.sleep(0.5)
-    assert url and url.endswith("/"), f"no APP_URL:\n{log.read_text()[-2000:]}"
-
-    def ok(u):
-        try:
-            return urllib.request.urlopen(u + "api/health", timeout=10).status == 200
-        except Exception:
-            return False
-    for _ in range(30):
-        if ok(url):
-            break
-        time.sleep(1)
-    else:
-        url = f"http://localhost:{port}/"
-    return proc, logf, url
-
-
-def _stop(proc, logf):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.wait(timeout=20)
-    except Exception:
-        os.killpg(proc.pid, signal.SIGKILL)
-    logf.close()
-
-
-def _app(tmp_path_factory, name, port, extra):
-    p = _start(tmp_path_factory.mktemp(name), port, extra)
-    yield p[2]
-    _stop(p[0], p[1])
+def _app(apps, extra):
+    return apps(external=False, strip_env=_MANAGED, extra_env={"DOMINO_PROJECT_OWNER": OWNER_NAME, **extra}).url
 
 
 @pytest.fixture(scope="module")
-def app_w(tmp_path_factory):
-    yield from _app(tmp_path_factory, "t48w", "9896", {"ACT_WORKSPACE_OWNER_MODE": "1", "LLM_GATEWAY_URL": "http://gateway.invalid/"})
+def app_w(apps):
+    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "LLM_GATEWAY_URL": "http://gateway.invalid/"})
 
 
 @pytest.fixture(scope="module")
-def app_n(tmp_path_factory):
-    yield from _app(tmp_path_factory, "t48n", "9897", {"ACT_WORKSPACE_OWNER_MODE": "0"})
+def app_n(apps):
+    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "0"})
 
 
 @pytest.fixture(scope="module")
-def app_d(tmp_path_factory):
-    yield from _app(tmp_path_factory, "t48d", "9898", {"ACT_WORKSPACE_OWNER_MODE": "1", "ACT_DEMO_MODE": "1"})
+def app_d(apps):
+    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "ACT_DEMO_MODE": "1"})
 
 
 @pytest.fixture

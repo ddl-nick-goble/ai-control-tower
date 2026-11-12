@@ -33,16 +33,11 @@ import time
 import pytest
 from playwright.sync_api import expect
 
-from test_t19a_shell_fleet import (PORT, DEMO_PORT, _start, _stop, app, authed, base_url,  # noqa: F401
-                                   browser_context_args, demo_url, seeded)
+from _waits import settle
 
-SHOT_DIR = "/mnt/data/ai-control-tower/qa/T-19b"
+from test_t19a_shell_fleet import (app, authed, base_url, browser_context_args, demo_url,  # noqa: F401
+                                   seeded)
 
-
-@pytest.fixture(autouse=True)
-def _qa_dir(monkeypatch):
-    os.makedirs(SHOT_DIR, exist_ok=True)
-    monkeypatch.setenv("QA_RUN_DIR", SHOT_DIR)
 
 
 def _agent(page, aid):
@@ -325,7 +320,7 @@ def test_s5_no_horizontal_scroll_and_contrast(page, shot, seeded, which, w, h):
         _agent(page, seeded["treasury_id"])
     else:
         _run(page, seeded["run_id"])
-    page.wait_for_timeout(300)
+    settle(page)
     assert _no_hscroll(page), f"horizontal scroll at {w}"
     bad = page.evaluate(CONTRAST_JS)
     assert not bad, f"AA contrast failures: {bad[:10]}"
@@ -352,25 +347,24 @@ def test_s5_keyboard_focus_visible(page, shot, seeded, which):
 @pytest.mark.parametrize("which", ["agent", "run"])
 def test_s5_ui_never_mentions_claude(page, shot, seeded, which):
     _agent(page, seeded["recon_id"]) if which == "agent" else _run(page, seeded["run_id"])
-    page.wait_for_timeout(500)
+    if which == "agent":
+        expect(page.get_by_test_id("agent-header")).to_be_visible()  # content rendered before checking its text
+    settle(page)
     assert not re.search(r"claude|anthropic", page.locator("body").inner_text(), re.I)
     assert not re.search(r"claude|anthropic", page.content(), re.I)
     shot("then")
 
 
 def test_s5_loading_state_agent(page, shot, seeded):
-    def slow(route):
-        time.sleep(1.5)
-        try:
-            route.continue_()
-        except Exception:
-            pass  # page/context closed during teardown
-    page.route(re.compile(r"/api/agents/[^/]+$"), slow)
+    held = []  # hold the agent response until the loading state has been asserted
+    page.route(re.compile(r"/api/agents/[^/]+$"), lambda r: held.append(r))
     page.goto(f"./#/agents/{seeded['recon_id']}")
     st = page.get_by_role("status").filter(has_text=re.compile("loading", re.I))
     expect(st.first).to_be_visible()
     assert page.locator("body").inner_text().strip() != ""
     shot("then")
+    for route in held:
+        route.continue_()
 
 
 def test_s5_error_state_agent_and_run(page, shot, seeded):
@@ -443,7 +437,7 @@ def test_co_fleet_header_pinned_and_name_tooltip(page, shot, seeded):
     last = page.get_by_test_id("fleet-row").last
     last.scroll_into_view_if_needed()
     page.mouse.wheel(0, 3000)
-    page.wait_for_timeout(300)
+    settle(page)
     th = page.get_by_role("columnheader", name=re.compile("Name", re.I))
     expect(th).to_be_in_viewport()
     assert 0 <= th.bounding_box()["y"] < 140, "table header not pinned while scrolling"
