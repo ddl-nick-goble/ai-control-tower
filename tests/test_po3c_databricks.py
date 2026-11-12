@@ -62,7 +62,6 @@ from urllib.parse import unquote, urlparse
 import pytest
 
 import _po3c_common as C
-from adapters.base import AdapterBase, SourceAgent
 
 LEGACY = {"liquidity-forecast-agent", "model-risk-doc-agent"}
 ACCT = "a1b2c3d4-0000-4000-8000-0123456789ab"
@@ -175,6 +174,7 @@ def _kind(agents, kind):
 # ---------------------------------------------------------------- PO-3.1
 def test_po31_registry_adapter_implements_all_four_methods():
     ad = _adapter()
+    from adapters.base import AdapterBase
     assert isinstance(ad, AdapterBase)
     for n in ("auth_methods", "test_connection", "list_scopes", "discover"):
         assert getattr(type(ad), n) is not getattr(AdapterBase, n), n
@@ -277,6 +277,7 @@ def test_po33_only_agent_endpoints_become_agents(live):
 def test_po33_endpoint_field_mapping(live):
     r, _, _, agents = _disc(live)
     e, ep = _by(agents, r.ep1["name"]), r.ep1
+    from adapters.base import SourceAgent
     assert isinstance(e, SourceAgent) and e.platform == "databricks"
     assert e.native_id == f"{WS}:endpoint:{ep['id']}"
     se = ep["config"]["served_entities"][0]
@@ -452,6 +453,7 @@ def test_sample_mode_no_http_all_methods(monkeypatch):
     tree = ad.list_scopes(SAMPLE_CFG, {})
     C.check_tree_selected(tree)
     agents = ad.discover(SAMPLE_CFG, {}, [n["id"] for n in C.leaves(tree)])
+    from adapters.base import SourceAgent
     assert agents and all(isinstance(a, SourceAgent) for a in agents)
     assert isinstance(ad.coverage(SAMPLE_CFG, {}, None), list)
 

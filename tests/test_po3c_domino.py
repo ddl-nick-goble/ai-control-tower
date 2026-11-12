@@ -18,7 +18,6 @@ import sys
 import pytest
 
 import _po3c_common as C
-from adapters.base import AdapterBase, SourceAgent
 
 sys.path.insert(0, str(C.ROOT / "tests"))
 import test_t4_intake as T4  # noqa: E402
@@ -56,6 +55,7 @@ def proxy(env, monkeypatch):
 
 def test_po31_registry_adapter_implements_all_four_methods():
     ad = _adapter()
+    from adapters.base import AdapterBase
     assert isinstance(ad, AdapterBase)
     for n in ("auth_methods", "test_connection", "list_scopes", "discover"):
         assert getattr(type(ad), n) is not getattr(AdapterBase, n), n
@@ -109,6 +109,7 @@ def test_po33_discover_is_the_existing_listing(proxy):
     ids = [n["id"] for n in C.leaves(ad.list_scopes(CFG, {}))]
     got = ad.discover(CFG, {}, ids)
     assert [a.native_id for a in got] == [DOMINO_ID]
+    from adapters.base import SourceAgent
     assert all(isinstance(a, SourceAgent) and a.platform == "domino" for a in got)
     assert [a.native_id for a in got] == [a.native_id for a in ad.list_agents()]
     assert got[0].name == "domino-deployed-agent"
