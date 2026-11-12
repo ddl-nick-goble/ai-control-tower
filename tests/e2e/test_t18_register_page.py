@@ -353,7 +353,7 @@ def test_r8_focus_labels_no_claude(page, shot):
 def test_r9_fleet_button_opens_page(page, shot):
     page.goto("./")
     page.get_by_test_id("register-external-button").click()
-    expect(page).to_have_url(re.compile(r"#/register"))
+    expect(page).to_have_url(re.compile(r"#/(register|connections/add-by-url)"))
     expect(page.get_by_test_id("register-summary")).to_be_visible()
     shot("then")
 

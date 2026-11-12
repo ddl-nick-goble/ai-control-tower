@@ -4,6 +4,7 @@ States: draft -> waiting -> trusted -> verified | partial -> connected, plus nee
 disconnected (DELETE keeps the row and its agents). Always read db.engine at call time so the demo-mode DB switch works.
 """
 import copy
+import re
 import os
 import secrets
 import time
@@ -139,6 +140,21 @@ def refresh_tree(cx, row, ctx=None):
     return row
 
 
+def _found(row) -> dict:
+    """What the handshake found, for the Detected strip: {role, account} (AWS), from the connection's config (the
+    paste or callback value) or, for a sample connection, the sample tenant's identity."""
+    if row["provider"] != "aws":
+        return {}
+    cfg = row["config"] or {}
+    arn = cfg.get("role_arn") or cfg.get("aws_role_arn") or cfg.get("role") or ""
+    if not arn and row["sample"]:
+        arn = sample.tenant("aws").get("identity", "")
+    m = re.match(r"arn:aws[a-z-]*:iam::(\d{12}):role/(?:.*/)?([^/]+)$", arn)
+    role, account = (m.group(2), m.group(1)) if m else (arn or None, None)
+    account = cfg.get("account_id") or account
+    return {k: v for k, v in (("role", role), ("account", account)) if v}
+
+
 def view(cx, row) -> dict:
     """The public shape of a connection."""
     tree = scope_tree(row)
@@ -149,6 +165,7 @@ def view(cx, row) -> dict:
     return {"id": row["id"], "provider": row["provider"], "state": row["state"], "sample": bool(row["sample"]),
             "scopes": {"selected": selected, "total": len(ids)}, "last_check": row["last_check"],
             "last_scan": row["last_scan"], "agent_count": agents, "config": row["config"] or {},
+            "found": _found(row),
             "created_by": row["created_by_username"], "created_at": row["created_at"],
             "updated_at": row["updated_at"]}
 

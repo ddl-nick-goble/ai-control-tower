@@ -61,3 +61,19 @@ export const demoApi = {
 export const previewTier = (criteria) => request('tiering/preview', {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ criteria }),
 })
+
+// Connect a provider (PO-1 API).
+const enc = encodeURIComponent
+export const connectionsApi = {
+  list: () => request('connections'),
+  get: (id) => request(`connections/${enc(id)}`),
+  create: (provider, sample = false) => request('connections', json('POST', { provider, sample })),
+  remove: (id) => request(`connections/${enc(id)}`, { method: 'DELETE' }),
+  paste: (id, text) => request(`connections/${enc(id)}/paste`, json('POST', { text })),
+  check: (id) => post(`connections/${enc(id)}/check`),
+  scopes: (id) => request(`connections/${enc(id)}/scopes`),
+  saveScopes: (id, selected) => request(`connections/${enc(id)}/scopes`, json('PUT', { selected })),
+  // The return link lands on the SPA; its query string (state plus any role/project values) goes to the API as is.
+  callback: (search) => request('connections/callback' + (search || '')),
+}
+export const agentsApi = { list: () => request('agents') }
