@@ -80,7 +80,7 @@ function FleetLink() {
   const { pathname } = useLocation()
   const exact = pathname === '/'
   const child = /^\/(agents|runs)\//.test(pathname)
-  return <Link to="/" aria-current={exact ? 'page' : child ? 'true' : undefined}>Fleet</Link>
+  return <Link to="/" data-testid="nav-fleet" aria-current={exact ? 'page' : child ? 'true' : undefined}>Fleet</Link>
 }
 
 function GearIcon() {
@@ -116,8 +116,12 @@ export function Shell({ children }) {
           <Link to="/" className="ds-brand"><LogoMark />Agent Control Tower</Link>
           <span className="ds-subtitle" data-testid="app-subtitle">Agent system of record</span>
           <nav aria-label="Primary" className="ds-nav">
+            <NavLink to="/home" data-testid="nav-home">Home</NavLink>
             <FleetLink />
-            <NavLink to="/register">Register external agent</NavLink>
+            <NavLink to="/findings" data-testid="nav-findings">Findings</NavLink>
+            <NavLink to="/policies" data-testid="nav-policies">Policies</NavLink>
+            <NavLink to="/connections" data-testid="nav-connections">Connections</NavLink>
+            <NavLink to="/audit" data-testid="nav-audit">Audit</NavLink>
             <NavLink to="/settings"><GearIcon />Settings</NavLink>
           </nav>
         </div>
