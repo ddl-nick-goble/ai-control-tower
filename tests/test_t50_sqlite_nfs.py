@@ -205,3 +205,164 @@ def test_ac5_local_unchanged(db_mod):
         assert c.exec_driver_sql("PRAGMA journal_mode").scalar().lower() == "wal"
         assert c.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
         assert c.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
+
+
+# ---- DB-4 data-safety additions
+def _run_env(*args, **extra):
+    env = dict(os.environ)
+    env.pop("ACT_DB_JOURNAL_MODE", None)
+    env.update(extra)
+    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
+                          text=True, cwd=str(ROOT), env=env, timeout=120)
+
+
+def _hdr_modes(p):
+    with open(p, "rb") as f:
+        h = f.read(100)
+    return h[18], h[19]
+
+
+def _wal_src(tmp_path, name="walsrc.db"):
+    """WAL source with rows 4..5 only in the -wal; returns (path, open conn keeping the WAL alive)."""
+    src = tmp_path / name
+    c = sqlite3.connect(src)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA wal_autocheckpoint=0")
+    c.execute("CREATE TABLE widgets (id INTEGER)")
+    c.executemany("INSERT INTO widgets VALUES (?)", [(1,), (2,), (3,)])
+    c.commit()
+    c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+    c.executemany("INSERT INTO widgets VALUES (?)", [(4,), (5,)])
+    c.commit()
+    assert os.path.getsize(str(src) + "-wal") > 0
+    return src, c
+
+
+def test_ac4_network_dest_header_is_delete_not_wal(tmp_path):
+    src, c = _wal_src(tmp_path)  # source is WAL; dest must still land in DELETE
+    dest = tmp_path / "dest.db"
+    try:
+        r = _run_env("--from", str(src), "--to", str(dest), "--apply",
+                     ACT_DB=str(tmp_path / "x.db"), ACT_DB_JOURNAL_MODE="DELETE")
+    finally:
+        c.close()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _hdr_modes(dest) == (1, 1)
+    assert not os.path.exists(str(dest) + "-wal")
+
+
+def test_ac4_local_dest_header_is_wal(tmp_path):
+    src = _src(tmp_path)  # rollback-journal source
+    dest = tmp_path / "dest.db"
+    r = _run_env("--from", str(src), "--to", str(dest), "--apply",
+                 ACT_DB=str(tmp_path / "x.db"), ACT_DB_JOURNAL_MODE="WAL")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _hdr_modes(dest) == (2, 2)
+
+
+def test_ac4_moves_journal_sibling_aside(tmp_path):
+    src = _src(tmp_path)
+    dest = tmp_path / "dest.db"
+    dest.write_bytes(b"old-main")
+    Path(str(dest) + "-journal").write_bytes(b"old-journal")
+    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    assert r.returncode == 0, r.stdout + r.stderr
+    j = glob.glob(str(dest) + ".broken-*-journal")
+    assert len(j) == 1 and Path(j[0]).read_bytes() == b"old-journal"
+    assert not os.path.exists(str(dest) + "-journal")
+
+
+def test_ac4_second_apply_same_second_never_loses_moved_aside_files(tmp_path):
+    src = _src(tmp_path)
+    dest = tmp_path / "dest.db"
+    dest.write_bytes(b"old-main")
+    Path(str(dest) + "-wal").write_bytes(b"old-wal")
+    r1 = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    assert r1.returncode == 0, r1.stdout + r1.stderr
+    r2 = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    contents = {p: Path(p).read_bytes() for p in glob.glob(str(dest) + ".broken-*")
+                if not p.endswith(("-wal", "-shm", "-journal"))}
+    # first set of moved-aside files always survives
+    assert b"old-main" in contents.values()
+    assert any(Path(p).read_bytes() == b"old-wal" for p in glob.glob(str(dest) + ".broken-*-wal"))
+    if r2.returncode == 0:
+        assert len(contents) == 2  # both sets kept (or distinct timestamps)
+    else:
+        assert len(contents) == 1  # aborted with nothing changed
+        assert sqlite3.connect(dest).execute("SELECT COUNT(*) FROM widgets").fetchone()[0] == 3
+
+
+def test_ac4_dest_in_use_aborts_and_changes_nothing(tmp_path):
+    src = _src(tmp_path)
+    dest = tmp_path / "dest.db"
+    d = sqlite3.connect(dest, isolation_level=None, timeout=0)
+    d.execute("CREATE TABLE keep (x)")
+    d.execute("INSERT INTO keep VALUES (42)")
+    d.execute("BEGIN IMMEDIATE")
+    d.execute("INSERT INTO keep VALUES (43)")  # open write transaction
+    before = dest.read_bytes()
+    try:
+        r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    finally:
+        d.execute("ROLLBACK")
+        d.close()
+    assert r.returncode != 0, r.stdout + r.stderr
+    assert "stop" in (r.stdout + r.stderr).lower()
+    assert glob.glob(str(dest) + ".broken-*") == []
+    assert dest.read_bytes() == before
+    c = sqlite3.connect(dest)
+    assert c.execute("SELECT x FROM keep ORDER BY x").fetchall() == [(42,)]
+    assert c.execute("SELECT name FROM sqlite_master WHERE name='widgets'").fetchall() == []
+    c.close()
+
+
+def test_ac4_wal_only_rows_are_restored(tmp_path):
+    src, c = _wal_src(tmp_path)
+    dest = tmp_path / "dest.db"
+    try:
+        r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    finally:
+        c.close()
+    assert r.returncode == 0, r.stdout + r.stderr
+    d = sqlite3.connect(dest)
+    assert [x[0] for x in d.execute("SELECT id FROM widgets ORDER BY id")] == [1, 2, 3, 4, 5]
+    d.close()
+
+
+def test_ac4_garbage_source_shm_does_not_break_restore(tmp_path):
+    src, c = _wal_src(tmp_path)
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    import shutil
+    shutil.copy(src, snap / "s.db")
+    shutil.copy(str(src) + "-wal", snap / "s.db-wal")
+    c.close()
+    (snap / "s.db-shm").write_bytes(os.urandom(32768))
+    dest = tmp_path / "dest.db"
+    r = _run("--from", str(snap / "s.db"), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
+    assert r.returncode == 0, r.stdout + r.stderr
+    d = sqlite3.connect(dest)
+    assert d.execute("SELECT COUNT(*) FROM widgets").fetchone()[0] == 5
+    d.close()
+
+
+# ---- DB-3 stale shm
+def test_ac3_garbage_shm_opens_or_clear_error(db_mod, tmp_path):
+    import shutil
+    src, c = _wal_src(tmp_path)
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    shutil.copy(src, snap / "w.db")
+    shutil.copy(str(src) + "-wal", snap / "w.db-wal")
+    c.close()
+    (snap / "w.db-shm").write_bytes(os.urandom(32768))
+    p = str(snap / "w.db")
+    try:
+        db_mod.check_open(p)
+    except db_mod.DatabaseOpenError as e:
+        msg = str(e)
+        assert p in msg
+        assert db_mod.fs_type(p) in msg
+        assert db_mod.journal_mode_for(p).upper() in msg.upper()
+        assert "restore_db.py" in msg
+        assert "stale" in msg.lower() and "-wal" in msg and "-shm" in msg
