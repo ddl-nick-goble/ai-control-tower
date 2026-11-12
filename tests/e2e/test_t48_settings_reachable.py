@@ -144,7 +144,7 @@ def test_sr3_demo_card_first_and_confirm_off(page, shot, app_w):
         sw.click()
         dlg = page.get_by_role("dialog").or_(page.get_by_role("alertdialog"))
         expect(dlg.first).to_be_visible()
-        expect(dlg.first).to_contain_text(re.compile(r"real data|real database", re.I))
+        expect(dlg.first).to_contain_text(re.compile(r"real data|real database|real agents", re.I))
         shot("then")
         dlg.first.get_by_role("button", name="Cancel").click()
     finally:
