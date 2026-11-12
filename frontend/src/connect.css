@@ -229,6 +229,7 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-scan-status svg { flex: none }
 .po-progress { height: 6px; border-radius: 3px; background: var(--ds-surface-2); overflow: hidden; margin: 14px 0 0 }
 .po-progress i { display: block; height: 100%; background: var(--ds-accent); border-radius: 3px; transition: width var(--ds-dur-3) var(--ds-ease) }
+.po-progress.is-done i { transition: none }
 .po-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px }
 @media (max-width: 1100px) { .po-stats { grid-template-columns: repeat(3, minmax(0, 1fr)) } }
 .po-stat { padding: 12px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 0 }
@@ -290,11 +291,12 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-rt input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--ds-accent); margin: 0; vertical-align: middle }
 .po-aname-row { display: flex; align-items: center; gap: 8px; min-width: 0 }
 .po-aname-row .po-sample { flex: none }
-.po-aname { display: block; min-width: 0; font-weight: 600; color: var(--ds-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.po-aname { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-width: 0; font-weight: 600; color: var(--ds-ink); overflow: hidden; overflow-wrap: anywhere }
 .po-asub { display: block; font-size: 12px; color: var(--ds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
 .po-rt tr.is-risk td:first-child { box-shadow: inset 3px 0 0 var(--ds-danger) }
 .po-rt tr.is-off td { background: #fafbfc } .po-rt tr.is-off .po-aname { color: var(--ds-muted) }
 .po-rt tr.po-detail td { height: auto; padding: 0; background: #fbfbfe; overflow: visible }
+.po-rt tr.po-detail:last-child td { padding-bottom: 72px }
 .po-rt tr.po-detail:hover td { background: #fbfbfe }
 .po-own { width: 100%; height: 32px; font: inherit; font-size: 13px; padding: 0 28px 0 8px; border: 1px solid var(--ds-line-strong); border-radius: var(--ds-radius-sm); background: var(--ds-surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23596273' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center; appearance: none; -webkit-appearance: none; color: var(--ds-ink); cursor: pointer; text-overflow: ellipsis }
 .po-own:disabled { cursor: default; opacity: .6 }
@@ -405,7 +407,7 @@ dialog.po-dialog::backdrop { background: rgba(20, 24, 31, .45) }
 .fl-awaiting-text { flex: 1; min-width: 0 }
 .fl-awaiting .ds-btn { flex: none }
 .fl-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: var(--ds-s2); font-size: 14px; color: var(--ds-text) }
-.fl-sample { margin-left: 8px; vertical-align: middle }
+.fl-nm .ds-row-link { flex: 0 1 auto; min-width: 0 }
 .fl-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px }
 .fl-gone { font-size: 12px; font-weight: 600; color: var(--ds-text); background: var(--ds-surface-2); border-radius: 11px; padding: 1px 8px; white-space: nowrap }
 a.ag-source-link { text-decoration: none; color: var(--ds-text) }

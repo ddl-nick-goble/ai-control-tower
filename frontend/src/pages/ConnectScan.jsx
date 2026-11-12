@@ -124,24 +124,26 @@ const CHG = { new: 'New', changed: 'Changed', unchanged: 'Unchanged' }
 function Feed({ scanId, state, found, animate }) {
   const [rows, setRows] = React.useState([])
   const [shown, setShown] = React.useState(0)
+  const [loaded, setLoaded] = React.useState(false)
   const seen = React.useRef(-1)
   React.useEffect(() => {
-    if (!found || seen.current === found + state) return undefined
+    if (seen.current === found + state) return undefined
+    if (!found && !TERMINAL.includes(state)) return undefined
     seen.current = found + state
     let live = true
-    scansApi.staged(scanId).then((r) => { if (live) setRows((r.rows || []).filter((x) => x.class !== 'missing')) }, () => {})
+    scansApi.staged(scanId).then((r) => { if (live) { setRows((r.rows || []).filter((x) => x.class !== 'missing')); setLoaded(true) } }, () => {})
     return () => { live = false }
   }, [scanId, found, state])
   React.useEffect(() => {
     if (shown >= rows.length) return undefined
-    if (!animate || reduced()) { setShown(rows.length); return undefined }
+    if (!animate || reduced() || TERMINAL.includes(state)) { setShown(rows.length); return undefined }
     const t = setTimeout(() => setShown((n) => n + 1), 110)
     return () => clearTimeout(t)
-  }, [rows, shown, animate])
+  }, [rows, shown, animate, state])
   const visible = rows.slice(0, shown).reverse()
   return (
     <ul className="po-feed" data-testid="scan-feed" aria-label="Agents found, newest first">
-      {visible.length === 0 && <li className="po-feed-empty"><span className="ds-helper po-flat">{TERMINAL.includes(state) ? 'This scan found no agents.' : 'Agents appear here as each scope is read.'}</span></li>}
+      {visible.length === 0 && <li className="po-feed-empty"><span className="ds-helper po-flat">{TERMINAL.includes(state) ? (rows.length || (found && !loaded) ? 'Loading the agents found.' : 'This scan found no agents.') : 'Agents appear here as each scope is read.'}</span></li>}
       {visible.map((r) => (
         <li key={r.id} data-testid={`scan-agent-row-${r.native_id}`}>
           <span className="po-fname" title={r.name}>{r.name}</span>
@@ -231,7 +233,7 @@ export default function ScanView() {
                 <span>{live}</span>
               </span>
             </div>
-            <div className="po-progress" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax={Math.max(progress.length, 1)} aria-valuenow={done} data-testid="scan-progress">
+            <div className={`po-progress${terminal ? ' is-done' : ''}`} role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax={Math.max(progress.length, 1)} aria-valuenow={done} data-testid="scan-progress">
               <i style={{ width: `${terminal ? 100 : progress.length ? Math.round((done / progress.length) * 100) : 4}%` }} />
             </div>
           </section>

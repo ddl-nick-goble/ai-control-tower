@@ -110,7 +110,7 @@ export default function ScanReview() {
       if (!live) return
       const list = r.rows || []
       setRows(list)
-      setSel(new Set(list.filter(isSelectable).map((x) => x.id)))
+      setSel(new Set(list.filter((x) => isSelectable(x) && !x.imported_agent_id).map((x) => x.id)))
     }, () => live && setError(true))
     return () => { live = false }
   }, [scanId, rev])

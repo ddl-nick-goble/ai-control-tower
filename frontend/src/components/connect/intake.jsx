@@ -75,6 +75,9 @@ export function DiffList({ row, testid }) {
 }
 
 // ---- the seven criteria with a score and one evidence line each
+// "text -> criterion 3" and "...; default 2 -> criterion 2" repeat the score shown beside them: keep the evidence sentence.
+const evidenceOf = (r) => String(r || '').replace(/\s*->\s*[a-z][a-z ]*\d+\s*$/i, '').replace(/;\s*default\s+\d+$/i, ' (default score)')
+
 export function CriteriaList({ row }) {
   const sug = row.suggestion?.suggestions || {}
   return (
@@ -83,7 +86,7 @@ export function CriteriaList({ row }) {
         <li key={k} data-testid={`intake-criterion-${k}`}>
           <span className="k">{name}</span>
           <span className={`v${sug[k].score >= 4 ? ' hi' : ''}`}>{sug[k].score}</span>
-          <span className="why">{sug[k].reason}</span>
+          <span className="why">{evidenceOf(sug[k].reason)}</span>
         </li>
       ))}
     </ul>

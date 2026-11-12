@@ -134,10 +134,10 @@ def get_schedule(cid: str, _user: User = Depends(require_user)):
 @router.post("/api/connections/{cid}/sync")
 def sync_now(cid: str, _user: User = Depends(require_user)):
     """Run a sync now (what the schedule does): stages new agents as Awaiting import, raises findings."""
-    _connection(cid)
-    if discovery.inline():
+    sample = bool(_connection(cid).sample)
+    if sample or discovery.inline():  # a sample sync is in-process and quick: it finishes before the answer, never listed as running
         return {"scan_id": discovery.run_sync(cid)}
-    sid = discovery.create_scan(cid, None, "sync", bool(_connection(cid).sample))
+    sid = discovery.create_scan(cid, None, "sync", sample)
     threading.Thread(target=discovery.run_scan, args=(sid, db.engine), daemon=True).start()
     return {"scan_id": sid}
 

@@ -21,16 +21,16 @@ export function scheduleText(s) {
   if (!s || s.loading) return '…'
   if (s.saved && s.schedule === 'daily') return `Daily at ${s.time}`
   if (s.saved) return 'Off'
-  return `Not scheduled. Suggested: daily at ${SCHEDULE_TIME}`
+  return 'Not scheduled'
 }
 
-export default function ScheduleCard({ connId, provider, sample, state, onSaved, titleId = 'sy-h', className = '' }) {
+export default function ScheduleCard({ connId, provider, sample, state, onSaved, suggestDaily = false, titleId = 'sy-h', className = '' }) {
   const [s, setS] = state
   const [pick, setPick] = React.useState(null)
   const [busy, setBusy] = React.useState(false)
   const [note, setNote] = React.useState('')
   const [err, setErr] = React.useState('')
-  const value = pick || (s.saved ? s.schedule : 'daily')
+  const value = pick || (s.saved ? s.schedule : suggestDaily ? 'daily' : null)
   const save = async () => {
     setBusy(true); setErr(''); setNote('')
     try {
@@ -58,12 +58,13 @@ export default function ScheduleCard({ connId, provider, sample, state, onSaved,
         </fieldset>
         <p className="ds-helper po-sync-note">
           Runs as a scheduled Domino Job. New agents wait in <strong>Awaiting import</strong>; ACT never imports them on its own. Changes and disappearances become findings.
+          {!s.saved && !s.loading && !suggestDaily && ' Not scheduled yet: pick Off or Daily, then save.'}
           {sample && ' This is sample data, so ACT stores your choice but no Job is created.'}
         </p>
         {s.error && <p className="po-fielderr" role="alert">ACT couldn't read the saved schedule. You can still save a new one.</p>}
         {err && <p className="po-fielderr" role="alert">{err}</p>}
         <div className="po-sync-row">
-          <button type="button" className="ds-btn" data-testid="sync-save" disabled={busy || s.loading} aria-busy={busy ? 'true' : undefined} onClick={save}>Save schedule</button>
+          <button type="button" className="ds-btn" data-testid="sync-save" disabled={busy || s.loading || !value} aria-busy={busy ? 'true' : undefined} onClick={save}>Save schedule</button>
           <span className="ds-helper po-flat" role="status" aria-live="polite">{note}</span>
         </div>
       </div>

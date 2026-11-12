@@ -87,7 +87,7 @@ export default function ImportSummary() {
             <Link className="ds-btn ds-btn-ghost" to={`/connections/${connId}`} data-testid="summary-open-connection">View the {p.name} connection</Link>
           </div>
         </section>
-        <ScheduleCard connId={connId} provider={p.name} sample={sample} state={sched} />
+        <ScheduleCard suggestDaily connId={connId} provider={p.name} sample={sample} state={sched} />
       </div>
     </WizardFrame>
   )

@@ -81,7 +81,9 @@ export default function ConnectionDetail() {
   const attention = conn.state === 'needs_attention'
   const canScan = SCANNABLE.includes(conn.state)
   const lastScan = (scans || []).find((s) => ['done', 'partial'].includes(s.state))
-  const nextScan = sched.saved && sched.schedule === 'daily' && !gone ? `${sched.time}` : gone ? 'Off' : 'Not scheduled'
+  const nextScan = sched[0].saved && sched[0].schedule === 'daily' && !gone ? `${sched[0].time}` : gone || sched[0].saved ? 'Off' : 'Not scheduled'
+  const syncText = gone ? 'Off' : scheduleText(sched[0])
+  const reconnect = gone || attention || ['failed'].includes(conn.state)
 
   const scanNow = async () => {
     setBusy('scan'); setErr('')
@@ -112,7 +114,7 @@ export default function ConnectionDetail() {
             <button type="button" className="ds-btn ds-btn-primary" data-testid="connection-scan-now" disabled={!canScan || !!busy} aria-describedby={canScan ? undefined : 'scan-dis'} aria-busy={busy === 'scan' ? 'true' : undefined} onClick={scanNow}>Scan now</button>
             {!canScan && <span className="ds-sr" id="scan-dis">{gone ? 'This connection is disconnected.' : 'Scans are paused until the connection is fixed.'}</span>}
             {!gone && <Link className="ds-btn" to={`/connect/${conn.provider}/${connId}/access`} data-testid="connection-check-access">Check access</Link>}
-            {gone && <Link className="ds-btn" to={`/connect/${conn.provider}`} data-testid="connection-reconnect">Reconnect</Link>}
+            {reconnect && <Link className="ds-btn" to={`/connect/${conn.provider}`} data-testid={attention ? 'connection-header-reconnect' : 'connection-reconnect'}>Reconnect</Link>}
           </div>
         </div>
         <div className="po-detail-meta">
@@ -120,7 +122,7 @@ export default function ConnectionDetail() {
           {conn.sample && <SampleBadge />}
           <span className="po-meta-i"><IconLock /> {conn.sample ? 'Fictional tenant: nothing is read from ' + p.name : 'No secrets stored: ' + p.name + ' trusts this Domino sign-in'}</span>
           <span>{conn.sample ? 'Added' : 'Connected'} {day(conn.created_at)}{conn.created_by ? ` by ${conn.created_by}` : ''}</span>
-          <span>Sync: {scheduleText(sched)}</span>
+          <span data-testid="connection-sync-text">Sync: {syncText}</span>
         </div>
       </header>
 
@@ -146,7 +148,7 @@ export default function ConnectionDetail() {
         <Fig label="Agents in ACT" sub="from this connection">{conn.agent_count}</Fig>
         <Fig label="Awaiting import" sub={aw.count ? 'found by sync' : 'none'} testid="connection-awaiting-count">{aw.count}</Fig>
         <Fig label="Last scan" sub={lastScan ? `${plural(lastScan.counts?.found || 0, 'agent', 'agents')} found` : 'no scan yet'}>{lastScan ? relTime(lastScan.finished_at || lastScan.started_at) : 'Never'}</Fig>
-        <Fig label="Next scan" sub={sched.saved && sched.schedule === 'daily' && !gone ? 'scheduled' : 'no schedule saved'}>{nextScan}</Fig>
+        <Fig label="Next scan" sub={sched[0].saved && sched[0].schedule === 'daily' && !gone ? 'scheduled' : sched[0].saved || gone ? 'sync is off' : 'no schedule saved'}>{nextScan}</Fig>
       </dl>
 
       {aw.count > 0 && (
