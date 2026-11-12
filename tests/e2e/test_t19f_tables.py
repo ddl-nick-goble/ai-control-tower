@@ -165,7 +165,12 @@ def test_f6_empty_agent_page_columns_balanced(page, shot, seeded, w):
     expect(empty).to_be_visible()
     settle(page)
     main, side = _assert_side_380(page, f"empty page at {w}")
-    assert main["width"] >= w - 380 - 3 * 48 - 40, f"main column does not take the rest: {main['width']:.0f}px"
+    cont = page.locator(".ds-container").first.evaluate(
+        "e => { const c = getComputedStyle(e), r = e.getBoundingClientRect();"
+        " return {w: r.width - parseFloat(c.paddingLeft) - parseFloat(c.paddingRight)}; }")
+    gap = side["x"] - (main["x"] + main["width"])
+    assert main["width"] >= cont["w"] - 380 - gap - 8, \
+        f"main column does not take the rest: {main['width']:.0f}px (container {cont['w']:.0f}, gap {gap:.0f})"
     for t in page.locator(".ag-main .ag-empty p").all():
         tw = t.evaluate("e => e.getBoundingClientRect().width")
         assert tw <= 560, f"empty-state text is {tw:.0f}px wide (> 560px, about 56ch)"
@@ -175,8 +180,8 @@ def test_f6_empty_agent_page_columns_balanced(page, shot, seeded, w):
     assert eb["y"] >= max(main["y"] + main["height"], side["y"] + side["height"]) - 1, \
         "Evidence pack card is inside the two-column grid, not a full-width row below it"
     assert eb["width"] >= main["width"] + side["width"] - 4, f"Evidence pack is not full width: {eb['width']:.0f}px"
-    gap = abs((main["y"] + main["height"]) - (side["y"] + side["height"]))
-    assert gap <= 40, f"column bottoms differ by {gap:.0f}px"
+    bgap = abs((main["y"] + main["height"]) - (side["y"] + side["height"]))
+    assert bgap <= 40, f"column bottoms differ by {bgap:.0f}px"
     shot("then")
 
 
