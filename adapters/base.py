@@ -76,6 +76,10 @@ class AdapterBase:
         """-> scope tree [{id, name, kind, children: [...]}] (accounts, projects, workspaces...)."""
         raise NotImplementedError
 
+    def coverage(self, cfg: dict, creds: dict, scopes=None) -> list:
+        """-> [{reason, fix}] for agents ACT may be missing. Default: nothing to report."""
+        return []
+
     def discover(self, cfg: dict, creds: dict, scopes: list, progress=None) -> list:
         """-> [SourceAgent] found in the selected scope ids. `progress(done, total, message)` is optional."""
         raise NotImplementedError

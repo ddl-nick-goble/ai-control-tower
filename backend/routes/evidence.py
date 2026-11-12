@@ -15,6 +15,8 @@ def create_pack(agent_id: str, user: User = Depends(require_user)):
         return evidence.generate(agent_id, user.user_id, user.username)
     except evidence.AgentNotFound:
         raise HTTPException(404, "agent not found")
+    except evidence.SampleAgent:
+        raise HTTPException(409, "Sample agents are demo data and have no evidence pack.")
     except evidence.RenderError as e:
         raise HTTPException(500, "evidence pack PDF rendering failed")
 

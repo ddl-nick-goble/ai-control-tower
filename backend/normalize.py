@@ -155,7 +155,7 @@ def _audit(conn, action, target, detail, actor=None):
         actor_user_id=actor[0], actor_username=actor[1], action=action, target=target, ts=now_iso(), detail=detail))
 
 
-def apply_record(conn, rec: dict, actor=None) -> str:
+def apply_record(conn, rec: dict, actor=None, connection_id=None) -> str:
     """Upsert a normalized record. Returns 'created' | 'updated' | 'retiered'. Re-tiers on manifest change."""
     aid, ts = rec["id"], rec["last_seen"]
     actor = actor or default_actor()
@@ -165,7 +165,7 @@ def apply_record(conn, rec: dict, actor=None) -> str:
             id=aid, source_platform=rec["source_platform"], native_id=rec["source_native_id"], name=rec["name"],
             owner=rec["owner"], tier=str(rec["tier"]), tier_reasoning=rec["tier_reasoning"], criteria=rec["criteria"],
             status=rec["status"], last_seen=ts, record=rec,
-            registered_by=actor[0], registered_by_username=actor[1]))
+            registered_by=actor[0], registered_by_username=actor[1], connection_id=connection_id))
         conn.execute(insert(db.manifests).values(agent_id=aid, version=rec["version"], content=rec["manifest"], created_at=ts))
         result = "created"
     else:
@@ -188,7 +188,8 @@ def apply_record(conn, rec: dict, actor=None) -> str:
         new["status"] = status
         conn.execute(update(db.agents).where(db.agents.c.id == aid).values(
             name=rec["name"], owner=rec["owner"], tier=tier, tier_reasoning=reasoning, criteria=criteria,
-            status=status, last_seen=ts, record=new))
+            status=status, last_seen=ts, record=new,
+            **({"connection_id": connection_id} if connection_id else {})))
     # identity and dependencies: replace (idempotent, no duplicates)
     ident = rec["identity"]
     conn.execute(delete(db.identities).where(db.identities.c.agent_id == aid))

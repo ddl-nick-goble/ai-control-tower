@@ -364,6 +364,50 @@ connections = Table(
     Column("last_check", String),
     Column("last_scan", String),
     Column("disconnected_at", String),
+    Column("schedule", String),         # PO-4.4: off | daily
+    Column("schedule_time", String),    # HH:MM (UTC), default 02:00
+    Column("schedule_job_id", String),  # the scheduled Domino Job (live connections)
+)
+
+# PO-4: one row per scan (kind scan = user started, sync = scheduled). progress is [{scope, found, errors, state}].
+scans = Table(
+    "scans", metadata,
+    Column("id", String, primary_key=True),
+    Column("connection_id", String, index=True),
+    Column("kind", String, default="scan"),
+    Column("state", String, default="queued"),  # queued | running | done | partial | failed
+    Column("sample", Boolean, default=False),
+    Column("job_id", String),
+    Column("job_url", String),
+    Column("started_at", String),
+    Column("finished_at", String),
+    Column("updated_at", String),
+    Column("progress", JSON),
+    Column("counts", JSON),
+    Column("error", Text),
+    Column("created_by", String),
+    Column("created_by_username", String),
+)
+
+# PO-4: what a scan found, classed new | changed | unchanged | missing, waiting for review/import.
+staged_agents = Table(
+    "staged_agents", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("scan_id", String, index=True),
+    Column("connection_id", String, index=True),
+    Column("platform", String),
+    Column("native_id", String),
+    Column("name", String),
+    Column("class", String),
+    Column("diff", JSON),
+    Column("suggestion", JSON),   # base PO-2 suggestion {suggestions, tier}; overrides are applied on top
+    Column("overrides", JSON),
+    Column("owner", String),
+    Column("flags", JSON),
+    Column("sample", Boolean, default=False),
+    Column("awaiting", Boolean, default=False),  # new agent from a scheduled sync, never auto-imported
+    Column("record", JSON),                      # the normalized Agent Record to import
+    Column("imported_agent_id", String),
 )
 
 # One row per access check, newest last (the sample tenant turns green on the second check).
