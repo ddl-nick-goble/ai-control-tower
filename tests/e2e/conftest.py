@@ -34,22 +34,14 @@ def shot(page, request):
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
+    """A failed test gets a viewport screenshot of its page (taken while the page is still open) in $QA_RUN_DIR."""
     out = yield
-    rep = out.get_result()
-    if rep.when == "call" and rep.failed:
-        item.failed_in_call = True
-
-
-@pytest.fixture(autouse=True)
-def _failure_shot(request):
-    """Viewport screenshot of the page of a failed test, into $QA_RUN_DIR."""
-    yield
-    if getattr(request.node, "failed_in_call", False):
-        page = getattr(request.node, "funcargs", {}).get("page")
+    if call.when == "call" and out.get_result().failed:
+        page = getattr(item, "funcargs", {}).get("page")
         if page is not None:
             try:
                 _run_dir().mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(_run_dir() / f"{request.node.originalname}-FAILED.png"))
+                page.screenshot(path=str(_run_dir() / f"{item.originalname}-FAILED.png"))
             except Exception:
                 pass  # page already closed
 
