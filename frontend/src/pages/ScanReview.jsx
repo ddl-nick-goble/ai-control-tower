@@ -259,7 +259,7 @@ export default function ScanReview() {
               <span className="ds-helper po-flat po-footer-note" id="imp-note">
                 {chosen.length === 0 ? 'Select at least one agent to import.' : <>
                   {noOwner > 0 && <>{plural(noOwner, 'agent', 'agents')} without an owner will import as <strong>Needs owner</strong>. </>}
-                  {missing > 0 && `${plural(missing, 'missing agent', 'missing agents')} stay in ACT. `}
+                  {missing > 0 && `${plural(missing, 'missing agent', 'missing agents')} ${missing === 1 ? 'stays' : 'stay'} in ACT. `}
                 </>}
               </span>
             </div>

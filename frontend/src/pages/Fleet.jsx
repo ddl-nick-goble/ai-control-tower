@@ -210,8 +210,7 @@ export default function Fleet() {
                       onClick={(e) => rowClick(e, go)}
                       onKeyDown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) go() }}>
                     <td data-testid="fleet-source" data-source={a.source_platform}><span className="ds-chip-tag">{sourceLabel(a.source_platform)}</span></td>
-                    <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}{(a.sample || a.source_disconnected) && (
-                      <span className="host fl-marks">{a.sample && <SampleBadge />}{a.source_disconnected && <span className="fl-gone">Source disconnected</span>}</span>)}</td>
+                    <td data-testid="fleet-name" className="ds-trunc" title={name}><Link to={agentPath(a.id)} className="ds-row-link">{name}</Link>{a.card_host && <span className="host" data-testid="fleet-card-host">{clean(a.card_host)}</span>}{a.sample && <span className="fl-sample"><SampleBadge /></span>}{a.source_disconnected && <span className="host"><span className="fl-gone">Source disconnected</span></span>}</td>
                     <td data-testid="fleet-owner" className="ds-trunc" title={owner}><span className="ds-trunc-text">{owner}</span></td>
                     <td><TierBadge tier={a.tier} /></td>
                     <td data-testid="fleet-status"><StatusPill status={a.status} /></td>

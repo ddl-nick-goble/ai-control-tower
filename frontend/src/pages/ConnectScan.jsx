@@ -22,6 +22,7 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
 function duration(a, b) {
   const s = Math.max(0, Math.round((new Date(b) - new Date(a)) / 1000))
   if (!Number.isFinite(s)) return ''
+  if (s < 1) return 'under a second'
   return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`
 }
 
@@ -201,7 +202,7 @@ export default function ScanView() {
 
   const noun = p.leaf === 'Region' ? 'scope' : p.leaf
   const jobLine = sample
-    ? <>This is a sample scan. It runs inside ACT, so there is no Domino Job. You can leave this page; <Link to={`/connections/${connId}`} data-testid="scan-job-link">Scan {String(scanId).slice(0, 8)}</Link> keeps its result on the {p.name} connection.</>
+    ? <>This is a sample scan (<Link to={`/connections/${connId}`} data-testid="scan-job-link">{String(scanId).slice(0, 10)}</Link>). It runs inside ACT, so there is no Domino Job. You can leave this page; the result waits on the {p.name} connection.</>
     : <>Running as Domino Job {scan?.job_url
         ? <a href={scan.job_url} target="_blank" rel="noreferrer" data-testid="scan-job-link">#{scan.job_id || 'open'}<span className="ds-sr"> (opens in a new tab)</span></a>
         : <Link to={`/connections/${connId}`} data-testid="scan-job-link">#{scan?.job_id || String(scanId).slice(0, 8)}</Link>}. You can close this page; ACT keeps scanning and the result waits on the {p.name} connection.</>

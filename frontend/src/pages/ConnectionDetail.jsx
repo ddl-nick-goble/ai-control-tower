@@ -10,6 +10,7 @@ import { PROVIDERS } from '../components/connect/providers'
 import { fmtTs, relTime, sourceLabel } from '../format'
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+const day = (ts) => { const d = new Date(ts); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) }
 const SCANNABLE = ['trusted', 'verified', 'partial', 'connected']
 
 // The one place a connection's state becomes words. Sample connections never say "Connected".
@@ -21,7 +22,7 @@ export function statusOf(conn) {
   if (s === 'draft' || s === 'waiting') return { kind: 'busy', text: 'Setup not finished' }
   if (s === 'trusted') return { kind: 'info', text: 'Trust detected' }
   if (s === 'partial') return { kind: 'warn', text: 'Degraded' }
-  return conn.sample ? { kind: 'info', text: 'Sample tenant' } : { kind: 'ok', text: 'Healthy' }
+  return conn.sample ? { kind: 'ok', text: 'Ready to scan' } : { kind: 'ok', text: 'Healthy' }
 }
 
 function Fig({ label, children, sub, testid }) {
@@ -110,7 +111,7 @@ export default function ConnectionDetail() {
           <div className="po-head-actions">
             <button type="button" className="ds-btn ds-btn-primary" data-testid="connection-scan-now" disabled={!canScan || !!busy} aria-describedby={canScan ? undefined : 'scan-dis'} aria-busy={busy === 'scan' ? 'true' : undefined} onClick={scanNow}>Scan now</button>
             {!canScan && <span className="ds-sr" id="scan-dis">{gone ? 'This connection is disconnected.' : 'Scans are paused until the connection is fixed.'}</span>}
-            <Link className="ds-btn" to={`/connect/${conn.provider}/${connId}/access`} data-testid="connection-check-access">Check access</Link>
+            {!gone && <Link className="ds-btn" to={`/connect/${conn.provider}/${connId}/access`} data-testid="connection-check-access">Check access</Link>}
             {gone && <Link className="ds-btn" to={`/connect/${conn.provider}`} data-testid="connection-reconnect">Reconnect</Link>}
           </div>
         </div>
@@ -118,7 +119,7 @@ export default function ConnectionDetail() {
           <StatusPill kind={st.kind} testid="connection-status">{st.text}</StatusPill>
           {conn.sample && <SampleBadge />}
           <span className="po-meta-i"><IconLock /> {conn.sample ? 'Fictional tenant: nothing is read from ' + p.name : 'No secrets stored: ' + p.name + ' trusts this Domino sign-in'}</span>
-          <span>Connected {fmtTs(conn.created_at).slice(0, 10)}{conn.created_by ? ` by ${conn.created_by}` : ''}</span>
+          <span>{conn.sample ? 'Added' : 'Connected'} {day(conn.created_at)}{conn.created_by ? ` by ${conn.created_by}` : ''}</span>
           <span>Sync: {scheduleText(sched)}</span>
         </div>
       </header>

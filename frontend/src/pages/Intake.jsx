@@ -3,7 +3,7 @@ import React from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { agentsApi, connectionsApi, scansApi } from '../api'
 import { Breadcrumb } from '../components/form'
-import { CriteriaList, DiffList, OwnerSelect, TierBlock, TierCell, rowFlags } from '../components/connect/intake'
+import { CriteriaList, DiffList, OwnerSelect, TierBlock, rowFlags } from '../components/connect/intake'
 import { ErrorPanel, SampleBadge, SampleBanner, useConn } from '../components/connect/bits'
 import { PROVIDERS } from '../components/connect/providers'
 import { relTime, sourceLabel } from '../format'
@@ -108,7 +108,6 @@ export default function Intake() {
           <section className="ds-card" aria-labelledby="in-tier">
             <div className="po-panel-head"><h2 id="in-tier">Tier and owner</h2></div>
             <div className="po-panel-body po-xp-solo">
-              <div className="po-tierrow"><TierCell row={row} /></div>
               {row.class === 'changed' && row.diff && <DiffList row={row} testid="review-diff-intake" />}
               <TierBlock row={row} canEdit onUpdated={(r) => setRow((old) => ({ ...old, ...r }))} />
               <h4>Owner</h4>

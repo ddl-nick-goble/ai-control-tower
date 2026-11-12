@@ -220,6 +220,7 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-scan { display: flex; flex-direction: column; gap: var(--ds-s2); min-width: 0 }
 
 /* scan view */
+.po-page > .ds-alert { margin-bottom: var(--ds-s2) }
 .po-scan-top { padding: 16px 20px }
 .po-scan-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px }
 .po-scan-title { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--ds-ink); text-transform: none; letter-spacing: 0 }
@@ -278,7 +279,7 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-seg button:hover { background: #dfe3e9 }
 .po-seg button[aria-pressed="true"] { background: var(--ds-surface); color: var(--ds-ink); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, .15) }
 .po-seg b { font-weight: 600; color: var(--ds-muted); margin-left: 4px; font-variant-numeric: tabular-nums }
-.po-search { width: 240px; height: 36px; font-size: 14px }
+.po-search { width: 288px; height: 36px; font-size: 14px }
 .po-tbl-card { overflow: hidden }
 .po-rt col.c-cb { width: 44px } .po-rt col.c-chg { width: 128px } .po-rt col.c-own { width: 168px } .po-rt col.c-tier { width: 168px } .po-rt col.c-flags { width: 25% } .po-rt col.c-why { width: 76px }
 @media (max-width: 1100px) { .po-rt col.c-own { width: 148px } .po-rt col.c-tier { width: 150px } .po-rt col.c-flags { width: 21% } }
@@ -310,7 +311,7 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-xp { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--ds-s3); padding: 16px 20px 20px 56px; border-bottom: 1px solid var(--ds-line) }
 @media (max-width: 1100px) { .po-xp { grid-template-columns: minmax(0, 1fr); padding-left: 20px } }
 .po-xp h4, .po-xp-solo h4 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--ds-muted) }
-.po-xp-solo h4 { margin-top: 16px }
+.po-xp-solo h4:not(:first-child) { margin-top: 16px }
 .po-crit { list-style: none; margin: 0; padding: 0 }
 .po-crit li { display: grid; grid-template-columns: 150px 28px minmax(0, 1fr); gap: 10px; padding: 6px 0; border-top: 1px solid var(--ds-line); font-size: 13px; line-height: 20px; align-items: baseline }
 @media (max-width: 1100px) { .po-crit li { grid-template-columns: 130px 24px minmax(0, 1fr) } }
@@ -404,6 +405,7 @@ dialog.po-dialog::backdrop { background: rgba(20, 24, 31, .45) }
 .fl-awaiting-text { flex: 1; min-width: 0 }
 .fl-awaiting .ds-btn { flex: none }
 .fl-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-bottom: var(--ds-s2); font-size: 14px; color: var(--ds-text) }
+.fl-sample { margin-left: 8px; vertical-align: middle }
 .fl-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px }
 .fl-gone { font-size: 12px; font-weight: 600; color: var(--ds-text); background: var(--ds-surface-2); border-radius: 11px; padding: 1px 8px; white-space: nowrap }
 a.ag-source-link { text-decoration: none; color: var(--ds-text) }
