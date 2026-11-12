@@ -312,7 +312,7 @@ def test_ac3_override_needs_reason_and_changes_tier(ctx):
     assert base  # suggestions existed before the override
 
 
-def test_ac3_changed_agent_with_higher_tier_returns_to_review(ctx):
+def _changed_with_old_tier(ctx, old_tier, mutate):
     c = ctx.c
     cid = sample_conn(c)
     _, new, out = _import_new(c, cid)
@@ -320,23 +320,39 @@ def test_ac3_changed_agent_with_higher_tier_returns_to_review(ctx):
     from sqlalchemy import update
     aid = out["agent_ids"][0]
     with db.engine.begin() as cx:
-        cx.execute(update(db.agents).where(db.agents.c.id == aid).values(status="approved", tier="1"))
+        cx.execute(update(db.agents).where(db.agents.c.id == aid).values(status="approved", tier=old_tier))
     native = agent_row(aid).native_id
 
-    def bump(agents, scopes):
+    def m(agents, scopes):
         for a in agents:
             if a.native_id == native:
-                a.tools = list(a.tools) + ["wire_transfer_funds"]
+                mutate(a)
         return agents
-    patch_discover(ctx, bump)
+    patch_discover(ctx, m)
     sid, _ = scan(c, cid)
     ch = rows(c, sid, "changed")
     assert [r["native_id"] for r in ch] == [native]
-    assert int(ch[0]["suggestion"]["tier"]) > 1
     res = import_rows(c, sid, ch)
     assert res["updated"] == 1 and res["imported"] == 0
-    a = agent_row(aid)
-    assert a.status == "pending_review" and int(a.tier) > 1
+    return ch[0], agent_row(aid)
+
+
+def test_ac3_changed_agent_with_higher_tier_returns_to_review(ctx):
+    """Risk rise = tier number goes down (tier 1 is highest risk)."""
+    def bump(a):
+        a.tools = list(a.tools) + ["wire_transfer_funds"]
+    ch, a = _changed_with_old_tier(ctx, "4", bump)
+    assert int(ch["suggestion"]["tier"]) < 4
+    assert a.status == "pending_review" and int(a.tier) < 4
+
+
+def test_ac3_changed_agent_with_risk_drop_keeps_status(ctx):
+    """Risk drop = tier number goes up; status stays approved."""
+    def bump(a):
+        a.tools = list(a.tools) + ["wire_transfer_funds"]
+    ch, a = _changed_with_old_tier(ctx, "1", bump)
+    assert int(ch["suggestion"]["tier"]) > 1
+    assert a.status == "approved" and int(a.tier) > 1
 
 
 # ---------------------------------------------------------------- PO-4.4
