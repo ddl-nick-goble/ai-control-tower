@@ -1,0 +1,8 @@
+# T-50 code review r1 @07e46c9: changes needed
+BLOCKER 1 restore_db.py:212 moves aside only "", -wal, -shm; a hot -journal (DELETE-mode crash artifact) left beside the restored dest gets rolled back into it. Add "-journal" (also lines 185, 213).
+MAJOR 2 restore_db.py:185-218 work copy keeps the source's WAL mode and lands on NFS as WAL; init_db/check_open then flips to DELETE on NFS (needs -shm on NFS). Set the journal mode + checkpoint/VACUUM on the local tmp copy before copying to dest.
+MAJOR 3 restore_db.py:210-218 no running-app guard: a running app keeps writing into the moved-aside inode. BEGIN EXCLUSIVE on dest with a short timeout, abort if busy; refuse if -wal/-shm/-journal locked; print stop-the-app warning.
+MAJOR 4 restore_db.py:215-216 1-second stamp + rename can overwrite an earlier .broken-* (breaks never-delete). Unique suffix; abort rather than overwrite.
+Stale -shm: WAL DB + garbage -shm on NFS may still fail at first connect; check_open reports it (meets DB-3, not self-healing); no test covers it; hint should point at restore_db.py.
+Minors: db.py:42 stacked mounts use >= (last wins); db.py:28 unescape \011 \012 \134 too; db.py:49 fuse.* too broad (fuse.overlayfs) and ceph/glusterfs/lustre/9p missed; db.py:36-44 warn when /proc/mounts unreadable; restore_db.py:185-187 skip the source -shm, copy -journal; restore_db.py:218 copy to dest.tmp, fsync, rename, integrity_check result; db.py:88-91 + main.py:28 chained traceback (main.py is T-48's, leave); restore_db.py:155 import side effects (mkdir) in dry run.
+Before the real restore: dry-run against a copy of the real folder; confirm restored header is DELETE before the app starts.
