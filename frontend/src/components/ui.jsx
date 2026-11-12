@@ -83,6 +83,14 @@ function FleetLink() {
   return <Link to="/" data-testid="nav-fleet" aria-current={exact ? 'page' : child ? 'true' : undefined}>Fleet</Link>
 }
 
+// Connections is current on its pages and a section on the connect wizard (/connect/...).
+function ConnectionsLink() {
+  const { pathname } = useLocation()
+  const exact = pathname === '/connections'
+  const child = /^\/(connect|connections)\//.test(pathname)
+  return <Link to="/connections" data-testid="nav-connections" aria-current={exact ? 'page' : child ? 'true' : undefined}>Connections</Link>
+}
+
 function GearIcon() {
   return (
     <svg data-testid="nav-settings-icon" className="ds-nav-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -120,7 +128,7 @@ export function Shell({ children }) {
             <FleetLink />
             <NavLink to="/findings" data-testid="nav-findings">Findings</NavLink>
             <NavLink to="/policies" data-testid="nav-policies">Policies</NavLink>
-            <NavLink to="/connections" data-testid="nav-connections">Connections</NavLink>
+            <ConnectionsLink />
             <NavLink to="/audit" data-testid="nav-audit">Audit</NavLink>
             <NavLink to="/settings"><GearIcon />Settings</NavLink>
           </nav>

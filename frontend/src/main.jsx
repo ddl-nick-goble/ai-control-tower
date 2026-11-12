@@ -1,9 +1,10 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { HashRouter, Routes, Route } from 'react-router-dom'
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './styles.css'
 import './design.css'
 import './shell.css'
+import './connect.css'
 import { Shell } from './components/ui'
 import Fleet from './pages/Fleet'
 import Agent from './pages/Agent'
@@ -15,6 +16,11 @@ import Findings from './pages/Findings'
 import Policies from './pages/Policies'
 import Connections from './pages/Connections'
 import Audit from './pages/Audit'
+import ConnectStart from './pages/ConnectStart'
+import ConnectCallback from './pages/ConnectCallback'
+import ConnectAccess from './pages/ConnectAccess'
+import ConnectScope from './pages/ConnectScope'
+import ConnectScan from './pages/ConnectScan'
 import NotFound from './pages/NotFound'
 
 createRoot(document.getElementById('root')).render(
@@ -24,12 +30,18 @@ createRoot(document.getElementById('root')).render(
         <Route path="/" element={<Fleet />} />
         <Route path="/agents/:id" element={<Agent />} />
         <Route path="/runs/:runId" element={<Run />} />
-        <Route path="/register" element={<Register />} />
+        <Route path="/register" element={<Navigate to="/connections/add-by-url" replace />} />
+        <Route path="/connections/add-by-url" element={<Register />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/home" element={<Home />} />
         <Route path="/findings" element={<Findings />} />
         <Route path="/policies" element={<Policies />} />
         <Route path="/connections" element={<Connections />} />
+        <Route path="/connect/:provider" element={<ConnectStart />} />
+        <Route path="/connect/:provider/callback" element={<ConnectCallback />} />
+        <Route path="/connect/:provider/:connId/access" element={<ConnectAccess />} />
+        <Route path="/connect/:provider/:connId/scope" element={<ConnectScope />} />
+        <Route path="/connect/:provider/:connId/scan" element={<ConnectScan />} />
         <Route path="/audit" element={<Audit />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
