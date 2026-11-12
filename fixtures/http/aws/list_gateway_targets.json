@@ -1,0 +1,83 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "items": [
+      {
+        "targetId": "TREASURYRE01",
+        "name": "treasury-reads",
+        "status": "READY",
+        "description": "treasury-reads tools",
+        "createdAt": "2026-09-01T10:05:00.000Z",
+        "updatedAt": "2026-10-20T08:00:00.000Z",
+        "targetConfiguration": {
+          "mcp": {
+            "lambda": {
+              "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:treasury-reads",
+              "toolSchema": {
+                "inlinePayload": [
+                  {
+                    "name": "get_balance",
+                    "description": "get balance",
+                    "inputSchema": {
+                      "type": "object"
+                    }
+                  },
+                  {
+                    "name": "sweep_plan",
+                    "description": "sweep plan",
+                    "inputSchema": {
+                      "type": "object"
+                    }
+                  },
+                  {
+                    "name": "get_fx_rate",
+                    "description": "get fx rate",
+                    "inputSchema": {
+                      "type": "object"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "targetId": "TREASURYWR01",
+        "name": "treasury-writes",
+        "status": "READY",
+        "description": "treasury-writes tools",
+        "createdAt": "2026-09-01T10:05:00.000Z",
+        "updatedAt": "2026-10-20T08:00:00.000Z",
+        "targetConfiguration": {
+          "mcp": {
+            "lambda": {
+              "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:treasury-writes",
+              "toolSchema": {
+                "inlinePayload": [
+                  {
+                    "name": "transfer_funds",
+                    "description": "transfer funds",
+                    "inputSchema": {
+                      "type": "object"
+                    }
+                  },
+                  {
+                    "name": "post_journal_entry",
+                    "description": "post journal entry",
+                    "inputSchema": {
+                      "type": "object"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

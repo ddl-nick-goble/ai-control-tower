@@ -1,0 +1,105 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "code": "090001",
+    "sqlState": "00000",
+    "message": "Statement executed successfully.",
+    "statementHandle": "01b8f2a4-0000-4e11-0000-0001a2b30002",
+    "resultSetMetaData": {
+      "numRows": 0,
+      "format": "jsonv2",
+      "rowType": [
+        {
+          "name": "created_on",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "database_name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "schema_name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "owner",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "comment",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "profile",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "is_secure",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        }
+      ],
+      "partitionInfo": [
+        {
+          "rowCount": 0,
+          "uncompressedSize": 0
+        }
+      ]
+    },
+    "data": []
+  }
+}

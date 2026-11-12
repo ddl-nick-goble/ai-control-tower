@@ -1,0 +1,13 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "tags": {
+      "owner": "treasury-ops@example-bank.com",
+      "cost-center": "CC-2e4e",
+      "act:limit:transfer_funds": "250000USD"
+    }
+  }
+}

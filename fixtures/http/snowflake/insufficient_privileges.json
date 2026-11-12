@@ -1,0 +1,12 @@
+{
+  "status": 422,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "code": "003001",
+    "sqlState": "42501",
+    "message": "SQL access control error: Insufficient privileges to operate on account 'ACME-PROD'",
+    "statementHandle": "01b8f2a4-0000-4e11-0000-0001a2b30006"
+  }
+}

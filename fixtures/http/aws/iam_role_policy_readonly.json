@@ -1,0 +1,31 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "RoleName": "agentcore-treasury-sweep-agent",
+    "PolicyNames": [
+      "agentcore-treasury-sweep-agent-data"
+    ],
+    "PolicyName": "agentcore-treasury-sweep-agent-data",
+    "PolicyDocument": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "ReadData",
+          "Effect": "Allow",
+          "Action": [
+            "dynamodb:GetItem",
+            "dynamodb:Query",
+            "dynamodb:Scan"
+          ],
+          "Resource": [
+            "arn:aws:dynamodb:us-east-1:123456789012:table/treasury.cash_positions",
+            "arn:aws:dynamodb:us-east-1:123456789012:table/treasury.nostro_balances"
+          ]
+        }
+      ]
+    }
+  }
+}

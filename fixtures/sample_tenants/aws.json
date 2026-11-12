@@ -69,5 +69,211 @@
     }
    ]
   }
+ ],
+ "agents": [
+  {
+   "getAgentRuntime": {
+    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/payments_recon_agent-Hn5Vc2QwR7",
+    "agentRuntimeId": "payments_recon_agent-Hn5Vc2QwR7",
+    "agentRuntimeName": "payments-recon-agent",
+    "agentRuntimeVersion": "2",
+    "description": "Matches card settlement files to the ledger and drafts exception reports.",
+    "status": "READY",
+    "createdAt": "2026-09-01T10:00:00.000Z",
+    "lastUpdatedAt": "2026-11-09T11:30:00.000Z",
+    "roleArn": "arn:aws:iam::123456789012:role/agentcore-payments-recon-agent",
+    "workloadIdentityDetails": {
+     "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/payments_recon_agent-Hn5Vc2QwR7"
+    },
+    "protocolConfiguration": {
+     "serverProtocol": "HTTP"
+    },
+    "networkConfiguration": {
+     "networkMode": "PUBLIC"
+    },
+    "authorizerConfiguration": {
+     "customJWTAuthorizer": {
+      "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
+      "allowedClients": [
+       "act-agents"
+      ]
+     }
+    },
+    "agentRuntimeArtifact": {
+     "containerConfiguration": {
+      "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/payments_recon_agent:v3"
+     }
+    },
+    "environmentVariables": {
+     "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+     "GATEWAY_URL": "https://payments-gw-4t9b2k.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+     "MEMORY_ID": "mem-payments-01",
+     "CORE_BANKING_API_KEY": "sk-live-2b7e40c9a1f34d85e6"
+    }
+   },
+   "tags": {
+    "owner": "payments-ops@example-bank.com"
+   },
+   "rolePolicy": {
+    "PolicyName": "agentcore-payments-recon-agent-data",
+    "PolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Sid": "ReadData",
+       "Effect": "Allow",
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:123456789012:table/payments.settlements",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/payments.ledger_entries"
+       ]
+      }
+     ]
+    }
+   },
+   "gatewayTargets": {
+    "items": [
+     {
+      "targetId": "TGT0000001",
+      "name": "payments-recon-agent-tools",
+      "status": "READY",
+      "targetConfiguration": {
+       "mcp": {
+        "lambda": {
+         "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:payments-recon-agent-tools",
+         "toolSchema": {
+          "inlinePayload": [
+           {
+            "name": "get_settlement_file",
+            "description": "get settlement file",
+            "inputSchema": {
+             "type": "object"
+            }
+           },
+           {
+            "name": "match_entries",
+            "description": "match entries",
+            "inputSchema": {
+             "type": "object"
+            }
+           },
+           {
+            "name": "draft_exception_report",
+            "description": "draft exception report",
+            "inputSchema": {
+             "type": "object"
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "getAgentRuntime": {
+    "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/fx_quote_assistant-Pd8Js3LmK1",
+    "agentRuntimeId": "fx_quote_assistant-Pd8Js3LmK1",
+    "agentRuntimeName": "fx-quote-assistant",
+    "agentRuntimeVersion": "2",
+    "description": "Answers FX quote questions for relationship managers.",
+    "status": "READY",
+    "createdAt": "2026-09-01T10:00:00.000Z",
+    "lastUpdatedAt": "2026-11-09T11:30:00.000Z",
+    "roleArn": "arn:aws:iam::123456789012:role/agentcore-fx-quote-assistant",
+    "workloadIdentityDetails": {
+     "workloadIdentityArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:workload-identity-directory/default/workload-identity/fx_quote_assistant-Pd8Js3LmK1"
+    },
+    "protocolConfiguration": {
+     "serverProtocol": "HTTP"
+    },
+    "networkConfiguration": {
+     "networkMode": "PUBLIC"
+    },
+    "authorizerConfiguration": {
+     "customJWTAuthorizer": {
+      "discoveryUrl": "https://login.example-bank.com/.well-known/openid-configuration",
+      "allowedClients": [
+       "act-agents"
+      ]
+     }
+    },
+    "agentRuntimeArtifact": {
+     "containerConfiguration": {
+      "containerUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/fx_quote_assistant:v3"
+     }
+    },
+    "environmentVariables": {
+     "MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+     "GATEWAY_URL": "https://fx-gw-6r1n8v.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp",
+     "MEMORY_ID": "mem-fx-01",
+     "CORE_BANKING_API_KEY": "sk-live-7d1a93b8c0e24f56a7"
+    }
+   },
+   "tags": {
+    "owner": "fx-desk@example-bank.com"
+   },
+   "rolePolicy": {
+    "PolicyName": "agentcore-fx-quote-assistant-data",
+    "PolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Sid": "ReadData",
+       "Effect": "Allow",
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan"
+       ],
+       "Resource": [
+        "arn:aws:dynamodb:us-east-1:123456789012:table/markets.fx_quotes"
+       ]
+      }
+     ]
+    }
+   },
+   "gatewayTargets": {
+    "items": [
+     {
+      "targetId": "TGT0000001",
+      "name": "fx-quote-assistant-tools",
+      "status": "READY",
+      "targetConfiguration": {
+       "mcp": {
+        "lambda": {
+         "lambdaArn": "arn:aws:lambda:us-east-1:123456789012:function:fx-quote-assistant-tools",
+         "toolSchema": {
+          "inlinePayload": [
+           {
+            "name": "get_fx_quote",
+            "description": "get fx quote",
+            "inputSchema": {
+             "type": "object"
+            }
+           },
+           {
+            "name": "get_fx_history",
+            "description": "get fx history",
+            "inputSchema": {
+             "type": "object"
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
+  }
  ]
 }

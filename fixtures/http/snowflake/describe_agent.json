@@ -1,0 +1,116 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "code": "090001",
+    "sqlState": "00000",
+    "message": "Statement executed successfully.",
+    "statementHandle": "01b8f2a4-0000-4e11-0000-0001a2b30003",
+    "resultSetMetaData": {
+      "numRows": 1,
+      "format": "jsonv2",
+      "rowType": [
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "database_name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "schema_name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "owner",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "comment",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "profile",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "agent_spec",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "created_on",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        }
+      ],
+      "partitionInfo": [
+        {
+          "rowCount": 1,
+          "uncompressedSize": 2400
+        }
+      ]
+    },
+    "data": [
+      [
+        "PAYMENTS_AGENT",
+        "RISK",
+        "AGENTS",
+        "RISK_AGENT_OWNER",
+        "Answers payments support questions and drafts refunds.",
+        "{\"display_name\": \"Payments Support Agent\"}",
+        "{\"models\": {\"orchestration\": \"claude-sonnet-4-6\"}, \"orchestration\": {\"budget\": {\"seconds\": 60, \"tokens\": 16000}, \"tool_not_accessible\": \"accept\"}, \"instructions\": {\"response\": \"Answer payments questions briefly. Escalate refunds over 500 USD.\", \"system\": \"You support the payments team. Internal escalation line: https://hooks.example-bank.com/escalate?token=ab12cd34ef56gh78\", \"sample_questions\": [{\"question\": \"Why was payment 8841 held?\"}]}, \"tools\": [{\"tool_spec\": {\"type\": \"cortex_analyst_text_to_sql\", \"name\": \"payments_analyst\", \"description\": \"Text to SQL over payments metrics\"}}, {\"tool_spec\": {\"type\": \"cortex_search\", \"name\": \"policy_docs\", \"description\": \"Search payment policies\"}}, {\"tool_spec\": {\"type\": \"generic\", \"name\": \"issue_refund\", \"description\": \"Issue a refund\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"amount\": {\"type\": \"number\"}}}}}], \"tool_resources\": {\"payments_analyst\": {\"semantic_view\": \"RISK.SEM.PAYMENTS\", \"execution_environment\": {\"type\": \"warehouse\", \"warehouse\": \"AGENT_WH\", \"query_timeout\": 30}}, \"policy_docs\": {\"search_service\": \"RISK.DOCS.POLICY_SEARCH\", \"max_results\": 5}, \"issue_refund\": {\"type\": \"procedure\", \"identifier\": \"PAY.OPS.ISSUE_REFUND\", \"auth_header\": \"Bearer sk-test-4eC39HqLyjWDarjtT1zdp7dc\", \"execution_environment\": {\"type\": \"warehouse\", \"warehouse\": \"OPS_WH\"}}}, \"mcp_servers\": [{\"server_spec\": {\"name\": \"RISK.TOOLS.JIRA_MCP\"}}]}",
+        "1730000000.000000000"
+      ]
+    ]
+  }
+}

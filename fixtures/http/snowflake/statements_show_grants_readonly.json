@@ -1,0 +1,176 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "json": {
+    "code": "090001",
+    "sqlState": "00000",
+    "message": "Statement executed successfully.",
+    "statementHandle": "01b8f2a4-0000-4e11-0000-0001a2b30005",
+    "resultSetMetaData": {
+      "numRows": 7,
+      "format": "jsonv2",
+      "rowType": [
+        {
+          "name": "created_on",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "privilege",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "granted_on",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "granted_to",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "grantee_name",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "grant_option",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        },
+        {
+          "name": "granted_by",
+          "type": "text",
+          "nullable": true,
+          "length": 16777216,
+          "scale": null,
+          "precision": null,
+          "byteLength": null,
+          "collation": null
+        }
+      ],
+      "partitionInfo": [
+        {
+          "rowCount": 7,
+          "uncompressedSize": 900
+        }
+      ]
+    },
+    "data": [
+      [
+        "1730500000.000000000",
+        "USAGE",
+        "WAREHOUSE",
+        "ACT_WH",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ],
+      [
+        "1730500000.000000000",
+        "USAGE",
+        "DATABASE_ROLE",
+        "SNOWFLAKE.CORTEX_USER",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ],
+      [
+        "1730500000.000000000",
+        "USAGE",
+        "DATABASE",
+        "RISK",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ],
+      [
+        "1730500000.000000000",
+        "USAGE",
+        "SCHEMA",
+        "RISK.AGENTS",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ],
+      [
+        "1730500000.000000000",
+        "MONITOR",
+        "AGENT",
+        "RISK.AGENTS.PAYMENTS_AGENT",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ],
+      [
+        "1730500000.000000000",
+        "MONITOR",
+        "AGENT",
+        "RISK.DOCS.POLICY_QA",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ],
+      [
+        "1730500000.000000000",
+        "MONITOR",
+        "AGENT",
+        "CUSTOMER360.SERVICE.REFUND_BOT",
+        "ROLE",
+        "ACT_READER",
+        "false",
+        "ACCOUNTADMIN"
+      ]
+    ]
+  }
+}
