@@ -494,3 +494,4 @@ Two sequential parts, two builders:
 - PO-6 r2 b129d5c + r3 f75b358 (final round): design items fixed (per-scope counts sum, full-opacity rows, why-panel padding, manual vs scheduled sync labels); 51 e2e + 19 backend + 24 smoke pass. MERGED a3732bc. 9100 preview restarted on main. Worktree removed.
 - PO-7a test baseline 7b0a496 (4 red, the Snowflake walk green; POST /api/demo/reset leaves old connections behind, so the builder must clear them). Builder running.
 - PD end-of-wave on main cf253b2: code 960 pass / 3 skip (11:38); e2e 278 pass (6:05). Wave PD DONE.
+- PO-7a 4b28edf: D7-1..3 pass (72 e2e, 117 backend); the gallery card shows the real state + the sample badge; the seed clears foreign demo connections. MERGED c05542c. Worktree removed. PO-7b publish (domino-deploy, sonnet) running; post-merge suites running.
