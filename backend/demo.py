@@ -296,6 +296,8 @@ def restore_defaults() -> None:
     """Remove the defaults apply_defaults() filled in (called when the app shuts down)."""
     while _applied:
         os.environ.pop(_applied.pop(), None)
+    while _applied_rt:  # a shutdown whose switch-off was skipped must not leave demo's defaults in the environment
+        os.environ.pop(_applied_rt.pop(), None)
 
 
 def stand_ins() -> list:
