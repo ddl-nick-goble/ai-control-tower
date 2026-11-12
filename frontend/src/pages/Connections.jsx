@@ -17,8 +17,10 @@ export function cardModel(provider, conns) {
   const live = mine.filter((c) => !c.sample)
   const advanced = live.find((c) => !['draft', 'waiting'].includes(c.state))
   const sample = mine.find((c) => c.sample)
+  const sampleLive = mine.find((c) => c.sample && ['verified', 'partial', 'connected', 'needs_attention'].includes(c.state)) // a connected sample tenant (the demo's) shows its real state
   const draft = live.find((c) => ['draft', 'waiting'].includes(c.state) && age(c) < STALE_MS)
   if (advanced) return { kind: advanced.state, conn: advanced }
+  if (sampleLive) return { kind: sampleLive.state, conn: sampleLive, sample: true }
   if (sample) return { kind: 'sample', conn: sample, samples: mine.filter((c) => c.sample) }
   if (draft) return { kind: 'connecting', conn: draft }
   return { kind: 'none' }
@@ -80,7 +82,7 @@ function ProviderCard({ id, model, onChange }) {
         <ProviderMark id={id} />
         <div className="po-card-titles"><h3 className="po-card-title" id={`pc-${id}`}>{p.name}</h3><p className="po-card-products">{p.products}</p></div>
       </div>
-      <div>{status}</div>
+      <div>{status}{model.sample && <> <SampleBadge /></>}</div>
       <Meta rows={meta} />
       <div className="po-card-actions">
         <Link className={`ds-btn ds-btn-sm${primary.solid ? ' ds-btn-primary' : ''}`} to={primary.to} data-testid={`provider-card-${id}-connect`} aria-describedby={`pc-${id}`}>{primary.label}</Link>
