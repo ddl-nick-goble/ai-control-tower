@@ -319,11 +319,26 @@ def row_view(r) -> dict:
                         "identity": rec.get("identity"), "description": rec.get("description")}}
 
 
+def _stale(updated_at, secs=300) -> bool:
+    from datetime import datetime, timezone
+    try:
+        t = datetime.fromisoformat(str(updated_at))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - t).total_seconds() > secs
+
+
 def get_scan(sid):
     with db.engine.connect() as cx:
         s = cx.execute(select(db.scans).where(db.scans.c.id == sid)).first()
     if s is None:
         return None
+    if s.state in ("queued", "running") and _stale(s.updated_at):
+        set_scan(sid, state="failed", error="Scan stopped unexpectedly", finished_at=now_iso())
+        with db.engine.connect() as cx:
+            s = cx.execute(select(db.scans).where(db.scans.c.id == sid)).first()
     return {"scan_id": s.id, "connection_id": s.connection_id, "kind": s.kind, "state": s.state, "sample": bool(s.sample),
             "job_id": s.job_id, "job_url": s.job_url, "progress": s.progress or [], "counts": s.counts or {},
             "error": s.error, "started_at": s.started_at, "finished_at": s.finished_at, "updated_at": s.updated_at}
@@ -377,26 +392,27 @@ def import_rows(sid, ids, user) -> dict:
             out["skipped"] += 1
         elif r._mapping["class"] == "missing":
             out["missing"] += 1
-        elif r._mapping["class"] == "new" and not r.owner:
-            out["no_owner"] += 1
         else:
-            aid, is_new = _import_one(r, scan, user, actor)
+            no_owner = r._mapping["class"] == "new" and not r.owner
+            aid, is_new = _import_one(r, scan, user, actor, owner=r.owner or "unassigned")
+            if no_owner:
+                out["no_owner"] += 1
             out["imported" if is_new else "updated"] += 1
             out["agent_ids"].append(aid)
     return out
 
 
-def _import_one(r, scan, user, actor):
+def _import_one(r, scan, user, actor, owner=None):
     eff = effective(r)
     scores = {k: v["score"] for k, v in eff["suggestions"].items()}
     rec = dict(r.record)
-    rec.update(owner=r.owner or rec.get("owner"), sample=bool(r.sample), status="pending_review")
+    rec.update(owner=owner or r.owner or rec.get("owner"), sample=bool(r.sample), status="pending_review")
     with db.engine.begin() as cx:
         old = cx.execute(select(db.agents).where(db.agents.c.id == rec["id"])).first()
         apply_record(cx, rec, actor, connection_id=scan.connection_id)
         cur = cx.execute(select(db.agents).where(db.agents.c.id == rec["id"])).first()
         tier = str(eff["tier"])
-        status = "pending_review" if old is None or str(old.tier) != tier else old.status
+        status = "pending_review" if old is None or int(tier) < int(old.tier) else old.status
         record = {**(cur.record or {}), "tier": eff["tier"], "tier_reasoning": eff["reasoning"], "criteria": scores,
                   "status": status, "sample": bool(r.sample)}
         cx.execute(update(db.agents).where(db.agents.c.id == rec["id"]).values(
