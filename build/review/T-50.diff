@@ -1,5 +1,5 @@
 diff --git a/backend/db.py b/backend/db.py
-index a01abd7..ca7bef4 100644
+index a01abd7..aae22f8 100644
 --- a/backend/db.py
 +++ b/backend/db.py
 @@ -1,6 +1,7 @@
@@ -11,11 +11,18 @@ index a01abd7..ca7bef4 100644
  import threading
  from pathlib import Path
  
-@@ -27,22 +28,99 @@ try:
+@@ -27,22 +28,106 @@ try:
  except OSError:
      log.exception("could not create DB directory for %s", DB_PATH)
  
-+_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3")
++_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3", "smbfs", "ceph", "glusterfs", "lustre", "9p",
++               "fuse.sshfs", "fuse.s3fs", "fuse.gcsfuse", "fuse.goofys", "fuse.rclone", "fuse.juicefs")
++
++
++def _unescape_mount(s: str) -> str:
++    for esc, ch in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
++        s = s.replace(esc, ch)
++    return s
 +
 +
 +def _read_mounts() -> list:
@@ -25,9 +32,9 @@ index a01abd7..ca7bef4 100644
 +            for line in f:
 +                parts = line.split()
 +                if len(parts) >= 3:
-+                    out.append((parts[1].replace("\\040", " "), parts[2]))
-+    except OSError:
-+        pass
++                    out.append((_unescape_mount(parts[1]), parts[2]))
++    except OSError as e:
++        log.warning("cannot read /proc/mounts (%s); treating the DB filesystem as local", e)
 +    return out
 +
 +
@@ -39,14 +46,14 @@ index a01abd7..ca7bef4 100644
 +    best, best_len = "unknown", -1
 +    for mp, fst in mounts:
 +        mp_n = mp.rstrip("/")
-+        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) > best_len:
++        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) >= best_len:
 +            best, best_len = fst, len(mp_n)
 +    return best
 +
 +
 +def is_network_fs(path, mounts=None) -> bool:
 +    t = fs_type(path, mounts).lower()
-+    return t in _NETWORK_FS or t.startswith("fuse.")
++    return t in _NETWORK_FS
 +
 +
 +def journal_mode_for(path, mounts=None) -> str:
@@ -88,7 +95,7 @@ index a01abd7..ca7bef4 100644
 +        raise DatabaseOpenError(
 +            f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e}. "
 +            "On a network filesystem the usual cause is stale -wal/-shm files left by a crash; "
-+            "move them aside (or run scripts/restore_db.py) and restart.") from e
++            "move them aside, or restore a known-good copy with scripts/restore_db.py, and restart.") from e
 +
 +
  def _make_engine(path: str):
@@ -115,7 +122,7 @@ index a01abd7..ca7bef4 100644
      cur.execute("PRAGMA foreign_keys=ON")
      cur.execute("PRAGMA busy_timeout=30000")
      cur.close()
-@@ -298,6 +376,8 @@ def _ensure_findings_index(engine) -> None:
+@@ -298,6 +383,8 @@ def _ensure_findings_index(engine) -> None:
  
  def init_db(eng=None) -> None:
      eng = eng or engine
@@ -124,7 +131,7 @@ index a01abd7..ca7bef4 100644
      try:
          metadata.create_all(eng)
      except Exception as e:
-@@ -309,6 +389,6 @@ def init_db(eng=None) -> None:
+@@ -309,6 +396,6 @@ def init_db(eng=None) -> None:
  
  
  def prewarm(n: int) -> None:
@@ -134,16 +141,19 @@ index a01abd7..ca7bef4 100644
          c.close()
 diff --git a/scripts/restore_db.py b/scripts/restore_db.py
 new file mode 100644
-index 0000000..92c8be7
+index 0000000..50a4657
 --- /dev/null
 +++ b/scripts/restore_db.py
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,218 @@
 +"""Restore the ACT database from a known-good copy.
 +
 +Dry run by default; --apply moves the existing DB aside (never deletes) and installs the copy.
++Stop the app before using --apply.
 +    python scripts/restore_db.py --from /path/good.db [--to /path/act.db] [--apply]
 +"""
 +import argparse
++import fcntl
++import os
 +import shutil
 +import sqlite3
 +import sys
@@ -158,13 +168,105 @@ index 0000000..92c8be7
 +def counts(conn) -> dict:
 +    names = [r[0] for r in conn.execute(
 +        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-+    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0] for n in names}
++    return {n: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchall()[0][0] for n in names}
 +
 +
 +def print_counts(label, c) -> None:
 +    print(label)
 +    for n, k in c.items():
 +        print(f"  {n}: {k}")
++
++
++SIBLINGS = ("", "-wal", "-shm", "-journal")
++
++
++def _locked(path) -> bool:
++    """True if another process holds a POSIX lock on `path` (SQLite's locking primitive)."""
++    try:
++        fd = os.open(path, os.O_RDWR)
++    except OSError:
++        return False
++    try:
++        fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++        return False
++    except OSError:
++        return True
++    finally:
++        os.close(fd)  # also drops our own lock
++
++
++def _is_sqlite(p: Path) -> bool:
++    try:
++        with open(p, "rb") as f:
++            return f.read(16) == b"SQLite format 3\x00"
++    except OSError:
++        return False
++
++
++def dest_in_use(dest: Path) -> str:
++    """Reason string if something else is using the dest DB, else ''."""
++    jr = Path(str(dest) + "-journal")
++    if _is_sqlite(dest) and jr.exists() and jr.stat().st_size > 0:
++        # A non-empty rollback journal means a write is in flight or a crash left it behind; either way the
++        # DB must not be swapped out from under it (and probing it would roll it back).
++        return f"{jr} is a non-empty rollback journal (a write is in progress or was interrupted)"
++    if _is_sqlite(dest):
++        try:
++            c = sqlite3.connect(str(dest), timeout=0.5, isolation_level=None)
++            try:
++                c.execute("BEGIN EXCLUSIVE")
++                c.execute("ROLLBACK")
++            finally:
++                c.close()
++        except sqlite3.OperationalError as e:
++            if "lock" in str(e).lower() or "busy" in str(e).lower():
++                return f"{dest} is locked ({e})"
++        except sqlite3.Error:
++            pass  # unusable database: that is what we are replacing
++    for suffix in SIBLINGS:
++        p = str(dest) + suffix
++        if os.path.exists(p) and _locked(p):
++            return f"{p} is locked by another process"
++    return ""
++
++
++def unique_stamp(dest: Path) -> str:
++    base = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1e6) % 1000000:06d}"
++    for n in range(1000):
++        stamp = f".broken-{base}" + (f"-{n}" if n else "")
++        if not any(os.path.lexists(str(dest) + stamp + sfx) for sfx in SIBLINGS):
++            return stamp
++    raise RuntimeError("could not find an unused .broken-* name")
++
++
++def prepare_work_copy(src: Path, work: Path, mode: str):
++    """Copy src (+ -wal, -journal; never the stale -shm) to a local temp file, verify, fold everything
++    into a single file in the dest journal mode. Returns (ok, result, counts)."""
++    for suffix in ("", "-wal", "-journal"):
++        if Path(str(src) + suffix).is_file():
++            shutil.copy2(str(src) + suffix, str(work) + suffix)
++    conn = sqlite3.connect(work)
++    try:
++        result = conn.execute("PRAGMA integrity_check").fetchall()
++        ok = result == [("ok",)]
++        c = counts(conn) if ok else {}
++        if ok:
++            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
++            conn.execute("PRAGMA journal_mode=DELETE").fetchall()  # fold the WAL in
++    finally:
++        conn.close()
++    if ok and mode == "WAL":
++        conn = sqlite3.connect(work)  # fresh connection: set the header to WAL, close checkpoints it
++        try:
++            conn.execute("PRAGMA journal_mode=WAL").fetchall()
++        finally:
++            conn.close()
++    if ok:
++        for suffix in ("-wal", "-shm", "-journal"):
++            q = Path(str(work) + suffix)
++            if q.exists() and (suffix != "-wal" or q.stat().st_size == 0):
++                q.unlink()
++    return ok, result, c
 +
 +
 +def main() -> int:
@@ -179,44 +281,73 @@ index 0000000..92c8be7
 +        print(f"error: source {src} not found", file=sys.stderr)
 +        return 2
 +
++    mode = db.journal_mode_for(dest)
 +    with tempfile.TemporaryDirectory() as tmp:
-+        # Work on a private copy (with any -wal/-shm siblings) so the source is never modified.
 +        work = Path(tmp) / "src.db"
-+        for suffix in ("", "-wal", "-shm"):
-+            if Path(str(src) + suffix).is_file():
-+                shutil.copy2(str(src) + suffix, str(work) + suffix)
 +        try:
-+            conn = sqlite3.connect(work)
-+            result = conn.execute("PRAGMA integrity_check").fetchall()
-+            ok = result == [("ok",)]
-+            c = counts(conn) if ok else {}
-+            if ok:
-+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
-+            conn.close()
++            ok, result, c = prepare_work_copy(src, work, mode)
 +        except sqlite3.Error as e:
 +            print(f"error: source {src} failed integrity check: {e}", file=sys.stderr)
 +            return 1
 +        if not ok:
 +            print(f"error: source {src} failed integrity_check: {result[:5]}", file=sys.stderr)
 +            return 1
++        if any(Path(str(work) + sfx).exists() for sfx in ("-wal", "-shm", "-journal")):
++            print("error: could not fold the source into a single file", file=sys.stderr)
++            return 1
 +
-+        mode = db.journal_mode_for(dest)
 +        print(f"source: {src}\ndest:   {dest} (filesystem {db.fs_type(dest)}, journal mode {mode})")
 +        print_counts("source row counts:", c)
 +        if not a.apply:
 +            print("dry run: nothing changed. Re-run with --apply to restore.")
 +            return 0
 +
-+        stamp = f".broken-{time.strftime('%Y%m%d-%H%M%S')}"
 +        dest.parent.mkdir(parents=True, exist_ok=True)
-+        for suffix in ("", "-wal", "-shm"):
-+            p = Path(str(dest) + suffix)
-+            if p.exists():
-+                moved = Path(str(dest) + stamp + suffix)
-+                shutil.move(str(p), str(moved))
-+                print(f"moved aside: {p} -> {moved}")
-+        shutil.copy2(work, dest)
++        busy = dest_in_use(dest)
++        if busy:
++            print(f"error: {busy}. Stop the ACT app (and anything else using the database), then re-run. "
++                  "Nothing was changed.", file=sys.stderr)
++            return 3
++        stamp = unique_stamp(dest)
++        tmp_dest = Path(str(dest) + f".restore-{os.getpid()}.tmp")
++        if tmp_dest.exists():
++            print(f"error: {tmp_dest} already exists; remove it and re-run. Nothing was changed.", file=sys.stderr)
++            return 3
++        try:
++            # Stage the new file first, so a failed copy leaves the old DB untouched.
++            shutil.copyfile(work, tmp_dest)
++            with open(tmp_dest, "rb+") as f:
++                f.flush()
++                os.fsync(f.fileno())
++            for suffix in SIBLINGS:
++                p = Path(str(dest) + suffix)
++                if p.exists():
++                    moved = Path(str(dest) + stamp + suffix)
++                    if moved.exists():
++                        raise RuntimeError(f"{moved} already exists; refusing to overwrite")
++                    shutil.move(str(p), str(moved))
++                    print(f"moved aside: {p} -> {moved}")
++            if dest.exists():
++                raise RuntimeError(f"{dest} reappeared; refusing to overwrite")
++            os.rename(tmp_dest, dest)
++            dfd = os.open(dest.parent, os.O_RDONLY)
++            try:
++                os.fsync(dfd)
++            finally:
++                os.close(dfd)
++        except (OSError, RuntimeError) as e:
++            print(f"error: restore failed: {e}. Old files (if moved) are named {dest}{stamp}*; "
++                  f"staged copy: {tmp_dest}", file=sys.stderr)
++            return 1
 +
++    conn = sqlite3.connect(dest)
++    try:
++        res = conn.execute("PRAGMA integrity_check").fetchall()
++    finally:
++        conn.close()
++    if res != [("ok",)]:
++        print(f"error: restored {dest} failed integrity_check: {res[:5]}", file=sys.stderr)
++        return 1
 +    eng = db._make_engine(str(dest))
 +    try:
 +        db.init_db(eng)
@@ -234,10 +365,10 @@ index 0000000..92c8be7
 +    sys.exit(main())
 diff --git a/tests/test_t50_sqlite_nfs.py b/tests/test_t50_sqlite_nfs.py
 new file mode 100644
-index 0000000..78b41e9
+index 0000000..bb26e4e
 --- /dev/null
 +++ b/tests/test_t50_sqlite_nfs.py
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,368 @@
 +import glob
 +import os
 +import sqlite3
@@ -445,3 +576,164 @@ index 0000000..78b41e9
 +        assert c.exec_driver_sql("PRAGMA journal_mode").scalar().lower() == "wal"
 +        assert c.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
 +        assert c.exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
++
++
++# ---- DB-4 data-safety additions
++def _run_env(*args, **extra):
++    env = dict(os.environ)
++    env.pop("ACT_DB_JOURNAL_MODE", None)
++    env.update(extra)
++    return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
++                          text=True, cwd=str(ROOT), env=env, timeout=120)
++
++
++def _hdr_modes(p):
++    with open(p, "rb") as f:
++        h = f.read(100)
++    return h[18], h[19]
++
++
++def _wal_src(tmp_path, name="walsrc.db"):
++    """WAL source with rows 4..5 only in the -wal; returns (path, open conn keeping the WAL alive)."""
++    src = tmp_path / name
++    c = sqlite3.connect(src)
++    c.execute("PRAGMA journal_mode=WAL")
++    c.execute("PRAGMA wal_autocheckpoint=0")
++    c.execute("CREATE TABLE widgets (id INTEGER)")
++    c.executemany("INSERT INTO widgets VALUES (?)", [(1,), (2,), (3,)])
++    c.commit()
++    c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
++    c.executemany("INSERT INTO widgets VALUES (?)", [(4,), (5,)])
++    c.commit()
++    assert os.path.getsize(str(src) + "-wal") > 0
++    return src, c
++
++
++def test_ac4_network_dest_header_is_delete_not_wal(tmp_path):
++    src, c = _wal_src(tmp_path)  # source is WAL; dest must still land in DELETE
++    dest = tmp_path / "dest.db"
++    try:
++        r = _run_env("--from", str(src), "--to", str(dest), "--apply",
++                     ACT_DB=str(tmp_path / "x.db"), ACT_DB_JOURNAL_MODE="DELETE")
++    finally:
++        c.close()
++    assert r.returncode == 0, r.stdout + r.stderr
++    assert _hdr_modes(dest) == (1, 1)
++    assert not os.path.exists(str(dest) + "-wal")
++
++
++def test_ac4_local_dest_header_is_wal(tmp_path):
++    src = _src(tmp_path)  # rollback-journal source
++    dest = tmp_path / "dest.db"
++    r = _run_env("--from", str(src), "--to", str(dest), "--apply",
++                 ACT_DB=str(tmp_path / "x.db"), ACT_DB_JOURNAL_MODE="WAL")
++    assert r.returncode == 0, r.stdout + r.stderr
++    assert _hdr_modes(dest) == (2, 2)
++
++
++def test_ac4_moves_journal_sibling_aside(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"old-main")
++    Path(str(dest) + "-journal").write_bytes(b"old-journal")
++    r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    assert r.returncode == 0, r.stdout + r.stderr
++    j = glob.glob(str(dest) + ".broken-*-journal")
++    assert len(j) == 1 and Path(j[0]).read_bytes() == b"old-journal"
++    assert not os.path.exists(str(dest) + "-journal")
++
++
++def test_ac4_second_apply_same_second_never_loses_moved_aside_files(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "dest.db"
++    dest.write_bytes(b"old-main")
++    Path(str(dest) + "-wal").write_bytes(b"old-wal")
++    r1 = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    assert r1.returncode == 0, r1.stdout + r1.stderr
++    r2 = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    contents = {p: Path(p).read_bytes() for p in glob.glob(str(dest) + ".broken-*")
++                if not p.endswith(("-wal", "-shm", "-journal"))}
++    # first set of moved-aside files always survives
++    assert b"old-main" in contents.values()
++    assert any(Path(p).read_bytes() == b"old-wal" for p in glob.glob(str(dest) + ".broken-*-wal"))
++    if r2.returncode == 0:
++        assert len(contents) == 2  # both sets kept (or distinct timestamps)
++    else:
++        assert len(contents) == 1  # aborted with nothing changed
++        assert sqlite3.connect(dest).execute("SELECT COUNT(*) FROM widgets").fetchone()[0] == 3
++
++
++def test_ac4_dest_in_use_aborts_and_changes_nothing(tmp_path):
++    src = _src(tmp_path)
++    dest = tmp_path / "dest.db"
++    d = sqlite3.connect(dest, isolation_level=None, timeout=0)
++    d.execute("CREATE TABLE keep (x)")
++    d.execute("INSERT INTO keep VALUES (42)")
++    d.execute("BEGIN IMMEDIATE")
++    d.execute("INSERT INTO keep VALUES (43)")  # open write transaction
++    before = dest.read_bytes()
++    try:
++        r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    finally:
++        d.execute("ROLLBACK")
++        d.close()
++    assert r.returncode != 0, r.stdout + r.stderr
++    assert "stop" in (r.stdout + r.stderr).lower()
++    assert glob.glob(str(dest) + ".broken-*") == []
++    assert dest.read_bytes() == before
++    c = sqlite3.connect(dest)
++    assert c.execute("SELECT x FROM keep ORDER BY x").fetchall() == [(42,)]
++    assert c.execute("SELECT name FROM sqlite_master WHERE name='widgets'").fetchall() == []
++    c.close()
++
++
++def test_ac4_wal_only_rows_are_restored(tmp_path):
++    src, c = _wal_src(tmp_path)
++    dest = tmp_path / "dest.db"
++    try:
++        r = _run("--from", str(src), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    finally:
++        c.close()
++    assert r.returncode == 0, r.stdout + r.stderr
++    d = sqlite3.connect(dest)
++    assert [x[0] for x in d.execute("SELECT id FROM widgets ORDER BY id")] == [1, 2, 3, 4, 5]
++    d.close()
++
++
++def test_ac4_garbage_source_shm_does_not_break_restore(tmp_path):
++    src, c = _wal_src(tmp_path)
++    snap = tmp_path / "snap"
++    snap.mkdir()
++    import shutil
++    shutil.copy(src, snap / "s.db")
++    shutil.copy(str(src) + "-wal", snap / "s.db-wal")
++    c.close()
++    (snap / "s.db-shm").write_bytes(os.urandom(32768))
++    dest = tmp_path / "dest.db"
++    r = _run("--from", str(snap / "s.db"), "--to", str(dest), "--apply", env_db=tmp_path / "x.db")
++    assert r.returncode == 0, r.stdout + r.stderr
++    d = sqlite3.connect(dest)
++    assert d.execute("SELECT COUNT(*) FROM widgets").fetchone()[0] == 5
++    d.close()
++
++
++# ---- DB-3 stale shm
++def test_ac3_garbage_shm_opens_or_clear_error(db_mod, tmp_path):
++    import shutil
++    src, c = _wal_src(tmp_path)
++    snap = tmp_path / "snap"
++    snap.mkdir()
++    shutil.copy(src, snap / "w.db")
++    shutil.copy(str(src) + "-wal", snap / "w.db-wal")
++    c.close()
++    (snap / "w.db-shm").write_bytes(os.urandom(32768))
++    p = str(snap / "w.db")
++    try:
++        db_mod.check_open(p)
++    except db_mod.DatabaseOpenError as e:
++        msg = str(e)
++        assert p in msg
++        assert db_mod.fs_type(p) in msg
++        assert db_mod.journal_mode_for(p).upper() in msg.upper()
++        assert "restore_db.py" in msg
++        assert "stale" in msg.lower() and "-wal" in msg and "-shm" in msg
