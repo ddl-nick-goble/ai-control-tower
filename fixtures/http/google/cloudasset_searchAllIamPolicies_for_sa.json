@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://cloudasset.googleapis.com/v1/organizations/123456:searchAllIamPolicies",
+    "query": {
+      "query": "policy:\"sa-fraud@bank-ai-prod.iam.gserviceaccount.com\""
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "results": [
+        {
+          "resource": "//bigquery.googleapis.com/projects/bank-ai-prod/datasets/payments",
+          "policy": {
+            "bindings": [
+              {
+                "role": "roles/bigquery.dataViewer",
+                "members": [
+                  "serviceAccount:sa-fraud@bank-ai-prod.iam.gserviceaccount.com"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

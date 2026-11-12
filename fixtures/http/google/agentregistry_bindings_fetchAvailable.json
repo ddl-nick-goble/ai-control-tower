@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://agentregistry.googleapis.com/v1/projects/bank-ai-prod/locations/us-central1/bindings:fetchAvailable",
+    "query": {
+      "sourceIdentifier": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:1220771026"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "bindings": [
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/bindings/b1",
+          "source": {
+            "identifier": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:1220771026"
+          },
+          "target": {
+            "identifier": "urn:mcp:projects-4417:payments-hub"
+          }
+        }
+      ]
+    }
+  }
+}

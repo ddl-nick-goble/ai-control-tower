@@ -1,0 +1,34 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://discoveryengine.googleapis.com/v1alpha/projects/bank-ai-prod/locations/global/collections/default_collection/engines/ge-bank/assistants/default_assistant/agents",
+    "query": {
+      "pageSize": 100
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "agents": [
+        {
+          "name": "projects/4417/locations/global/collections/default_collection/engines/ge-bank/assistants/default_assistant/agents/1784401",
+          "displayName": "collections-letters",
+          "description": "Drafts hardship letters",
+          "state": "ENABLED",
+          "sharingConfig": {
+            "scope": "RESTRICTED"
+          },
+          "createTime": "2026-09-10T00:00:00Z",
+          "updateTime": "2026-11-02T00:00:00Z",
+          "adkAgentDefinition": {
+            "provisionedReasoningEngine": {
+              "reasoningEngine": "projects/bank-ai-prod/locations/us-central1/reasoningEngines/401391792873"
+            }
+          }
+        }
+      ],
+      "nextPageToken": "ge2"
+    }
+  }
+}

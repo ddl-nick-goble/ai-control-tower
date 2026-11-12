@@ -57,5 +57,51 @@
     }
    ]
   }
+ ],
+ "agents": [
+  {
+   "native_id": "projects/trading-ml-prod/locations/europe-west4/reasoningEngines/77",
+   "name": "trading-signal-agent",
+   "description": "Scores intraday trading signals.",
+   "version": "1",
+   "owner": "unknown",
+   "status": "DEPLOYED",
+   "provider": "Google Cloud",
+   "tools": [],
+   "identity": {
+    "type": "service_agent_default",
+    "principal": "service-5528@gcp-sa-aiplatform-re.iam.gserviceaccount.com",
+    "distinct": false
+   },
+   "extra": {
+    "surfaces": [
+     "agent_runtime"
+    ],
+    "project": "trading-ml-prod",
+    "location": "europe-west4"
+   }
+  },
+  {
+   "native_id": "projects/act-demo-project-482311/locations/global/collections/default_collection/engines/ge-bank/assistants/default_assistant/agents/1784402",
+   "name": "hr-faq-workflow",
+   "description": "Answers HR policy questions (Workflow Builder).",
+   "version": "1",
+   "owner": "unknown",
+   "status": "SUSPENDED",
+   "provider": "Google Cloud",
+   "tools": [],
+   "identity": {
+    "type": "google_managed",
+    "principal": "unknown",
+    "distinct": false
+   },
+   "extra": {
+    "surfaces": [
+     "gemini_enterprise"
+    ],
+    "project": "act-demo-project-482311",
+    "location": "global"
+   }
+  }
  ]
 }

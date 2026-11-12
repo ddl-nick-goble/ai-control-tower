@@ -1,0 +1,74 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://bank-foundry.services.ai.azure.com/api/projects/credit-ops/agents",
+    "query": {
+      "api-version": "v1",
+      "limit": 100
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "data": [
+        {
+          "object": "agent",
+          "id": "credit-memo-drafter",
+          "name": "credit-memo-drafter",
+          "state": "enabled",
+          "instance_identity": {
+            "principal_id": "1b7313c4-0000-0000-0000-00000000aaaa",
+            "client_id": "cm-client",
+            "status": "active"
+          },
+          "versions": {
+            "latest": {
+              "object": "agent.version",
+              "name": "credit-memo-drafter",
+              "version": "3",
+              "status": "active",
+              "description": "Drafts credit memos",
+              "created_at": 1762300000,
+              "metadata": {},
+              "definition": {
+                "kind": "prompt",
+                "model": "gpt-4.1-credit",
+                "instructions": "Be careful.",
+                "tools": [
+                  {
+                    "type": "mcp",
+                    "server_label": "core-banking",
+                    "server_url": "https://mcp.bank.internal/",
+                    "project_connection_id": "cb-mcp",
+                    "allowed_tools": [
+                      "get_balance"
+                    ],
+                    "require_approval": "never"
+                  },
+                  {
+                    "type": "azure_ai_search",
+                    "azure_ai_search": {
+                      "indexes": [
+                        {
+                          "project_connection_id": "srch",
+                          "index_name": "kyc-docs"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "code_interpreter"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "first_id": "credit-memo-drafter",
+      "last_id": "credit-memo-drafter",
+      "has_more": true
+    }
+  }
+}

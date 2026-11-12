@@ -1,0 +1,63 @@
+{
+  "_note": "ACT-side hints the Google APIs do not carry (owner, tools beyond skills, data scopes, systems, value limits, criteria), keyed by Agent Registry agentId.",
+  "overlay": {
+    "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:122077102645": {
+      "owner": "fraud-analytics@example-bank.com",
+      "data_scopes": [
+        "payments.realtime",
+        "customer.profile"
+      ],
+      "systems": [
+        "PaymentsHub",
+        "FraudEngine"
+      ],
+      "criteria": {
+        "autonomy": "autonomous",
+        "consequence": "blocks_customer_payments",
+        "human_in_loop": false
+      },
+      "value_limits": {
+        "hold_payment": {
+          "amount": 50000,
+          "currency": "USD"
+        }
+      }
+    },
+    "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:401391792873": {
+      "owner": "retail-collections@example-bank.com",
+      "data_scopes": [
+        "loans.delinquency",
+        "customer.contact"
+      ],
+      "systems": [
+        "CollectionsCRM",
+        "SMS-gateway"
+      ],
+      "criteria": {
+        "autonomy": "supervised",
+        "consequence": "customer_communication",
+        "human_in_loop": true
+      }
+    },
+    "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:548145599405": {
+      "owner": "regulatory-reporting@example-bank.com",
+      "data_scopes": [
+        "finance.gl",
+        "regulatory.templates"
+      ],
+      "systems": [
+        "GL",
+        "ReportingHub"
+      ],
+      "criteria": {
+        "autonomy": "assistive",
+        "consequence": "internal_draft",
+        "human_in_loop": true
+      },
+      "identity": {
+        "type": "none",
+        "note": "runs as the default compute service account"
+      }
+    }
+  }
+}

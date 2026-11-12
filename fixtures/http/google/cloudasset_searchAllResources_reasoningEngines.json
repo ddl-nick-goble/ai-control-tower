@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://cloudasset.googleapis.com/v1/organizations/123456:searchAllResources",
+    "query": {
+      "assetTypes": "aiplatform.googleapis.com/ReasoningEngine",
+      "pageSize": 500
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "results": [
+        {
+          "name": "//aiplatform.googleapis.com/projects/bank-ai-prod/locations/us-central1/reasoningEngines/1220771026",
+          "assetType": "aiplatform.googleapis.com/ReasoningEngine",
+          "project": "projects/4417",
+          "location": "us-central1",
+          "displayName": "payments-fraud-screener"
+        }
+      ],
+      "nextPageToken": "cai2"
+    }
+  }
+}

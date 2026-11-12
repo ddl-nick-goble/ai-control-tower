@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://bank-foundry.services.ai.azure.com/api/projects/credit-ops/deployments",
+    "query": {
+      "api-version": "v1"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "value": [
+        {
+          "name": "gpt-4.1-credit",
+          "modelName": "gpt-4.1",
+          "modelVersion": "2025-04-14",
+          "modelPublisher": "OpenAI",
+          "sku": {
+            "name": "GlobalStandard"
+          }
+        }
+      ]
+    }
+  }
+}

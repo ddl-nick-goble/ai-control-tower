@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://cloudresourcemanager.googleapis.com/v3/projects:search",
+    "query": {
+      "query": "state:ACTIVE",
+      "pageToken": "crm2"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "projects": [
+        {
+          "projectId": "trading-ml-prod",
+          "projectNumber": "5528",
+          "displayName": "Trading ML",
+          "parent": "organizations/123456",
+          "state": "ACTIVE"
+        }
+      ]
+    }
+  }
+}

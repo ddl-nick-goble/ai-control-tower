@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://graph.microsoft.com/v1.0/copilot/admin/catalog/packages",
+    "query": {
+      "$top": 1
+    }
+  },
+  "response": {
+    "status": 403,
+    "headers": {},
+    "body": {
+      "error": {
+        "code": "Forbidden",
+        "message": "Agent 365 licence required"
+      }
+    }
+  }
+}

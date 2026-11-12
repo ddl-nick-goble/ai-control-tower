@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://discoveryengine.googleapis.com/v1alpha/projects/bank-ai-prod/locations/global/collections/default_collection/engines/ge-bank/assistants/default_assistant/agents"
+  },
+  "response": {
+    "status": 403,
+    "headers": {},
+    "body": {
+      "error": {
+        "code": 403,
+        "status": "PERMISSION_DENIED",
+        "message": "PERMISSION_DENIED IAM_PERMISSION_DENIED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "IAM_PERMISSION_DENIED",
+            "metadata": {
+              "permission": "discoveryengine.agents.list"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

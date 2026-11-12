@@ -1,0 +1,27 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://agentregistry.googleapis.com/v1/projects/bank-ai-prod/locations/us-central1/agents"
+  },
+  "response": {
+    "status": 403,
+    "headers": {},
+    "body": {
+      "error": {
+        "code": 403,
+        "status": "PERMISSION_DENIED",
+        "message": "PERMISSION_DENIED SERVICE_DISABLED",
+        "details": [
+          {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "SERVICE_DISABLED",
+            "metadata": {
+              "service": "agentregistry.googleapis.com",
+              "activationUrl": "https://console.developers.google.com/apis/api/agentregistry.googleapis.com/overview?project=bank-ai-prod"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

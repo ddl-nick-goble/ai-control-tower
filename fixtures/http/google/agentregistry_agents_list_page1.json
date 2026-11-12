@@ -1,0 +1,49 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://agentregistry.googleapis.com/v1/projects/bank-ai-prod/locations/us-central1/agents",
+    "query": {
+      "pageSize": 100
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "agents": [
+        {
+          "name": "projects/bank-ai-prod/locations/us-central1/agents/agt-7f3",
+          "agentId": "urn:agent:projects-4417:projects:4417:locations:us-central1:aiplatform:reasoningEngines:1220771026",
+          "displayName": "payments-fraud-screener",
+          "description": "Scores real-time payments",
+          "version": "1.4.0",
+          "location": "us-central1",
+          "updateTime": "2026-11-01T08:12:09Z",
+          "createTime": "2026-10-02T09:00:00Z",
+          "protocols": [
+            {
+              "type": "A2A_AGENT",
+              "interfaces": [
+                {
+                  "url": "https://fraud.example.com/a2a"
+                }
+              ]
+            }
+          ],
+          "skills": [
+            {
+              "id": "hold_payment",
+              "name": "Hold payment"
+            }
+          ],
+          "attributes": {
+            "agentregistry.googleapis.com/system/RuntimeReference": {
+              "uri": "//aiplatform.googleapis.com/projects/bank-ai-prod/locations/us-central1/reasoningEngines/1220771026"
+            }
+          }
+        }
+      ],
+      "nextPageToken": "ar2"
+    }
+  }
+}

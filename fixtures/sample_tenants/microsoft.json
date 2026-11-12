@@ -63,5 +63,50 @@
    "children": [],
    "agents": 2
   }
+ ],
+ "agents": [
+  {
+   "native_id": "/subscriptions/0f3c1e7a/resourceGroups/rg-ai/providers/Microsoft.CognitiveServices/accounts/foundry-prod/projects/kyc/agents/kyc-doc-checker",
+   "name": "kyc-doc-checker",
+   "description": "Checks KYC documents for completeness.",
+   "version": "2",
+   "owner": "unknown",
+   "status": "enabled/active",
+   "provider": "OpenAI",
+   "tools": [
+    "azure_ai_search"
+   ],
+   "identity": {
+    "type": "entra_agent_id",
+    "principal": "unknown",
+    "distinct": true
+   },
+   "extra": {
+    "source": [
+     "foundry",
+     "entra_agent_id"
+    ]
+   }
+  },
+  {
+   "native_id": "entra:1b7313c4-0000-0000-0000-00000000cccc",
+   "name": "treasury-sweeper",
+   "description": "",
+   "version": "1",
+   "owner": "unknown",
+   "status": "DISABLED",
+   "provider": "unknown",
+   "tools": [],
+   "identity": {
+    "type": "entra_agent_id",
+    "principal": "1b7313c4-0000-0000-0000-00000000cccc",
+    "distinct": true
+   },
+   "extra": {
+    "source": [
+     "entra_agent_id"
+    ]
+   }
+  }
  ]
 }

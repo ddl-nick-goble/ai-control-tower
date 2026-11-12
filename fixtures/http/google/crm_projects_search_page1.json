@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://cloudresourcemanager.googleapis.com/v3/projects:search",
+    "query": {
+      "query": "state:ACTIVE"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {},
+    "body": {
+      "projects": [
+        {
+          "projectId": "bank-ai-prod",
+          "projectNumber": "4417",
+          "displayName": "Bank AI Prod",
+          "parent": "organizations/123456",
+          "state": "ACTIVE"
+        }
+      ],
+      "nextPageToken": "crm2"
+    }
+  }
+}
