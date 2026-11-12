@@ -360,46 +360,11 @@ The Fallback link on step 2 reads "Just sign in instead". It opens a popup with 
 
 Each fixture is stored under `fixtures/http/microsoft/` with its request, status, headers and redacted body.
 
-- **Entra**
-  - `entra/token-fic-ok.json`
-  - `entra/token-aadsts70021.json`
-  - `entra/token-aadsts700213.json`
-  - `entra/token-aadsts700024.json`
-  - `entra/token-aadsts65001.json` (delegated)
-- **ARM**
-  - `arm/subscriptions-page1.json` (with `nextLink`), `arm/subscriptions-page2.json`
-  - `arm/tenants.json`
-  - `arm/arg-foundry-accounts-p1.json` (with `$skipToken`), `arm/arg-foundry-accounts-p2.json`
-  - `arm/arg-429.json` (quota headers)
-  - `arm/projects-list.json`
-  - `arm/applications-list.json`
-  - `arm/connections-list.json`
-  - `arm/roleassignments-assignedto.json`
-  - `arm/authorizationfailed-403.json`
-- **Foundry**
-  - `foundry/agents-p1.json` (`has_more:true`), `foundry/agents-p2.json`
-  - `foundry/agent-prompt.json` (mcp, openapi, search and a2a tools)
-  - `foundry/agent-hosted.json` (env vars, to prove redaction)
-  - `foundry/agent-workflow.json`
-  - `foundry/agent-versions.json`
-  - `foundry/assistants-classic.json` (with `connected_agent`)
-  - `foundry/deployments.json`
-  - `foundry/connections.json`
-  - `foundry/403-missing-dataaction.json`
-  - `foundry/403-private-network.json`
-  - `foundry/400-api-version.json`
-  - `foundry/429.json`
-- **Graph**
-  - `graph/agentidentities-p1.json` (`@odata.nextLink`), `graph/agentidentities-p2.json`
-  - `graph/agentidentity-owners.json`
-  - `graph/agentidentity-sponsors.json`
-  - `graph/packages-list.json` (the **real** shape; replaces `fixtures/microsoft/list-packages.json`)
-  - `graph/package-detail.json`
-  - `graph/packages-403-nolicence.json`
-  - `graph/403-request-denied.json`
-  - `graph/429-retry-after.json`
-- **Traces:** `loganalytics/invoke-agent-aggregate.json`
-- **Optional:** `powerplatform/inventory-copilotstudio.json`
+- **entra/**: `token-fic-ok`, `token-aadsts70021`, `token-aadsts700213`, `token-aadsts700024`, `token-aadsts65001` (delegated).
+- **arm/**: `subscriptions-page1` (with `nextLink`) and `-page2`, `tenants`, `arg-foundry-accounts-p1` (with `$skipToken`) and `-p2`, `arg-429` (quota headers), `projects-list`, `applications-list`, `connections-list`, `roleassignments-assignedto`, `authorizationfailed-403`.
+- **foundry/**: `agents-p1` (`has_more:true`) and `-p2`, `agent-prompt` (mcp, openapi, search and a2a tools), `agent-hosted` (env vars, to prove redaction), `agent-workflow`, `agent-versions`, `assistants-classic` (with `connected_agent`), `deployments`, `connections`, `403-missing-dataaction`, `403-private-network`, `400-api-version`, `429`.
+- **graph/**: `agentidentities-p1` (`@odata.nextLink`) and `-p2`, `agentidentity-owners`, `agentidentity-sponsors`, `packages-list` (the **real** shape; replaces `fixtures/microsoft/list-packages.json`), `package-detail`, `packages-403-nolicence`, `403-request-denied`, `429-retry-after`.
+- **Traces:** `loganalytics/invoke-agent-aggregate`. **Optional:** `powerplatform/inventory-copilotstudio`.
 
 ---
 
@@ -442,36 +407,11 @@ Each fixture is stored under `fixtures/http/microsoft/` with its request, status
 
 ### Sources (all accessed 2026-11-12)
 
-- Foundry REST reference (base URL, `api-version=v1`, `Foundry-Features`, `https://ai.azure.com/.default`): https://ai.azure.com/api-reference
-- List agents: https://ai.azure.com/api-reference/agents/list-agents/
-- Get agent: https://ai.azure.com/api-reference/agents/get-agent/
-- Get agent version: https://ai.azure.com/api-reference/agent-versions/get-agent-version/
-- List agent versions: https://ai.azure.com/api-reference/agent-versions/list-agent-versions/
-- Tool schemas (generate agent): https://ai.azure.com/api-reference/llm/agents/generate-agent.md
-- Agent Applications list (ARM): https://learn.microsoft.com/en-us/rest/api/microsoftfoundry/accountmanagement/agent-applications/list?view=rest-microsoftfoundry-accountmanagement-2026-01-15-preview
-- Projects list (ARM): https://learn.microsoft.com/en-us/rest/api/aifoundry/accountmanagement/projects/list
-- Foundry Control Plane, manage agents: https://learn.microsoft.com/en-us/azure/foundry/control-plane/how-to-manage-agents
-- Foundry RBAC: https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry
-- Built-in AI roles: https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/ai-machine-learning
-- AI permissions (data actions): https://learn.microsoft.com/en-us/azure/role-based-access-control/permissions/ai-machine-learning
-- Foundry agent identity: https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/agent-identity
-- Agent tracing: https://learn.microsoft.com/en-us/azure/foundry/observability/concepts/trace-agent-concept
-- Entra Agent ID Graph overview: https://learn.microsoft.com/en-us/graph/api/resources/agentid-platform-overview
-- agentIdentity resource: https://learn.microsoft.com/en-us/graph/api/resources/agentidentity?view=graph-rest-1.0
-- List agentIdentity: https://learn.microsoft.com/en-us/graph/api/agentidentity-list?view=graph-rest-1.0
-- List Copilot packages: https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/admin-settings/package/copilotpackages-list
-- copilotPackage resource: https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/admin-settings/package/resources/copilotpackage
-- Get package detail: https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/admin-settings/package/copilotpackagedetail-get
-- MC1297981 (agentRegistry retirement): https://mc.merill.net/message/MC1297981
-- MC1173195 (agent and app management APIs): https://mc.merill.net/message/MC1173195
-- Topedia (licence, admin role): https://blog.topedia.com/posts/retirement-of-the-agentregistry-api-and-new-licensing-requirements-for-the-agent-365-graph-api
-- Workload identity federation considerations: https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-considerations
-- Flexible FIC (preview): https://learn.microsoft.com/entra/workload-id/workload-identities-flexible-federated-identity-credentials
-- Graph Bicep GA: https://devblogs.microsoft.com/identity/bicep-templates-for-microsoft-entra-id-resources-is-ga/
-- Graph Bicep `appRoleAssignedTo`: https://learn.microsoft.com/en-us/graph/templates/reference/approleassignedto
-- Deploy to Azure button: https://learn.microsoft.com/azure/azure-resource-manager/templates/deploy-to-azure-button
-- Resource Graph supported tables: https://learn.microsoft.com/en-us/azure/governance/resource-graph/reference/supported-tables-resources
-- Power Platform inventory API: https://learn.microsoft.com/power-platform/admin/inventory-api
-- ServiceNow AI Control Tower, APIs used by its Microsoft connector (competitor reference): https://www.servicenow.com/docs/r/intelligent-experiences/ai-control-tower/apis-used-by-amazon-connector.html
-- Foundry MCP Server, available tools: https://learn.microsoft.com/azure/foundry/mcp/available-tools
-- Classic agents retirement: https://learn.microsoft.com/en-my/Azure/foundry/how-to/navigate-from-classic
+- Foundry data plane: [REST reference](https://ai.azure.com/api-reference) (base URL, `api-version=v1`, `Foundry-Features`, `https://ai.azure.com/.default`), [List agents](https://ai.azure.com/api-reference/agents/list-agents/), [Get agent](https://ai.azure.com/api-reference/agents/get-agent/), [Get agent version](https://ai.azure.com/api-reference/agent-versions/get-agent-version/), [List agent versions](https://ai.azure.com/api-reference/agent-versions/list-agent-versions/), [Tool schemas (generate agent)](https://ai.azure.com/api-reference/llm/agents/generate-agent.md).
+- Foundry ARM: [Agent Applications list](https://learn.microsoft.com/en-us/rest/api/microsoftfoundry/accountmanagement/agent-applications/list?view=rest-microsoftfoundry-accountmanagement-2026-01-15-preview), [Projects list](https://learn.microsoft.com/en-us/rest/api/aifoundry/accountmanagement/projects/list).
+- Foundry concepts: [Control Plane, manage agents](https://learn.microsoft.com/en-us/azure/foundry/control-plane/how-to-manage-agents), [RBAC](https://learn.microsoft.com/en-us/azure/foundry/concepts/rbac-foundry), [Agent identity](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/agent-identity), [Agent tracing](https://learn.microsoft.com/en-us/azure/foundry/observability/concepts/trace-agent-concept), [Foundry MCP Server tools](https://learn.microsoft.com/azure/foundry/mcp/available-tools), [Classic agents retirement](https://learn.microsoft.com/en-my/Azure/foundry/how-to/navigate-from-classic).
+- Azure RBAC: [Built-in AI roles](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/ai-machine-learning), [AI permissions (data actions)](https://learn.microsoft.com/en-us/azure/role-based-access-control/permissions/ai-machine-learning).
+- Entra Agent ID (Graph): [Overview](https://learn.microsoft.com/en-us/graph/api/resources/agentid-platform-overview), [agentIdentity resource](https://learn.microsoft.com/en-us/graph/api/resources/agentidentity?view=graph-rest-1.0), [List agentIdentity](https://learn.microsoft.com/en-us/graph/api/agentidentity-list?view=graph-rest-1.0).
+- Agent 365 catalog: [List packages](https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/admin-settings/package/copilotpackages-list), [copilotPackage resource](https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/admin-settings/package/resources/copilotpackage), [Package detail](https://learn.microsoft.com/en-us/microsoft-365-copilot/extensibility/api/admin-settings/package/copilotpackagedetail-get), [MC1297981 (agentRegistry retirement)](https://mc.merill.net/message/MC1297981), [MC1173195](https://mc.merill.net/message/MC1173195), [Topedia (licence, admin role)](https://blog.topedia.com/posts/retirement-of-the-agentregistry-api-and-new-licensing-requirements-for-the-agent-365-graph-api).
+- Federation and provisioning: [WIF considerations](https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-considerations), [Flexible FIC (preview)](https://learn.microsoft.com/entra/workload-id/workload-identities-flexible-federated-identity-credentials), [Graph Bicep GA](https://devblogs.microsoft.com/identity/bicep-templates-for-microsoft-entra-id-resources-is-ga/), [Graph Bicep appRoleAssignedTo](https://learn.microsoft.com/en-us/graph/templates/reference/approleassignedto), [Deploy to Azure button](https://learn.microsoft.com/azure/azure-resource-manager/templates/deploy-to-azure-button), [Resource Graph supported tables](https://learn.microsoft.com/en-us/azure/governance/resource-graph/reference/supported-tables-resources).
+- Copilot Studio and competitors: [Power Platform inventory API](https://learn.microsoft.com/power-platform/admin/inventory-api), [ServiceNow AI Control Tower, Microsoft connector APIs](https://www.servicenow.com/docs/r/intelligent-experiences/ai-control-tower/apis-used-by-amazon-connector.html).
