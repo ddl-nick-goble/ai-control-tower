@@ -1,3 +1,4 @@
+import re
 import os
 import pathlib
 
@@ -41,7 +42,7 @@ def pytest_runtest_makereport(item, call):
         if page is not None:
             try:
                 _run_dir().mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(_run_dir() / f"{item.originalname}-FAILED.png"))
+                page.screenshot(path=str(_run_dir() / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', item.name)}-FAILED.png"))
             except Exception:
                 pass  # page already closed
 

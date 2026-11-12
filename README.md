@@ -63,6 +63,10 @@ Browser suite (`tests/e2e`, serial on a 1-core machine; needs Playwright browser
 - Screenshots: regression runs write a viewport PNG only for a failed test (`<test>-FAILED.png`). Set `QA_SHOTS=1` to
   also write the `shot("then")` PNGs; `QA_RUN_DIR=<dir>` chooses the folder (default `test-results/`).
   `shot(step, full_page=True)` takes a full-page one.
+- `E2E_REQUIRE_PROXY=1` fails the run if the Domino proxy URL (`APP_URL`) is not reachable; without it the suite prints
+  one `[e2e] proxy URL ... falling back to http://localhost:PORT/` line and uses localhost.
+- Parallel runs: `pytest-xdist` is installed (environment image) but runs here use `-p no:xdist`. The app registry is not
+  xdist-safe yet, so parallel runs are not supported; they would also need a Medium/Large hardware tier.
 - No `wait_for_timeout` / `time.sleep` in `test_*.py` (a guard test fails if one is added); use `expect(...)`, the helpers
   in `tests/e2e/_waits.py`, or `_server.wait_until`.
 

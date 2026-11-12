@@ -17,7 +17,7 @@ import re
 import pytest
 from playwright.sync_api import expect
 
-from _waits import round_trip, settle, wait_true
+from _waits import round_trip, settle, stays_true, wait_true
 
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent.parent
@@ -274,7 +274,7 @@ def test_r7_busy_and_no_double_submit(page, shot, card_urls):
     page.keyboard.press("Enter")
     settle(page)
     round_trip(page)  # any second submission would have reached the route by now
-    assert len(held) == 1, f"{len(held)} submissions while busy"
+    assert stays_true(page, lambda: len(held) == 1), f"{len(held)} submissions while busy"  # holds for >= 600 ms
     shot("then")
     held[0].continue_()  # release the held request
     expect(page).to_have_url(re.compile(r"#/agents/"), timeout=20000)

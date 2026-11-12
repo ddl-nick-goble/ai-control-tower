@@ -144,7 +144,12 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
         except AssertionError:
             app.stop()
             raise
-        url = url if (proc.poll() is None and _health(url, timeout=3)) else local
+        if proc.poll() is None and not _health(url, timeout=3):
+            if os.environ.get("E2E_REQUIRE_PROXY") == "1":
+                app.stop()
+                raise AssertionError(f"E2E_REQUIRE_PROXY=1 but the proxy URL {url} is not reachable")
+            print(f"[e2e] proxy URL {url} not reachable; falling back to {local}", file=sys.stderr, flush=True)
+            url = local
         if proc.poll() is not None:
             app.stop()
             if port is None:
@@ -204,7 +209,7 @@ class AppRegistry:
             app = start_app(tmp, seed=seed, demo=demo, external=external, extra_env=extra_env, strip_env=strip_env)
             self.apps[key] = app
             self.starts.append(key)
-            if not demo and app.db_path.exists():
+            if app.db_path.exists():
                 self.snap[key] = tmp / "snapshot.db"
                 copy_db(app.db_path, self.snap[key])
         return app
