@@ -447,3 +447,4 @@ Shared files nobody touches in PB: adapters/base.py, backend/normalize.py, jobs/
   - Touches: frontend/src/pages/Connections.jsx (replace placeholder), new frontend/src/pages/Connect*.jsx, new frontend/src/components/connect/*, new frontend/src/connect.css (po- prefix; new tokens per design spec section 6 go here, not in design.css), frontend/src/main.jsx (routes), frontend/src/pages/Register.jsx (route path only, if needed), frontend/src/api.js, frontend/dist. Builder: builder. QA: ui-tester, visual-reviewer (design source build/design/provider-onboarding.md + the .html prototype), code-reviewer. Branch task/PO-5.
 - PO-3a post-merge (c394b05) 852 pass / 3 skip. Worktree removed. PO-3a DONE.
 - PB end-of-wave on main: code 941 pass / 3 skip; e2e 228 pass (2:36). PO-3b, PO-3c worktrees removed. Wave PB DONE. Starting PC (PO-4, PO-5).
+- PO-4 test baseline db0e1d9 (18 red). Builder running.
