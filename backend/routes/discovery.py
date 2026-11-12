@@ -137,7 +137,7 @@ def sync_now(cid: str, _user: User = Depends(require_user)):
     sample = bool(_connection(cid).sample)
     if sample or discovery.inline():  # a sample sync is in-process and quick: it finishes before the answer, never listed as running
         return {"scan_id": discovery.run_sync(cid)}
-    sid = discovery.create_scan(cid, None, "sync", sample)
+    sid = discovery.create_scan(cid, None, "manual_sync", sample)
     threading.Thread(target=discovery.run_scan, args=(sid, db.engine), daemon=True).start()
     return {"scan_id": sid}
 

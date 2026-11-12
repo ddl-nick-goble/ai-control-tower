@@ -113,11 +113,11 @@ def start_scan(cid, user):
     return {"scan_id": sid, "sample": False, "job_id": job["job_id"], "job_url": job["job_url"]}
 
 
-def run_sync(connection_id):
-    """The scheduled-sync entry point: run a scan, never import. -> the scan id."""
+def run_sync(connection_id, manual=True):
+    """Run a sync: a scan that never imports. manual=False is the saved schedule's run. -> the scan id."""
     with db.engine.connect() as cx:
         row = cx.execute(select(db.connections).where(db.connections.c.id == connection_id)).first()
-    sid = create_scan(connection_id, None, "sync", bool(row and row.sample))
+    sid = create_scan(connection_id, None, "manual_sync" if manual else "sync", bool(row and row.sample))
     run_scan(sid)
     return sid
 
@@ -169,6 +169,11 @@ def _run_scan(sid, eng):
     progress = [{"scope": s or "all", "found": 0, "errors": [], "state": "queued"} for s in scopes]
     set_scan(sid, eng, progress=copy.deepcopy(progress))
     found = {}  # native_id -> SourceAgent
+    hidden = set()  # sample fleet fixtures not yet in the fleet: never shown as New
+    if fleet:
+        with eng.connect() as cx:
+            have = {r.native_id for r in cx.execute(select(db.agents.c.native_id))}
+        hidden = fleet - have
     for p, scope in zip(progress, scopes):
         p["state"] = "running"
         set_scan(sid, eng, progress=copy.deepcopy(progress))
@@ -181,20 +186,24 @@ def _run_scan(sid, eng):
                 set_scan(sid, eng, progress=copy.deepcopy(progress))
         try:
             agents = adapter.discover(cfg, creds, [scope] if scope else [], progress=tick)
-            p["found"] = len(agents)
+            # An agent counts once, under the first scope that returns it, so scope counts add up to the total found.
+            if conn.sample and len(scopes) > 1:
+                # The sample adapter returns the whole tenant for any scope; give each agent one scope, spread evenly.
+                shown = sorted((a for a in agents if a.native_id not in hidden), key=lambda a: a.native_id)
+                agents = [a for j, a in enumerate(shown) if j % len(scopes) == scopes.index(scope)]
+            fresh = {}
             for sa in agents:
-                found.setdefault(sa.native_id, sa)
+                if sa.native_id not in found and sa.native_id not in hidden:
+                    fresh.setdefault(sa.native_id, sa)
+            found.update(fresh)
+            p["found"] = len(fresh)
             p["state"] = "done"
         except Exception as e:  # noqa: BLE001
             p["errors"].append(str(e)[:300])
             p["state"] = "failed"
         set_scan(sid, eng, progress=copy.deepcopy(progress))
-    if fleet:
-        with eng.connect() as cx:
-            have = {r.native_id for r in cx.execute(select(db.agents.c.native_id))}
-        found = {k: v for k, v in found.items() if k not in fleet or k in have}
     failed = sum(1 for p in progress if p["errors"])
-    counts = stage(sid, scan.connection_id, found, bool(conn.sample), scan.kind == "sync", complete=not failed, eng=eng)
+    counts = stage(sid, scan.connection_id, found, bool(conn.sample), scan.kind in ("sync", "manual_sync"), complete=not failed, eng=eng)
     state = "failed" if failed == len(progress) else "partial" if failed else "done"
     ts = now_iso()
     with eng.begin() as cx:

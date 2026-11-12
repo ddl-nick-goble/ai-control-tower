@@ -222,7 +222,7 @@ export default function ConnectionDetail() {
                 return (
                   <tr key={s.scan_id}>
                     <td><Link to={`/connections/${connId}/scans/${s.scan_id}`} title={fmtTs(s.started_at)}>{relTime(s.started_at)}</Link></td>
-                    <td>{s.kind === 'sync' ? 'Scheduled sync' : 'Manual scan'}{s.sample ? ' (sample)' : ''}</td>
+                    <td>{s.kind === 'sync' ? 'Scheduled sync' : s.kind === 'manual_sync' ? 'Sync now' : 'Manual scan'}{s.sample ? ' (sample)' : ''}</td>
                     <td>{k.found ?? '—'}</td><td>{k.new ?? '—'}</td><td>{k.changed ?? '—'}</td><td>{k.missing ?? '—'}</td>
                     <td><StatusPill kind={res.kind}>{res.t}</StatusPill>{s.job_url && <> <a href={s.job_url} target="_blank" rel="noreferrer">Job{s.job_id ? ` #${s.job_id}` : ''}<span className="ds-sr"> (opens in a new tab)</span></a></>}</td>
                   </tr>

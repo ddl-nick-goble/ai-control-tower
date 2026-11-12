@@ -246,7 +246,7 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-sstate { color: var(--ds-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; font-variant-numeric: tabular-nums }
 .po-sstate.is-skip { color: var(--ds-warn) }
 .po-feed { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto }
-.po-feed li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 20px; border-top: 1px solid var(--ds-line); animation: po-in var(--ds-dur-2) var(--ds-ease) }
+.po-feed li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding: 10px 20px; border-top: 1px solid var(--ds-line); animation: po-in var(--ds-dur-2) var(--ds-ease) both }
 .po-feed li:first-child { border-top: 0 }
 .po-feed li.po-feed-empty { display: block; animation: none; padding: 20px }
 .po-feed .po-fname { font-weight: 600; color: var(--ds-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
@@ -331,6 +331,8 @@ details.po-more pre { margin: 8px 0 0; padding: 12px; max-height: 220px; overflo
 .po-empty h3 { margin: 0 0 4px; font-size: 16px; color: var(--ds-ink) }
 .po-empty p { margin: 0 0 12px }
 .po-rt tr.po-empty-row td { height: auto }
+/* the bar is 72px tall: keep a 16px gap so an expanded Why panel's last row scrolls fully clear of it */
+.po-page:has(.po-footer-sticky) { padding-bottom: 88px }
 .po-footer-sticky { position: sticky; bottom: 0; z-index: 5; margin-top: var(--ds-s2); box-shadow: 0 -8px 8px -8px rgba(16, 24, 40, .12) }
 .po-footer-sticky .po-footer-l { flex: 1 1 320px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px }
 .po-footer-sticky .po-footer-l strong { color: var(--ds-ink); font-variant-numeric: tabular-nums }
