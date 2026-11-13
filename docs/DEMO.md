@@ -7,8 +7,16 @@ classifier endpoint key. Every stand-in is labelled in the UI (a banner on every
 
 - Defaults, filled only where a variable is unset: `ACT_LLM_PROVIDER=mock`,
   `ACT_DOMINO_LOCAL_AGENTS=config/local_agents.json`, `RECON_AGENT_ID=local-recon-agent`,
-  `ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost`. `ACT_DB` defaults to a separate demo database
-  (`/mnt/data/ai-control-tower/act/demo.db` when that folder exists, else `.act-demo/act.db` in the repo), never the shared `act.db`.
+  `ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost`. `ACT_DB` defaults to a separate demo database, never the shared `act.db`:
+  `<dataset dir>/demo.db` when the dataset folder is on a local disk, else a pod-local file
+  `<tmpdir>/act-demo/demo.db` (reseeded on first use) when the dataset folder is on a network filesystem such as NFS.
+  Set `ACT_DEMO_DB_PATH` to choose the file yourself.
+- The demo database is private to the App's pod. A Domino Job cannot see it, so while demo mode is on only the sample
+  connection can be scanned (it runs inside the App). Scanning a live connection is refused with "Turn demo mode off to
+  scan a live connection."
+- While the App opens its database (it can wait up to `ACT_DB_LOCK_WAIT`, default 150 s, for a stale NFS lock), it
+  already answers `GET /api/health` with `{"status": "starting"}`; other `/api` routes return 503 "Database is starting"
+  until it is ready, and a final failure shows as `"status": "error"` in `/api/health`.
 - On startup an empty database is seeded in-process: the 12 fixture agents including recon-agent, the weekend-drift run with one
   open `scope_drift` finding, and a validation record from the mock judge. Restarting does not duplicate anything.
 - Stand-ins: simulated Governance (bundle ids start with `demo-`, both policies on recon-agent); a deterministic local

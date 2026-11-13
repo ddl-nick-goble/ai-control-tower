@@ -5,6 +5,7 @@ import logging
 import os
 import pkgutil
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,20 +24,48 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "frontend" / "dist"
 
 
+class DbState:
+    """Opening the DB can wait minutes for an NFS lock lease; that runs in a background thread so the App
+    answers /api/health at once (Domino's App start must not block)."""
+
+    def __init__(self):
+        self.status = "starting"  # starting | ready | error
+        self.error = None
+        self.done = threading.Event()
+
+
+def _open_db(app_, state):
+    try:
+        db.init_db()
+        app_.state.demo_guard = None
+        try:
+            if demo.env_enabled():
+                demo.warn_live_switches()
+                demo.ensure_seeded()
+            else:
+                settings.apply_demo_setting()  # the switch saved from the Settings page
+        except demo.DemoGuardError as e:
+            app_.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
+        db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
+        state.status = "ready"
+    except Exception as e:  # noqa: BLE001
+        log.error("database could not be opened; the App stays up and reports it in /api/health: %s", e,
+                  exc_info=True)
+        state.error = str(e)
+        state.status = "error"
+    finally:
+        state.done.set()
+
+
 @asynccontextmanager
 async def lifespan(_app):
     llm.warn_if_mock()
-    db.init_db()
     _app.state.demo_guard = None
-    try:
-        if demo.env_enabled():
-            demo.warn_live_switches()
-            await run_in_threadpool(demo.ensure_seeded)
-        else:
-            await run_in_threadpool(settings.apply_demo_setting)  # the switch saved from the Settings page
-    except demo.DemoGuardError as e:
-        _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
-    db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
+    state = _app.state.db_state = DbState()
+    threading.Thread(target=_open_db, args=(_app, state), daemon=True, name="act-db-open").start()
+    # A healthy DB opens in milliseconds: give it a short grace so the first requests see it ready.
+    grace = float(os.environ.get("ACT_DB_STARTUP_GRACE", "5") or 5)
+    await run_in_threadpool(state.done.wait, grace)
     try:
         yield
     finally:
@@ -60,6 +89,12 @@ class DemoSwitchGate:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["path"].endswith("/api/health"):
             return await self.app(scope, receive, send)
+        st = getattr(app.state, "db_state", None)
+        if st is not None and st.status != "ready" and (scope["path"].startswith(("/api/", "/v1/"))):
+            msg = ("Database is starting" if st.status == "starting"
+                   else "Database could not be opened. See /api/health and the App logs.")
+            resp = JSONResponse({"detail": msg}, status_code=503, headers={"Retry-After": "5"})
+            return await resp(scope, receive, send)
         deadline = time.monotonic() + 30
         while not demo.enter():  # atomic: refuses while a switch runs, else counts this request
             if time.monotonic() > deadline:
@@ -101,9 +136,13 @@ async def write_guard(request, call_next):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
+    st = getattr(app.state, "db_state", None)
+    db_status = st.status if st else "ready"
+    body = {"status": "ok" if db_status == "ready" else db_status, "db": db_status,
+            "db_error": st.error if st and st.status == "error" else None, "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
             "llm_provider": demo.effective_llm_provider(),
             "demo_guard": getattr(app.state, "demo_guard", None) if demo.enabled() else None}
+    return JSONResponse(body, status_code=503 if db_status == "error" else 200)
 
 
 for _m in pkgutil.iter_modules(routes.__path__):
