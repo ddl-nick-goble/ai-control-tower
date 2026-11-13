@@ -585,3 +585,4 @@ ACs:
 - DB1-4 One-time (Nick approves; App stopped or idle): back up act.db, convert act.db and demo.db to DELETE mode, and remove the stale -wal/-shm. No data loss: row counts match before and after.
 Touches: backend/db.py, backend/demo.py, tests/e2e conftest (ui-tester), scripts/restore_db.py. Builder: builder; DB1-4 via domino-debug (sonnet) with Nick's OK. Runs after SET-1 merges (no file overlap, but both need the e2e harness).
 - SET-1 r2 7207240 (review fixes) + r3 87cab1a (open-mode intro text); ui 6209799: ST-1..4 pass, 983 code pass / 3 skip, e2e 281 pass + 5 known DB-1 demo-switch failures (same on main). Visual pass. MERGED 59e9b45; post-merge code 983 pass. Worktree removed. ST-5 republish (domino-deploy, sonnet) running.
+- ST-5 BLOCKED: App v2 (5d2090d) fails at startup, act.db locked on NFS (stale 0-byte -wal + -shm, 16:18). App down; v1 stopped. Waiting on Nick's OK to back up and move the stale files aside, then restart v2. See STATUS.md.
