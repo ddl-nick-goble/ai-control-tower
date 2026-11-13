@@ -521,6 +521,8 @@ Checked live 2026-11-13: the issuer https://se-demo.domino.tech/auth/realms/Domi
 - SF0-3 The worksheet also grants what SF-1..SF-4 need, with placeholders filled from what the user picks (or ALL in a database): MONITOR on agents, USAGE on the agent and the warehouse to call it, USAGE/REFERENCES on semantic views and functions, SNOWFLAKE.CORTEX_USER, USAGE_VIEWER (already there), and the AI-observability reader role. Re-running is safe (IF NOT EXISTS; CREATE OR REPLACE only on ACT_SVC).
 - SF0-4 After "Finish in ACT", Verify runs SELECT CURRENT_USER(), SHOW AGENTS, and one readable check per source (usage history, observability); each failure names the GRANT that fixes it. The connection then scans and finds MARKET_DATA_AGENT with no further input.
 - SF0-5 Live (Nick): one worksheet run as ACCOUNTADMIN in KMA35258, one click on the result link, and the connection is green.
+- SF0-6 The account host is built with `_` replaced by `-` (DOMINODATA_PARTNER: hvmtatk-dominodata-partner.snowflakecomputing.com); the Finish link's account value is normalized the same way.
+- SF0-7 A connection can be finished without the worksheet's return link when the worksheet was run separately (Nick's Snowflake agent path, build/handoff/snowflake-agent-brief.md): enter the account identifier, then Verify.
 Touches: backend/connections/artifacts.py, templates/provisioning/snowflake.sql, backend/connections/federation.py (claims reader), the Snowflake connect step in the frontend, dist. QA: test-author, ui-tester, code-reviewer.
 
 ### SF-1 Deep discovery: what each agent can reach (builder)
