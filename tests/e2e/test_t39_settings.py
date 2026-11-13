@@ -210,7 +210,7 @@ def test_st5_demo_switch_confirm_and_live_banner(page, shot, owner):
     expect(page.get_by_test_id("demo-banner")).to_have_count(0)
     sw.click()
     page.get_by_role("button", name="Confirm").click()
-    expect(page.get_by_test_id("demo-banner")).to_be_visible(timeout=15000)
+    expect(page.get_by_test_id("demo-banner")).to_be_visible(timeout=60000)
     expect(sw).to_have_attribute("aria-checked", "true")
     assert page.evaluate("window.__no_reload") == 42, "page was reloaded"
     shot("then-on")

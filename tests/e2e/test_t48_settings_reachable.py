@@ -145,7 +145,7 @@ def test_sr3_demo_card_first_and_confirm_off(page, shot, app_w):
     try:
         sw.click()
         page.get_by_role("button", name="Confirm").click()
-        expect(sw).to_have_attribute("aria-checked", "true", timeout=15000)
+        expect(sw).to_have_attribute("aria-checked", "true", timeout=60000)
         sw.click()
         dlg = page.get_by_role("dialog").or_(page.get_by_role("alertdialog"))
         expect(dlg.first).to_be_visible()

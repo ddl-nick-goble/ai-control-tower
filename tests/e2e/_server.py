@@ -106,7 +106,10 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
     db_path = tmp / "act.db"
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "HOST": "0.0.0.0", "ACT_DB": str(db_path),
                 "ACT_DEMO_DB_PATH": str(tmp / "demo.db"),
-                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev")})
+                "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev"),
+                # DB-1: test apps never track to the workspace MLflow proxy (demo seeding uploads many runs/traces to it,
+                # ~1s+ each, which times out the demo-switch tests and pollutes the real experiment); a tmp file store.
+                "MLFLOW_TRACKING_URI": f"file://{tmp / 'mlruns'}"})
     if external:
         env.update({"ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost", "ACT_TRUSTED_JWKS_PATH": str(JWKS)})
     if demo:
