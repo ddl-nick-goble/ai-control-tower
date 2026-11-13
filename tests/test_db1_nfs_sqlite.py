@@ -190,10 +190,12 @@ def test_ac_db1_3_init_db_retries_through_a_lock(db, clock, monkeypatch, tmp_pat
 
 def test_ac_db1_4_zero_byte_wal_is_renamed_with_warning(db, clock, monkeypatch, caplog, tmp_path):
     p = tmp_path / "act.db"
-    _make_db(p, "DELETE")
     wal, shm = tmp_path / "act.db-wal", tmp_path / "act.db-shm"
+    # WAL header on a (mocked) network FS, 0-byte -wal, exclusive lock fails
+    _make_db(p, "WAL")
     wal.write_bytes(b"")
     shm.write_bytes(b"\0" * 32768)
+    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
     monkeypatch.setenv("ACT_DB_LOCK_WAIT", "20")
     _locked_connect(monkeypatch, 1)
     caplog.set_level(logging.INFO)
