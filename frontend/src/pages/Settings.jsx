@@ -440,7 +440,7 @@ export default function Settings() {
       </>
     )
   }
-  const who = me && me.user ? (me.via === 'workspace' ? `Signed in as ${me.user} (workspace)` : `Signed in as ${me.user}`) : null
+  const who = me && me.via === 'anonymous' ? 'Settings are open to anyone who can reach this app.' : me && me.user ? (me.via === 'workspace' ? `Signed in as ${me.user} (workspace)` : `Signed in as ${me.user}`) : null
   return (
     <div className="ds-page ds-container" data-testid="settings-page">
       <PageHeader title="Settings" description="Connections, credentials and access for this Control Tower. Changes apply within seconds, with no restart." />
