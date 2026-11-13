@@ -67,7 +67,14 @@ def enabled() -> bool:
 
 def default_db_path() -> str:
     """A separate demo DB, never the shared act.db."""
+    override = (os.environ.get("ACT_DEMO_DB_PATH") or "").strip()
+    if override:
+        return override
     if DATASET_DIR.is_dir():
+        from . import db
+        if db.is_network_fs(DATASET_DIR):  # pod-local: the App, workspace and Jobs never share the demo DB
+            import tempfile
+            return str(Path(tempfile.gettempdir()) / "act-demo" / "demo.db")
         return str(DATASET_DIR / "demo.db")
     return str(ROOT / ".act-demo" / "act.db")
 

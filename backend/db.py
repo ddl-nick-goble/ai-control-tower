@@ -3,6 +3,8 @@ import logging
 import os
 import sqlite3
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
@@ -101,21 +103,85 @@ class DatabaseOpenError(Exception):
     pass
 
 
-def check_open(path) -> None:
-    """Open the DB the way the app will; raise one clear DatabaseOpenError if that fails."""
-    mode = journal_mode_for(path)
+def _lock_wait() -> float:
     try:
-        conn = sqlite3.connect(str(path), timeout=30)
+        return float(os.environ.get("ACT_DB_LOCK_WAIT", "") or 150)
+    except ValueError:
+        return 150.0
+
+
+def _header_is_wal(path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            h = f.read(100)
+    except OSError:
+        return False
+    return len(h) >= 20 and h[18] == 2 and h[19] == 2
+
+
+def _stale_aside(path) -> bool:
+    """Rename a 0-byte -wal (and its -shm) aside. A non-empty -wal is never touched. True if renamed."""
+    wal = Path(f"{path}-wal")
+    try:
+        if not wal.exists() or wal.stat().st_size != 0:
+            return False
+    except OSError:
+        return False
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for suffix in ("-wal", "-shm"):
+        src = Path(f"{path}{suffix}")
+        if src.exists():
+            dst = Path(f"{path}{suffix}.stale-{ts}")
+            try:
+                src.rename(dst)
+                log.warning("moved stale %s aside to %s (0-byte -wal left by a crash)", src, dst)
+            except OSError as e:
+                log.warning("could not move stale %s aside: %s", src, e)
+    return True
+
+
+def check_open(path) -> None:
+    """Open the DB the way the app will; retry through lock contention (NFSv4 lease), then raise one clear
+    DatabaseOpenError."""
+    mode = journal_mode_for(path)
+    wait = _lock_wait()
+    start = time.monotonic()
+    delay, attempt = 1.0, 0
+    while True:
+        attempt += 1
         try:
-            conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
-            conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error as e:
-        raise DatabaseOpenError(
-            f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e}. "
-            "On a network filesystem the usual cause is stale -wal/-shm files left by a crash; "
-            "move them aside, or restore a known-good copy with scripts/restore_db.py, and restart.") from e
+            if mode == "DELETE" and is_network_fs(path) and _header_is_wal(path):
+                log.info("database %s is in WAL mode on a network filesystem; converting to DELETE journal mode",
+                         path)
+            conn = sqlite3.connect(str(path), timeout=30)
+            try:
+                conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
+                conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+            finally:
+                conn.close()
+            return
+        except sqlite3.Error as e:
+            locked = "locked" in str(e).lower()
+            wal = Path(f"{path}-wal")
+            nonempty_wal = wal.exists() and wal.stat().st_size > 0
+            if locked and not nonempty_wal and _stale_aside(path):
+                log.warning("database %s was locked (attempt %d): %s; stale -wal/-shm moved aside, retrying",
+                            path, attempt, e)
+                continue
+            elapsed = time.monotonic() - start
+            if not locked or elapsed >= wait:
+                hint = ("Stale -wal/-shm files left by a crash are the usual cause on a network filesystem. "
+                        + ("A non-empty -wal is present and holds data, so it was not touched: restore a "
+                           "known-good copy with scripts/restore_db.py, and restart."
+                           if nonempty_wal else
+                           "Move them aside, or restore a known-good copy with scripts/restore_db.py, and restart."))
+                raise DatabaseOpenError(
+                    f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e} "
+                    f"(after {elapsed:.0f}s, {attempt} attempt(s)). {hint}") from e
+            log.warning("database %s is locked (attempt %d, %.0fs of %.0fs): %s; retrying in %.0fs",
+                        path, attempt, elapsed, wait, e, delay)
+            time.sleep(delay)
+            delay = min(delay * 2, 60.0)
 
 
 def _make_engine(path: str):

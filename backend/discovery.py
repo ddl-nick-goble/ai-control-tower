@@ -138,7 +138,17 @@ def run_scan(sid, eng=None):
         _run_scan(sid, eng)
     except Exception as e:  # noqa: BLE001
         log.exception("scan %s failed", sid)
-        set_scan(sid, eng, state="failed", error=str(e)[:300], finished_at=now_iso())
+        locked = "locked" in str(e).lower()
+        reason = (f"The database was locked and the scan could not save its progress: {e}" if locked else str(e))[:300]
+        for attempt in range(8 if locked else 1):
+            try:
+                set_scan(sid, eng, state="failed", error=reason, finished_at=now_iso())
+                break
+            except Exception as e2:  # noqa: BLE001
+                if "locked" not in str(e2).lower() or attempt == 7:
+                    log.error("scan %s: could not record the failure: %s", sid, e2)
+                    break
+                time.sleep(min(2 ** attempt, 30))
 
 
 def _run_scan(sid, eng):
