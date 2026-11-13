@@ -473,9 +473,14 @@ def test_ac_db1_4_no_rename_code_path_is_called(db, clock, monkeypatch, tmp_path
         db.check_open(p)
     except db.DatabaseOpenError:
         pass
+    # ACT code itself never renames/moves/deletes -wal/-shm. On success SQLite's own WAL->DELETE conversion
+    # (DB1-5) removes them, which is not an ACT-code call; so the header being DELETE is the only other outcome.
     touched = [c for c in calls if any("act.db-" in str(x) for x in c[1])]
     assert touched == []
-    assert (tmp_path / "act.db-wal").exists() and (tmp_path / "act.db-shm").exists()
+    if _header(p) == (1, 1):
+        pass  # converted by SQLite: -wal/-shm may be gone, that is correct
+    else:
+        assert (tmp_path / "act.db-wal").exists() and (tmp_path / "act.db-shm").exists()
 
 
 # ---------------------------------------------------------------- DB1-5: log only when DELETE really took effect

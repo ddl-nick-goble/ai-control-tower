@@ -38,3 +38,10 @@ def _hermetic_workspace_owner_mode(monkeypatch):
     switch SR-2 workspace owner mode on and turn anonymous 401s into owner calls. Pin it off by default;
     tests that exercise owner mode set ACT_WORKSPACE_OWNER_MODE (or delenv it for auto mode) themselves."""
     monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")
+
+
+@pytest.fixture(autouse=True)
+def _wait_for_background_db_open(monkeypatch):
+    """The App opens the DB in a background thread and serves 503 "Database is starting" until it is ready.
+    Under a loaded parallel run (demo seeding) that can exceed the 5 s default grace, so tests wait for it."""
+    monkeypatch.setenv("ACT_DB_STARTUP_GRACE", "120")
