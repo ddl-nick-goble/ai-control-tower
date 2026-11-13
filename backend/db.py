@@ -148,10 +148,10 @@ def check_open(path) -> None:
                 continue
             left = _leftover_files(path)
             if left:
-                hint = (f" Leftover files from a crash may be the cause: {', '.join(left)}. They were not touched. "
+                hint = (f" Stale files left by a crash may be the cause: {', '.join(left)}. They were not touched. "
                         "Restore a known-good copy with scripts/restore_db.py, and restart.")
             else:
-                hint = (" No leftover -wal/-shm files exist; startup never renames, moves or deletes them. "
+                hint = (" Stale -wal/-shm files left by a crash can cause this (none exist now); startup never renames, moves or deletes them. "
                         "Restore a known-good copy with scripts/restore_db.py if the file is damaged.")
             raise DatabaseOpenError(
                 f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e} "
