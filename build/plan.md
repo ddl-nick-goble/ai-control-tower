@@ -508,3 +508,46 @@ Nick: "allow anybody to change settings". On the published App he sees "Sign in 
   - ST-5 After merge, the published App (6af633efb6f82078180d66d7) runs the new main and its Settings page is editable.
   Touches: backend/routes/settings.py, backend/settings.py (is_admin/open flag), frontend/src/pages/Settings.jsx (only if needed), frontend/dist, docs mention of ACT_SETTINGS_OPEN. Builder: builder. QA: test-author (ST-1, ST-2, ST-4), ui-tester (ST-3), visual-reviewer, code-reviewer. Then domino-deploy (sonnet) for ST-5. Branch task/SET-1. Status: started.
 - SET-1 test baseline e849593 (13 backend red: ST-1, ST-2, ST-4 open values; 2 e2e red: ST-3; old lock tests pinned to ACT_SETTINGS_OPEN=0 and green). Builder running.
+
+## Snowflake Cortex Agent: discover, call, test, trace (SF-*, planned 2026-11-13)
+Spec: build/snowflake-market-agent.md (Nick's MARKET_DATA_AGENT notes). Target: MARKET_AGENT_DEMO.MARKET.MARKET_DATA_AGENT in KMA35258.
+Already merged (PO-3/PO-4): adapters/snowflake.py lists agents via SHOW AGENTS / DESCRIBE AGENT / SHOW VERSIONS / SHOW GRANTS over the SQL API with WIF (federation.py), projects agent_spec structurally, and reports coverage gaps (CORTEX_AGENT_USAGE_HISTORY). Not built: walking tool resources, calling the agent, testing it, pulling its traces.
+
+### SF-0 Snowflake access (Nick, manual; blocks live ACs, not the builds)
+A Snowflake-side script (extend the connection's generated snowflake.sql in backend/connections/artifacts.py, as part of SF-1) for Nick to run as ACCOUNTADMIN: the ACT role gets MONITOR on the agent's schema objects, USAGE on the agent + warehouse (to call it), SNOWFLAKE.CORTEX_USER, REFERENCES/USAGE on MARKET_SV and GET_LATEST_QUOTE, SNOWFLAKE.USAGE_VIEWER (usage + query history), and whatever the AI-observability read needs. Then a live ACT connection to KMA35258.
+
+### SF-1 Deep discovery: what each agent can reach (builder)
+- SF1-1 For each agent, every tool_resources entry is resolved: semantic view -> DESCRIBE SEMANTIC VIEW (logical tables, dims, facts, metrics, base tables); generic tool -> function/procedure signature + GET_DDL body tables; cortex_search -> service + source; warehouse + query_timeout. Stored on the agent record as a "reach" list (resource, type, base tables, warehouse).
+- SF1-2 Grants on the agent and on each resource, and the execution identity (owner's vs caller's rights), are recorded.
+- SF1-3 Tasks whose body calls DATA_AGENT_RUN for the agent are listed with their state (SHOW TASKS + GET_DDL).
+- SF1-4 A missing privilege on any step is a coverage item with the exact GRANT fix, never a scan failure. A spec change (created_on/version) between scans classes the agent as Changed with a field diff.
+- SF1-5 The agent page shows a "Reaches" section (tools -> resources -> tables, warehouse, grants). Sample tenant gets MARKET_DATA_AGENT fixtures matching the spec.
+Touches: adapters/snowflake.py, backend/connections/artifacts.py (SF-0 script), fixtures for the Snowflake sample, frontend Agent page reach section, dist. QA: test-author, ui-tester, visual-reviewer, code-reviewer.
+
+### SF-4 Trace and usage pull (builder) — same wave as SF-1 (new module, no overlap)
+- SF4-1 adapters/snowflake_traces.py implements list_runs for Snowflake agents from, in order of preference: Cortex agent observability events (threads, tool calls, model, tokens, latency; builder verifies the exact source in Snowflake docs first), CORTEX_AGENT_USAGE_HISTORY (credits/tokens per request), QUERY_HISTORY (the SQL Cortex Analyst and tools ran, linked by query/request id), and an optional customer log table (config: e.g. MARKET_AGENT_DEMO.MARKET.AGENT_RUN_LOG).
+- SF4-2 Each run normalizes into ACT runs/spans (backend/normalize_span.py shape): user question, tool calls with inputs/outputs, generated SQL, final answer, model, tokens, credits, latency, caller role/user. Idempotent by request id; incremental since the last pull.
+- SF4-3 The pull runs as a Domino Job with each scan/sync (jobs/discover.py --sync path), never in the web process; a schedule reuses the connection's daily sync.
+- SF4-4 Missing privileges (ACCOUNT_USAGE, observability) show as coverage items naming the source that is unreadable; whatever is readable still imports.
+- SF4-5 The run timeline for a Snowflake agent shows these runs with tool-call spans and SQL; secrets/PII redacted with the existing _redact rules.
+Touches: adapters/snowflake_traces.py (new), jobs/discover.py (call the pull), backend/discovery.py (hook), fixtures. QA: test-author, ui-tester (timeline), code-reviewer.
+
+### SF-2 Call the agent from ACT (builder) — after SF-1 and SF-4
+- SF2-1 POST /api/agents/{id}/invoke {question} calls the Cortex Agents REST :run endpoint (fallback: SQL DATA_AGENT_RUN through the SQL API) with the connection's WIF credential, server-side only; returns the answer, tool calls, generated SQL, latency, request id.
+- SF2-2 Every call is recorded as an ACT run with spans (same normalizer as SF-4, so a later trace pull dedupes it) and an audit event with the caller.
+- SF2-3 The agent page gets a "Try it" panel (question box, answer, expandable tool calls/SQL, "simulated data" shown when the agent says so). Errors read as plain text with the fix, never raw JSON or a status code.
+- SF2-4 Guardrails: per-call timeout, a per-day call cap (setting), only for agents on a live connection with invoke enabled; sample connections answer from fixtures.
+Touches: adapters/snowflake_run.py (new), backend/routes/invoke.py (new), main.py router, frontend Agent page try panel, api.js, dist. QA: test-author, ui-tester, visual-reviewer, code-reviewer.
+
+### SF-3 Test the agent (builder) — after SF-2
+- SF3-1 eval/snowflake_market_prompts.jsonl: >= 20 prompts covering single-symbol quotes, sector averages, comparisons, date ranges, an out-of-scope question, and a lowercase ticker; each with a ground-truth SQL against MARKET_DATA.
+- SF3-2 jobs/validate.py gains a Snowflake Cortex target: runs each prompt 5 times through the SF-2 invoke path as a Domino Job, scores (a) exact numeric match against ground truth, (b) tool routing (latest_quote for single-symbol latest price, market_analyst for aggregates), (c) "simulated" disclaimer and trade date present, (d) LLM judge via the LLM Gateway for the rest; logs one MLflow run per repetition.
+- SF3-3 Posts the AC-10 validation record (distribution, pass rate) to the agent; the agent page shows it like the recon agent's. A failing check below threshold opens a finding.
+- SF3-4 A "Run tests" button on the agent page launches the Job and links to it.
+Touches: eval/snowflake_market_prompts.jsonl, jobs/validate.py, a Snowflake target module, agent page button. QA: test-author, ui-tester, code-reviewer. Live run needs SF-0. Manual: Nick reads five judged samples.
+
+### SF-5 Demo walk + republish (builder, then domino-deploy sonnet)
+docs/DEMO.md "Snowflake agent" walk: Connections -> Snowflake -> scan -> MARKET_DATA_AGENT -> Reaches -> Try it ("latest close for MSFT") -> run timeline with tool calls -> Run tests -> validation record. Then republish the App from main.
+
+Waves: PG = SF-1 + SF-4 (no file overlap). PH = SF-2. PI = SF-3. PJ = SF-5. SF-0 runs whenever Nick can; the builds use fixtures and the live ACs wait on it.
+Open questions for Nick: (1) Is there a live ACT connection to KMA35258 yet, or does SF-0 start from scratch (WIF user + ACT role)? (2) Can you run the SF-0 grants as ACCOUNTADMIN, including SNOWFLAKE.USAGE_VIEWER? (3) Calling the agent spends Cortex credits; OK with a default cap of 200 calls/day, and with SF-3's ~100+ calls per test run? (4) Should "Try it" be open to anyone who can reach the app (like Settings now), or owners/admins only?
