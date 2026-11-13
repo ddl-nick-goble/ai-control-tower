@@ -497,3 +497,13 @@ Two sequential parts, two builders:
 - PO-7a 4b28edf: D7-1..3 pass (72 e2e, 117 backend); the gallery card shows the real state + the sample badge; the seed clears foreign demo connections. MERGED c05542c. Worktree removed. PO-7b publish (domino-deploy, sonnet) running; post-merge suites running.
 - PO-7b: App published 6af633efb6f82078180d66d7, Running, GRANT_BASED, small-k8s; smoke ok (SPA, health, 12 agents). ACT_PUBLIC_URL unset (no app-level env). demo_mode on via the saved Settings switch.
 - PE post-merge on main c05542c: code 960 pass / 3 skip; e2e 283 pass (5:55). Provider onboarding (PO-1..PO-7) DONE. Next on the roadmap: Superblocks T-21..T-33.
+
+## Wave PF: SET-1 open Settings (Nick, 2026-11-13)
+Nick: "allow anybody to change settings". On the published App he sees "Sign in to view Settings" while signed in: GET /api/settings/access returns 401 because the App request carries no X-Domino-User headers or verifiable bearer, and the Settings routes require an identified owner/admin.
+- SET-1 Settings open to anyone who can reach the app (the App is GRANT_BASED, so reach = granted). ACs:
+  - ST-1 With no identity headers and no bearer, GET /api/settings/access returns 200 {admin: true, ...}; GET /api/settings, PUT /api/settings/{name}, DELETE /api/settings/{name} and GET /api/settings/real-agent-count succeed (no 401/403).
+  - ST-2 A save records changed_by as the caller's username when known (headers/bearer/workspace owner), else "anonymous".
+  - ST-3 The Settings page with no identity shows the editable 4-card layout; never "Sign in to view Settings", the read-only alert, or the lock card. A change saves and survives a reload.
+  - ST-4 ACT_SETTINGS_OPEN=0 restores the previous owner/admin behaviour exactly (the T-39/T-48 lock tests pass under that flag). Unset or any other value = open.
+  - ST-5 After merge, the published App (6af633efb6f82078180d66d7) runs the new main and its Settings page is editable.
+  Touches: backend/routes/settings.py, backend/settings.py (is_admin/open flag), frontend/src/pages/Settings.jsx (only if needed), frontend/dist, docs mention of ACT_SETTINGS_OPEN. Builder: builder. QA: test-author (ST-1, ST-2, ST-4), ui-tester (ST-3), visual-reviewer, code-reviewer. Then domino-deploy (sonnet) for ST-5. Branch task/SET-1. Status: started.
