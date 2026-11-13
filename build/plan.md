@@ -584,3 +584,4 @@ ACs:
 - DB1-3 The real act.db has exactly one writer: the published App. The workspace dev server and tests default to a local copy (ACT_DB) unless ACT_DB_SHARED=1 is set deliberately; a startup log line says which file is used.
 - DB1-4 One-time (Nick approves; App stopped or idle): back up act.db, convert act.db and demo.db to DELETE mode, and remove the stale -wal/-shm. No data loss: row counts match before and after.
 Touches: backend/db.py, backend/demo.py, tests/e2e conftest (ui-tester), scripts/restore_db.py. Builder: builder; DB1-4 via domino-debug (sonnet) with Nick's OK. Runs after SET-1 merges (no file overlap, but both need the e2e harness).
+- SET-1 r2 7207240 (review fixes) + r3 87cab1a (open-mode intro text); ui 6209799: ST-1..4 pass, 983 code pass / 3 skip, e2e 281 pass + 5 known DB-1 demo-switch failures (same on main). Visual pass. MERGED 59e9b45; post-merge code 983 pass. Worktree removed. ST-5 republish (domino-deploy, sonnet) running.

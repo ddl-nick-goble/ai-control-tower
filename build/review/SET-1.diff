@@ -1,0 +1,371 @@
+diff --git a/backend/main.py b/backend/main.py
+index 600c9a4..038451f 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -90,6 +90,9 @@ async def write_guard(request, call_next):
+         if too_big:
+             return JSONResponse({"detail": "Request body too large (limit 8 KB)"}, status_code=413)
+         return await call_next(request)  # read-only scoring; the only anonymous POST
++    if (request.method in WRITE_METHODS and request.url.path.startswith("/api/settings/")
++            and (os.environ.get("ACT_SETTINGS_OPEN") or "").strip() != "0"):
++        return await call_next(request)  # SET-1: Settings writes are open; the route records "anonymous"
+     if request.method in WRITE_METHODS and await run_in_threadpool(get_user, request) is None:
+         return JSONResponse({"detail": "Authentication required"}, status_code=401)
+     return await call_next(request)
+diff --git a/backend/routes/settings.py b/backend/routes/settings.py
+index 73f7e1f..514e1d5 100644
+--- a/backend/routes/settings.py
++++ b/backend/routes/settings.py
+@@ -1,19 +1,36 @@
+-"""Settings API (T-39). Admins only: the project owner plus the "admins" setting."""
++"""Settings API (T-39). Open to anyone who reaches the app (SET-1); with ACT_SETTINGS_OPEN=0, admins only."""
+ import os
+ import sqlite3
+ import threading
+ import time
+ from pathlib import Path
+-from fastapi import APIRouter, Body, Depends, HTTPException
++from fastapi import APIRouter, Body, Depends, HTTPException, Request
+ 
+ from .. import db, settings
+-from ..domino_identity import User, require_user
++from ..domino_identity import User, get_user, require_user
+ 
+ router = APIRouter()
+ _count_lock = threading.Lock()
+ 
+ 
+-def require_admin(user: User = Depends(require_user)) -> User:
++def settings_open() -> bool:
++    """SET-1: Settings are open to anyone who can reach the app unless ACT_SETTINGS_OPEN=0."""
++    return (os.environ.get("ACT_SETTINGS_OPEN") or "").strip() != "0"
++
++
++def settings_user(request: Request) -> User:
++    """Caller for Settings routes: the real identity when known, else anonymous when open; 401 when closed."""
++    user = get_user(request)
++    if user is not None:
++        return user
++    if settings_open():
++        return User(user_id="anonymous", username="anonymous")
++    return require_user(request)
++
++
++def require_admin(user: User = Depends(settings_user)) -> User:
++    if settings_open():
++        return user
+     if not settings.is_admin(user):
+         raise HTTPException(403, "Settings are limited to the project owner and listed admins"
+                             if settings.admins_configured() else
+@@ -22,8 +39,8 @@ def require_admin(user: User = Depends(require_user)) -> User:
+ 
+ 
+ @router.get("/api/settings/access")
+-def access(user: User = Depends(require_user)):
+-    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured(),
++def access(user: User = Depends(settings_user)):
++    return {"admin": settings_open() or settings.is_admin(user), "admins_configured": settings.admins_configured(),
+             "user": user.username, "via": user.via,
+             "owner": (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()}
+ 
+diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
+index 6ebc525..9cc763d 100644
+--- a/docs/INTEGRATION.md
++++ b/docs/INTEGRATION.md
+@@ -21,6 +21,7 @@ labels itself honestly: template text in the console, the mock judge in the vali
+ | `ACT_EXTERNAL_ALLOW_HOSTS` | Not set: external agent-card fetches are refused | Hosts allowed for external card fetch | Comma-separated hostnames to permit. Private, link-local and port 8899 stay refused. |
+ | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
+ | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
++| `ACT_SETTINGS_OPEN` | Unset (open): anyone who can reach the App can change Settings; saves record the caller or `anonymous` | The Settings page and `/api/settings` routes | Set `ACT_SETTINGS_OPEN=0` to restore owner and `ACT_ADMINS` only access (anonymous 401, non-admin 403). |
+ 
+ ## Settings page (T-39)
+ 
+diff --git a/frontend/src/pages/Settings.jsx b/frontend/src/pages/Settings.jsx
+index 12c87d6..60da360 100644
+--- a/frontend/src/pages/Settings.jsx
++++ b/frontend/src/pages/Settings.jsx
+@@ -137,7 +137,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }} />
+         )}
+         {!showInput && !plainLocked && <div className="st-masked" aria-hidden="true">••••••••</div>}
+-        {showInput && dirty && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
++        {showInput && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
+         {replacing && !busy && <Button onClick={() => { setReplacing(false); setDraft(''); setSt({ kind: 'idle', msg: '' }) }}>Cancel</Button>}
+         {!entry.locked && hasValue && !replacing && <Button onClick={() => { setReplacing(true); setSt({ kind: 'idle', msg: '' }) }} disabled={busy}>Replace</Button>}
+         {!entry.locked && entry.source === 'app' && !replacing && !(showInput && dirty) && (
+diff --git a/tests/e2e/test_set1_settings_open.py b/tests/e2e/test_set1_settings_open.py
+new file mode 100644
+index 0000000..00ef2df
+--- /dev/null
++++ b/tests/e2e/test_set1_settings_open.py
+@@ -0,0 +1,71 @@
++"""SET-1 ST-3 e2e: with no Domino identity (owner mode off, owner someone else) Settings is the editable 4-card layout."""
++import pathlib
++import sys
++
++import pytest
++from playwright.sync_api import expect
++
++ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
++sys.path.insert(0, str(ROOT))
++from backend.settings import DEFS  # noqa: E402
++
++_MANAGED = {d["env"] for d in DEFS.values()} | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "DOMINO_RUN_HOST_PATH", "ACT_SETTINGS_OPEN"}
++_BASE = {"ACT_WORKSPACE_OWNER_MODE": "0", "DOMINO_PROJECT_OWNER": "someone.else"}
++
++
++@pytest.fixture(scope="module")
++def app_open(apps):
++    return apps(external=False, strip_env=_MANAGED, extra_env={**_BASE, "ACT_SETTINGS_OPEN": "1"}).url
++
++
++@pytest.fixture(scope="module")
++def app_closed(apps):
++    return apps(external=False, strip_env=_MANAGED, extra_env={**_BASE, "ACT_SETTINGS_OPEN": "0"}).url
++
++
++@pytest.fixture
++def browser_context_args():
++    return {"viewport": {"width": 1440, "height": 900}}
++
++
++def _open(page, base):
++    page.goto(base + "#/settings")
++    expect(page.get_by_role("heading", level=1, name="Settings")).to_be_visible()
++
++
++def test_st3_open_shows_editable_four_cards(page, context, shot, app_open):
++    context.set_extra_http_headers({})
++    _open(page, app_open)
++    expect(page.get_by_test_id("settings-body")).to_be_visible()
++    for h in ("Demo mode", "Integrations", "Credentials", "Access"):
++        expect(page.get_by_role("heading", level=2, name=h)).to_be_visible()
++    expect(page.get_by_text("Sign in to view Settings")).to_have_count(0)
++    expect(page.get_by_text("You can view these settings but not change them")).to_have_count(0)
++    expect(page.get_by_text("Settings are read-only for you")).to_have_count(0)
++    expect(page.get_by_test_id("settings-signin")).to_have_count(0)
++    expect(page.get_by_test_id("settings-no-access")).to_have_count(0)
++    expect(page.get_by_test_id("setting-service_accounts").get_by_role("button", name="Save")).to_be_visible()
++    shot("then")
++
++
++def test_st3_open_change_survives_reload(page, context, shot, app_open):
++    context.set_extra_http_headers({})
++    _open(page, app_open)
++    el = page.get_by_test_id("setting-service_accounts")
++    try:
++        el.get_by_role("textbox").fill("svc-set1")
++        el.get_by_role("button", name="Save").click()
++        expect(el.get_by_role("status")).to_contain_text("Saved")
++        page.reload()
++        expect(page.get_by_test_id("setting-service_accounts").get_by_role("textbox")).to_have_value("svc-set1")
++        shot("then")
++    finally:
++        page.request.delete(app_open.rstrip("/") + "/api/settings/service_accounts")
++
++
++def test_st3_flag_off_keeps_sign_in_gate(page, context, shot, app_closed):
++    context.set_extra_http_headers({})
++    page.goto(app_closed + "#/settings")
++    expect(page.get_by_role("heading", name="Sign in to view Settings")).to_be_visible()
++    expect(page.get_by_test_id("settings-body")).to_have_count(0)
++    shot("then")
+diff --git a/tests/test_set1_open_settings.py b/tests/test_set1_open_settings.py
+new file mode 100644
+index 0000000..22f5752
+--- /dev/null
++++ b/tests/test_set1_open_settings.py
+@@ -0,0 +1,157 @@
++"""SET-1: Settings open to everyone by default; ACT_SETTINGS_OPEN=0 restores the owner/admin lock.
++Written from the AC text only."""
++import importlib
++import sys
++
++import pytest
++from fastapi.testclient import TestClient
++
++ADMIN = {"X-Domino-User-Id": "u-owner", "X-Domino-User": "owner"}
++OTHER = {"X-Domino-User-Id": "u-bob", "X-Domino-User": "bob"}
++LISTED = {"X-Domino-User-Id": "u-ann", "X-Domino-User": "ann"}
++
++ENV_NAMES = ["ACT_SECRET_KEY", "ACT_DEMO_MODE", "ACT_ADMINS", "LLM_GATEWAY_URL", "ACT_LLM_PROVIDER",
++             "ACT_SETTINGS_OPEN", "ACT_WORKSPACE_OWNER_MODE", "DOMINO_RUN_HOST_PATH", "DOMINO_JWKS_URL"]
++
++
++def _purge():
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++
++
++@pytest.fixture
++def env(db_env, tmp_path, monkeypatch):
++    for k in ENV_NAMES:
++        monkeypatch.delenv(k, raising=False)
++    monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
++    monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
++    monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
++    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
++    return monkeypatch
++
++
++def _make(env):
++    from cryptography.fernet import Fernet
++    env.setenv("ACT_SECRET_KEY", Fernet.generate_key().decode())
++    _purge()
++    main = importlib.import_module("backend.main")
++    return TestClient(main.app, raise_server_exceptions=False)
++
++
++@pytest.fixture
++def client(env):
++    with _make(env) as c:
++        yield c
++    _purge()
++
++
++def _changed_by(c, name="policy_model_id"):
++    r = c.get("/api/settings", headers=ADMIN)
++    assert r.status_code == 200, r.text
++    return next(s for s in r.json()["settings"] if s["name"] == name)["changed_by"]
++
++
++# ---- ST-1 ----
++def test_ac_st1_anonymous_access_is_admin(client):
++    r = client.get("/api/settings/access")
++    assert r.status_code == 200
++    assert r.json()["admin"] is True
++
++
++def test_ac_st1_anonymous_list_put_delete_count(client):
++    assert client.get("/api/settings").status_code == 200
++    r = client.put("/api/settings/policy_model_id", json={"value": "m1"})
++    assert r.status_code == 200, r.text
++    r = client.delete("/api/settings/policy_model_id")
++    assert r.status_code == 200, r.text
++    assert client.get("/api/settings/real-agent-count").status_code == 200
++
++
++def test_ac_st1_non_admin_user_is_admin(client):
++    assert client.get("/api/settings/access", headers=OTHER).json()["admin"] is True
++    assert client.get("/api/settings", headers=OTHER).status_code == 200
++    assert client.get("/api/settings/real-agent-count", headers=OTHER).status_code == 200
++
++
++def test_ac_st1_no_owner_configured_still_open(env):
++    env.delenv("DOMINO_PROJECT_OWNER")
++    with _make(env) as c:
++        assert c.get("/api/settings/access").json()["admin"] is True
++        assert c.get("/api/settings").status_code == 200
++    _purge()
++
++
++# ---- ST-2 ----
++def test_ac_st2_changed_by_anonymous(client):
++    r = client.put("/api/settings/policy_model_id", json={"value": "m1"})
++    assert r.status_code == 200, r.text
++    assert _changed_by(client) == "anonymous"
++
++
++def test_ac_st2_changed_by_header_user(client):
++    r = client.put("/api/settings/policy_model_id", json={"value": "m1"}, headers=OTHER)
++    assert r.status_code == 200, r.text
++    assert _changed_by(client) == "bob"
++
++
++def test_ac_st2_changed_by_valid_bearer(env):
++    with _make(env) as c:
++        from backend import domino_identity
++        env.setenv("DOMINO_JWKS_URL", "http://jwks.invalid")
++        env.setattr(domino_identity, "_verify_bearer",
++                    lambda t: domino_identity.User("u-c", "carl"))
++        r = c.put("/api/settings/policy_model_id", json={"value": "m1"},
++                  headers={"Authorization": "Bearer good"})
++        assert r.status_code == 200, r.text
++        assert _changed_by(c) == "carl"
++    _purge()
++
++
++def test_ac_st2_changed_by_workspace_owner_mode(env):
++    env.setenv("ACT_WORKSPACE_OWNER_MODE", "1")
++    with _make(env) as c:
++        r = c.put("/api/settings/policy_model_id", json={"value": "m1"})
++        assert r.status_code == 200, r.text
++        assert _changed_by(c) == "owner"
++    _purge()
++
++
++# ---- ST-4 ----
++@pytest.fixture
++def locked(env):
++    env.setenv("ACT_SETTINGS_OPEN", "0")
++    env.setenv("ACT_ADMINS", "ann")
++    with _make(env) as c:
++        yield c
++    _purge()
++
++
++def test_ac_st4_closed_anonymous_401(locked):
++    for url in ("/api/settings", "/api/settings/access", "/api/settings/real-agent-count"):
++        assert locked.get(url).status_code == 401, url
++    assert locked.put("/api/settings/policy_model_id", json={"value": "m1"}).status_code == 401
++    assert locked.delete("/api/settings/policy_model_id").status_code == 401
++
++
++def test_ac_st4_closed_non_admin_403(locked):
++    assert locked.get("/api/settings", headers=OTHER).status_code == 403
++    assert locked.get("/api/settings/real-agent-count", headers=OTHER).status_code == 403
++    assert locked.put("/api/settings/policy_model_id", json={"value": "m1"}, headers=OTHER).status_code == 403
++    assert locked.delete("/api/settings/policy_model_id", headers=OTHER).status_code == 403
++    assert locked.get("/api/settings/access", headers=OTHER).json()["admin"] is False
++
++
++def test_ac_st4_closed_owner_and_listed_admin_succeed(locked):
++    for h in (ADMIN, LISTED):
++        assert locked.get("/api/settings", headers=h).status_code == 200
++        assert locked.get("/api/settings/access", headers=h).json()["admin"] is True
++        assert locked.put("/api/settings/policy_model_id", json={"value": "m1"}, headers=h).status_code == 200
++
++
++@pytest.mark.parametrize("val", ["1", "", "true", "yes", "off", "00"])
++def test_ac_st4_other_values_are_open(env, val):
++    env.setenv("ACT_SETTINGS_OPEN", val)
++    with _make(env) as c:
++        assert c.get("/api/settings/access").json()["admin"] is True
++        assert c.get("/api/settings").status_code == 200
++    _purge()
+diff --git a/tests/test_t39_settings.py b/tests/test_t39_settings.py
+index 62de597..e8fcde7 100644
+--- a/tests/test_t39_settings.py
++++ b/tests/test_t39_settings.py
+@@ -33,6 +33,7 @@ def env(db_env, tmp_path, monkeypatch):
+     for k in ENV_NAMES:
+         monkeypatch.delenv(k, raising=False)
+     monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
++    monkeypatch.setenv("ACT_SETTINGS_OPEN", "0")  # SET-1: these tests describe the locked behaviour
+     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+     monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
+     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
+diff --git a/tests/test_t48_settings_access.py b/tests/test_t48_settings_access.py
+index 2173660..31cebe8 100644
+--- a/tests/test_t48_settings_access.py
++++ b/tests/test_t48_settings_access.py
+@@ -31,6 +31,7 @@ def env(db_env, tmp_path, monkeypatch):
+     for k in ENV_NAMES:
+         monkeypatch.delenv(k, raising=False)
+     monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
++    monkeypatch.setenv("ACT_SETTINGS_OPEN", "0")  # SET-1: these tests describe the locked behaviour
+     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+     monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
+     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
+diff --git a/tests/test_t48f_real_agent_count.py b/tests/test_t48f_real_agent_count.py
+index e87d1f3..6010211 100644
+--- a/tests/test_t48f_real_agent_count.py
++++ b/tests/test_t48f_real_agent_count.py
+@@ -23,6 +23,7 @@ def app(db_env, tmp_path, monkeypatch):
+     for k in ("ACT_ADMINS", "ACT_DEMO_MODE", "ACT_WORKSPACE_OWNER_MODE", "DOMINO_RUN_HOST_PATH"):
+         monkeypatch.delenv(k, raising=False)
+     monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
++    monkeypatch.setenv("ACT_SETTINGS_OPEN", "0")  # SET-1: these tests describe the locked behaviour
+     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
+     monkeypatch.setenv("ACT_SECRET_KEY", Fernet.generate_key().decode())
+     monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
