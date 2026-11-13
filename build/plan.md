@@ -507,3 +507,4 @@ Nick: "allow anybody to change settings". On the published App he sees "Sign in 
   - ST-4 ACT_SETTINGS_OPEN=0 restores the previous owner/admin behaviour exactly (the T-39/T-48 lock tests pass under that flag). Unset or any other value = open.
   - ST-5 After merge, the published App (6af633efb6f82078180d66d7) runs the new main and its Settings page is editable.
   Touches: backend/routes/settings.py, backend/settings.py (is_admin/open flag), frontend/src/pages/Settings.jsx (only if needed), frontend/dist, docs mention of ACT_SETTINGS_OPEN. Builder: builder. QA: test-author (ST-1, ST-2, ST-4), ui-tester (ST-3), visual-reviewer, code-reviewer. Then domino-deploy (sonnet) for ST-5. Branch task/SET-1. Status: started.
+- SET-1 test baseline e849593 (13 backend red: ST-1, ST-2, ST-4 open values; 2 e2e red: ST-3; old lock tests pinned to ACT_SETTINGS_OPEN=0 and green). Builder running.
