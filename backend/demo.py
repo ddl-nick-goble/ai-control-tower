@@ -71,8 +71,12 @@ def default_db_path() -> str:
     if override:
         return override
     if DATASET_DIR.is_dir():
-        from . import db
-        if db.is_network_fs(DATASET_DIR):  # pod-local: the App, workspace and Jobs never share the demo DB
+        # Must not import backend.db: this runs inside `import backend`, before DB_PATH is bound. If db is already
+        # loaded, honour its (patchable) _read_mounts.
+        import sys
+        from . import fsinfo
+        reader = getattr(sys.modules.get("backend.db"), "_read_mounts", fsinfo._read_mounts)
+        if fsinfo.is_network_fs(DATASET_DIR, reader() or []):  # pod-local: the App, workspace and Jobs never share the demo DB
             import tempfile
             return str(Path(tempfile.gettempdir()) / "act-demo" / "demo.db")
         return str(DATASET_DIR / "demo.db")

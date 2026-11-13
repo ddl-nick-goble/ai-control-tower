@@ -26,35 +26,63 @@ DIST = ROOT / "frontend" / "dist"
 
 class DbState:
     """Opening the DB can wait minutes for an NFS lock lease; that runs in a background thread so the App
-    answers /api/health at once (Domino's App start must not block)."""
+    answers /api/health at once (Domino's App start must not block). After a failure it keeps retrying."""
 
     def __init__(self):
         self.status = "starting"  # starting | ready | error
-        self.error = None
+        self.error = None  # short reason for /api/health; details (path, message) go to the log only
         self.done = threading.Event()
 
 
-def _open_db(app_, state):
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
     try:
-        db.init_db()
-        app_.state.demo_guard = None
+        v = float(raw)
+        if v >= 0 and v == v and v != float("inf"):
+            return v
+    except ValueError:
+        pass
+    log.warning("ignoring %s=%r (must be a non-negative number); using %s", name, raw, default)
+    return default
+
+
+def _open_db(app_, state):
+    """Open and prepare the DB; on failure keep retrying every ACT_DB_RETRY_INTERVAL until it works."""
+    first = True
+    while True:
+        opened = False
         try:
-            if demo.env_enabled():
-                demo.warn_live_switches()
-                demo.ensure_seeded()
-            else:
-                settings.apply_demo_setting()  # the switch saved from the Settings page
-        except demo.DemoGuardError as e:
-            app_.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
-        db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
-        state.status = "ready"
-    except Exception as e:  # noqa: BLE001
-        log.error("database could not be opened; the App stays up and reports it in /api/health: %s", e,
-                  exc_info=True)
-        state.error = str(e)
-        state.status = "error"
-    finally:
-        state.done.set()
+            db.init_db()
+            opened = True
+            app_.state.demo_guard = None
+            try:
+                if demo.env_enabled():
+                    demo.warn_live_switches()
+                    demo.ensure_seeded()
+                else:
+                    settings.apply_demo_setting()  # the switch saved from the Settings page
+            except demo.DemoGuardError as e:
+                app_.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
+            try:
+                db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
+            except Exception:  # noqa: BLE001 - the DB is open; a failed prewarm is only a missed optimisation
+                log.warning("connection prewarm failed; continuing", exc_info=True)
+            state.error = None
+            state.status = "ready"
+            state.done.set()
+            return
+        except Exception as e:  # noqa: BLE001
+            interval = _env_float("ACT_DB_RETRY_INTERVAL", 60.0)
+            log.error("database could not be opened (%s); the App stays up and retries in %.0fs: %s",
+                      "open" if not opened else "seed", interval, e, exc_info=first)
+            first = False
+            state.error = ("the database could not be opened; see the App logs" if not opened
+                           else "the database was opened but could not be prepared; see the App logs")
+            state.status = "error"
+            state.done.set()
+            time.sleep(interval)
 
 
 @asynccontextmanager
@@ -64,7 +92,7 @@ async def lifespan(_app):
     state = _app.state.db_state = DbState()
     threading.Thread(target=_open_db, args=(_app, state), daemon=True, name="act-db-open").start()
     # A healthy DB opens in milliseconds: give it a short grace so the first requests see it ready.
-    grace = float(os.environ.get("ACT_DB_STARTUP_GRACE", "5") or 5)
+    grace = _env_float("ACT_DB_STARTUP_GRACE", 5.0)
     await run_in_threadpool(state.done.wait, grace)
     try:
         yield
@@ -138,11 +166,14 @@ async def write_guard(request, call_next):
 def health():
     st = getattr(app.state, "db_state", None)
     db_status = st.status if st else "ready"
-    body = {"status": "ok" if db_status == "ready" else db_status, "db": db_status,
-            "db_error": st.error if st and st.status == "error" else None, "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
+    if db_status == "starting":  # no DB, settings or filesystem access, and no path in the body
+        return JSONResponse({"status": "starting", "db": "starting"})
+    if db_status == "error":
+        return JSONResponse({"status": "error", "db": "error", "db_error": st.error}, status_code=503)
+    body = {"status": "ok", "db": "ready", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
             "llm_provider": demo.effective_llm_provider(),
             "demo_guard": getattr(app.state, "demo_guard", None) if demo.enabled() else None}
-    return JSONResponse(body, status_code=503 if db_status == "error" else 200)
+    return JSONResponse(body)
 
 
 for _m in pkgutil.iter_modules(routes.__path__):

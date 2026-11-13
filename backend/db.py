@@ -1,16 +1,17 @@
 """SQLite storage for ACT (single DB, pooled connections; WAL on local disk, DELETE journal on network filesystems)."""
-import glob
 import logging
 import os
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
                         MetaData, String, Table, Text, create_engine, event, inspect, text)
 from sqlalchemy.pool import QueuePool
+
+from . import fsinfo
+from .fsinfo import _read_mounts, _unescape_mount  # noqa: F401 (re-exported)
 
 
 def _db_path() -> str:
@@ -31,48 +32,16 @@ try:
 except OSError:
     log.exception("could not create DB directory for %s", DB_PATH)
 
-_NETWORK_FS = ("nfs", "nfs4", "cifs", "smb", "smb2", "smb3", "smbfs", "ceph", "glusterfs", "lustre", "9p",
-               "fuse.sshfs", "fuse.s3fs", "fuse.gcsfuse", "fuse.goofys", "fuse.rclone", "fuse.juicefs")
+_NETWORK_FS = fsinfo.NETWORK_FS
 
 
-def _unescape_mount(s: str) -> str:
-    for esc, ch in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
-        s = s.replace(esc, ch)
-    return s
-
-
-def _read_mounts():
-    """Mount table as [(mountpoint, fstype)], or None when /proc/mounts is unreadable."""
-    out = []
-    try:
-        with open("/proc/mounts") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 3:
-                    out.append((_unescape_mount(parts[1]), parts[2]))
-    except OSError as e:
-        log.warning("cannot read /proc/mounts (%s); cannot tell the DB filesystem type, "
-                    "falling back to the safe DELETE journal mode", e)
-        return None
-    return out
-
-
+# Wrappers look up _read_mounts in this module at call time, so it stays patchable here (compatibility).
 def fs_type(path, mounts=None) -> str:
-    """Filesystem type of `path`: longest-prefix match of its resolved path against the mount table."""
-    if mounts is None:
-        mounts = _read_mounts() or []
-    p = str(Path(path).expanduser().resolve())
-    best, best_len = "unknown", -1
-    for mp, fst in mounts:
-        mp_n = mp.rstrip("/")
-        if (p == mp_n or p.startswith(mp_n + "/") or mp_n == "") and len(mp_n) >= best_len:
-            best, best_len = fst, len(mp_n)
-    return best
+    return fsinfo.fs_type(path, (_read_mounts() or []) if mounts is None else mounts)
 
 
 def is_network_fs(path, mounts=None) -> bool:
-    t = fs_type(path, mounts).lower()
-    return t in _NETWORK_FS
+    return fs_type(path, mounts).lower() in _NETWORK_FS
 
 
 def journal_mode_for(path, mounts=None) -> str:
@@ -120,101 +89,16 @@ def _header_is_wal(path) -> bool:
     return len(h) >= 20 and h[18] == 2 and h[19] == 2
 
 
-def _wal_size(path):
-    """Size of the -wal file, or None when it is absent or cannot be stat'ed (it may vanish at any moment)."""
-    try:
-        return os.stat(f"{path}-wal").st_size
-    except OSError:
-        return None
+def _leftover_files(path) -> list:
+    return [f"{path}{s}" for s in ("-wal", "-shm") if os.path.lexists(f"{path}{s}")]
 
 
-def _holders_of(target: str) -> bool:
-    """True if any process visible in /proc has `target` open (a live peer on this host)."""
-    try:
-        want = os.stat(target)
-    except OSError:
-        return False
-    for fd_dir in glob.glob("/proc/[0-9]*/fd"):
-        try:
-            fds = os.listdir(fd_dir)
-        except OSError:
-            continue
-        for fd in fds:
-            try:
-                st = os.stat(os.path.join(fd_dir, fd))
-            except OSError:
-                continue
-            if st.st_ino == want.st_ino and st.st_dev == want.st_dev:
-                return True
-    return False
+def _is_lock_error(e) -> bool:
+    return isinstance(e, sqlite3.OperationalError) and "locked" in str(e).lower()
 
 
-def _shm_in_use(shm: str) -> bool:
-    """Is a live connection (this host, or another host holding the SQLite shm lock) using the -shm? Unknown
-    counts as in use, so nothing is renamed on doubt."""
-    if _holders_of(shm):
-        return True
-    try:
-        import fcntl
-        fd = os.open(shm, os.O_RDWR)
-    except OSError:
-        return False
-    try:
-        try:  # SQLite's "dead man switch" byte: held shared by every live WAL connection
-            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 128)
-        except OSError:
-            return True
-        except Exception:  # noqa: BLE001
-            return True
-        return False
-    finally:
-        os.close(fd)  # closing drops our probe lock (nothing in this process had the file open: checked above)
-
-
-def _unique_stale(path: str, suffix: str, ts: str) -> str:
-    base = f"{path}{suffix}.stale-{ts}"
-    cand, n = base, 0
-    while os.path.lexists(cand):
-        n += 1
-        cand = f"{base}-{n}"
-    return cand
-
-
-def _stale_aside(path) -> bool:
-    """Rename a 0-byte -wal (and its -shm) aside, for a lock failure on a network FS with a WAL-header DB.
-    Never when the DB is on a local FS or has a DELETE header, the -wal holds data, or a live connection has the
-    -shm open. True only if at least one rename succeeded."""
-    path = str(path)
-    if not is_network_fs(path) or not _header_is_wal(path):
-        return False
-    if _wal_size(path) != 0:  # absent, unreadable or non-empty: never touched
-        return False
-    if _shm_in_use(f"{path}-shm"):
-        log.warning("not moving -wal/-shm of %s aside: a live connection is using them", path)
-        return False
-    if _wal_size(path) != 0:  # re-check immediately before the rename
-        return False
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    renamed = False
-    for suffix in ("-wal", "-shm"):
-        src = f"{path}{suffix}"
-        if not os.path.lexists(src):
-            continue
-        dst = _unique_stale(path, suffix, ts)
-        try:
-            os.rename(src, dst)
-            renamed = True
-            log.warning("moved stale %s aside to %s (0-byte -wal left by a crash)", src, dst)
-        except OSError as e:
-            log.warning("could not move stale %s aside: %s", src, e)
-    return renamed
-
-
-_MAX_RENAME_PASSES = 3
-
-
-def _open_once(path, mode) -> bool:
-    """One open attempt under an exclusive lock. -> True if a WAL->DELETE conversion happened."""
+def _open_once(path, mode) -> None:
+    """One open attempt under an exclusive lock. A WAL->DELETE conversion that did not take effect counts as locked."""
     conn = sqlite3.connect(str(path), timeout=30)
     convert = False
     try:
@@ -226,50 +110,52 @@ def _open_once(path, mode) -> bool:
             conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
         finally:
             conn.execute("ROLLBACK")
-        conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
+        # SQLite requires PRAGMA journal_mode outside a transaction, hence the ROLLBACK above rather than
+        # running it inside the exclusive lock.
+        row = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
+        got = str(row[0]).lower() if row else ""
+        if convert and got == "wal":  # a peer still holds the DB in WAL mode: not converted, so retry
+            raise sqlite3.OperationalError("database is locked (could not leave WAL mode: another connection "
+                                           "is using it)")
     finally:
         conn.close()
-    if convert:
+    if convert and got == "delete":
         log.info("database %s was in WAL mode on a network filesystem; converted to DELETE journal mode", path)
-    return convert
 
 
 def check_open(path) -> None:
-    """Open the DB the way the app will; retry through lock contention (NFSv4 lease) for at most ACT_DB_LOCK_WAIT
-    seconds (plus one attempt), then raise one clear DatabaseOpenError (the only exception it raises)."""
+    """Open the DB the way the app will. A lock (NFSv4 lease) is retried with backoff (each sleep <= 60 s, total
+    sleeps <= ACT_DB_LOCK_WAIT), then one clear DatabaseOpenError is raised (the only exception raised). Startup
+    never renames, moves or deletes -wal/-shm files."""
     mode = journal_mode_for(path)
     wait = _lock_wait()
     start = time.monotonic()
-    delay, attempt, passes = 1.0, 0, 0
+    slept, delay, attempt = 0.0, 1.0, 0
     while True:
         attempt += 1
         try:
             _open_once(path, mode)
             return
         except sqlite3.Error as e:
-            locked = "locked" in str(e).lower()
-            size = _wal_size(path)
-            nonempty_wal = size is not None and size > 0
-            if locked and not nonempty_wal and passes < _MAX_RENAME_PASSES and _stale_aside(path):
-                passes += 1
-                log.warning("database %s was locked (attempt %d): %s; stale -wal/-shm moved aside, retrying",
-                            path, attempt, e)
+            elapsed = time.monotonic() - start  # attempts cost time too: the budget is wall time
+            if _is_lock_error(e) and elapsed < wait:
+                pause = min(delay, 60.0, wait - elapsed)
+                log.warning("database %s is locked (attempt %d, %.0fs of %.0fs): %s; retrying in %.0fs",
+                            path, attempt, elapsed, wait, e, pause)
+                time.sleep(pause)
+                slept += pause
+                delay = min(delay * 2, 60.0)
                 continue
-            elapsed = time.monotonic() - start
-            if not locked or elapsed >= wait:
-                hint = ("Stale -wal/-shm files left by a crash are the usual cause on a network filesystem. "
-                        + ("A non-empty -wal is present and holds data, so it was not touched: restore a "
-                           "known-good copy with scripts/restore_db.py, and restart."
-                           if nonempty_wal else
-                           "Move them aside, or restore a known-good copy with scripts/restore_db.py, and restart."))
-                raise DatabaseOpenError(
-                    f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e} "
-                    f"(after {elapsed:.0f}s, {attempt} attempt(s)). {hint}") from e
-            pause = min(delay, wait - elapsed)  # never sleep past the budget
-            log.warning("database %s is locked (attempt %d, %.0fs of %.0fs): %s; retrying in %.0fs",
-                        path, attempt, elapsed, wait, e, pause)
-            time.sleep(pause)
-            delay = min(delay * 2, 60.0)
+            left = _leftover_files(path)
+            if left:
+                hint = (f" Leftover files from a crash may be the cause: {', '.join(left)}. They were not touched. "
+                        "Restore a known-good copy with scripts/restore_db.py, and restart.")
+            else:
+                hint = (" No leftover -wal/-shm files exist; startup never renames, moves or deletes them. "
+                        "Restore a known-good copy with scripts/restore_db.py if the file is damaged.")
+            raise DatabaseOpenError(
+                f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e} "
+                f"(slept {slept:.0f}s, {attempt} attempt(s)).{hint}") from e
         except OSError as e:
             raise DatabaseOpenError(f"Cannot open database {path}: {e}") from e
 

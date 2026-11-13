@@ -9,10 +9,12 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 
 from sqlalchemy import delete, insert, select, update
+from sqlalchemy import exc as sa_exc
 
 from . import db, governance
 from .connections import store
@@ -165,26 +167,32 @@ def _no_sql(e) -> str:
     return _no_params(e)
 
 
+def _is_db_lock(e) -> bool:
+    """A database lock: an OperationalError (SQLAlchemy's or sqlite3's) whose message says locked."""
+    return isinstance(e, (sa_exc.OperationalError, sqlite3.OperationalError)) and "locked" in str(e).lower()
+
+
 def run_scan(sid, eng=None):
     """Discover each selected scope (one failing scope does not stop the others), classify, stage."""
     eng = eng or db.engine
     try:
         _run_scan(sid, eng)
     except Exception as e:  # noqa: BLE001
-        locked = "locked" in str(e).lower()
+        locked = _is_db_lock(e)
         # Full exception at WARNING, without the SQL parameters (they can hold scan data).
         log.warning("scan %s failed: %s", sid, _no_params(e), exc_info=(type(e), _strip_params(e), e.__traceback__))
-        reason = ("The database was locked and the scan could not save its progress. It will be retried; "
-                  "start the scan again if it stays failed." if locked else _no_sql(e))[:300]
+        reason = ("The database was locked and the scan could not save its progress. "
+                  "Start the scan again if it stays failed." if locked else _no_sql(e))[:300]
         for attempt in range(8 if locked else 1):
             try:
                 set_scan(sid, eng, state="failed", error=reason, finished_at=now_iso())
                 break
             except Exception as e2:  # noqa: BLE001
-                if "locked" not in str(e2).lower() or attempt == 7:
-                    log.error("scan %s: could not record the failure: %s", sid, e2)
+                if not _is_db_lock(e2) or attempt == 7:
+                    log.error("scan %s: could not record the failure (it may stay 'running'): %s", sid, e2)
                     break
                 time.sleep(min(2 ** attempt, 30))
+
 
 
 def _run_scan(sid, eng):

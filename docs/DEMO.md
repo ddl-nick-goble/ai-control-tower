@@ -14,7 +14,7 @@ classifier endpoint key. Every stand-in is labelled in the UI (a banner on every
 - The demo database is private to the App's pod. A Domino Job cannot see it, so while demo mode is on only the sample
   connection can be scanned (it runs inside the App). Scanning a live connection is refused with "Turn demo mode off to
   scan a live connection."
-- While the App opens its database (it can wait up to `ACT_DB_LOCK_WAIT`, default 150 s, for a stale NFS lock), it
+- While the App opens its database (it can wait up to `ACT_DB_LOCK_WAIT`, default 150 s, for an NFS lock), it
   already answers `GET /api/health` with `{"status": "starting"}`; other `/api` routes return 503 "Database is starting"
   until it is ready, and a final failure shows as `"status": "error"` in `/api/health`.
 - On startup an empty database is seeded in-process: the 12 fixture agents including recon-agent, the weekend-drift run with one
