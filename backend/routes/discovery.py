@@ -34,6 +34,8 @@ def start_scan(cid: str, user: User = Depends(require_user)):
         raise HTTPException(409, "ACT hasn't seen the trust yet. Finish the setup step before scanning.")
     try:
         return discovery.start_scan(cid, user)
+    except discovery.ScanRefused as e:
+        raise HTTPException(409, str(e))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"ACT could not start the scan: {e}")
 

@@ -7,6 +7,7 @@ browser does not stop anything and a reload picks the scan up again.
 import copy
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -30,9 +31,20 @@ def _job_command(connection_id, scan_id=None):
     return f"python jobs/discover.py --connection {connection_id} --sync"
 
 
+class ScanRefused(Exception):
+    """A scan that cannot run now; the message is written for the user."""
+
+
+DEMO_JOB_REFUSAL = "Turn demo mode off to scan a live connection."
+
+
 def launch_job(connection_id, scan_id, **kw):
     """Start the discovery Job through the Domino Jobs API (no auth header; the proxy adds it).
-    -> {"job_id", "job_url"}."""
+    -> {"job_id", "job_url"}. Refused while demo mode is on: a Job cannot see the App's pod-local demo DB, so
+    the scan would be invisible (sample scans run in-thread and never come here)."""
+    from . import demo
+    if demo.enabled():
+        raise ScanRefused(DEMO_JOB_REFUSAL)
     import requests
     base = os.environ["DOMINO_API_PROXY"].rstrip("/")
     body = {"projectId": os.environ["DOMINO_PROJECT_ID"], "runCommand": _job_command(connection_id, scan_id),
@@ -96,6 +108,10 @@ def start_scan(cid, user):
     with db.engine.connect() as cx:
         row = cx.execute(select(db.connections).where(db.connections.c.id == cid)).first()
     sample = bool(row.sample)
+    if not sample and not inline():
+        from . import demo
+        if demo.enabled():
+            raise ScanRefused(DEMO_JOB_REFUSAL)
     sid = create_scan(cid, user, "scan", sample)
     if inline():
         run_scan(sid)
@@ -131,15 +147,35 @@ def _leaves(tree):
             yield n["id"]
 
 
+def _no_params(e) -> str:
+    """str(e) without SQLAlchemy's '[SQL: ...]' / '[parameters: ...]' trailer."""
+    return re.split(r"\n?\[(?:SQL|parameters):", str(e), maxsplit=1)[0].strip()
+
+
+def _strip_params(e):
+    if hasattr(e, "params"):
+        try:
+            e.params = None
+        except Exception:  # noqa: BLE001
+            pass
+    return e
+
+
+def _no_sql(e) -> str:
+    return _no_params(e)
+
+
 def run_scan(sid, eng=None):
     """Discover each selected scope (one failing scope does not stop the others), classify, stage."""
     eng = eng or db.engine
     try:
         _run_scan(sid, eng)
     except Exception as e:  # noqa: BLE001
-        log.exception("scan %s failed", sid)
         locked = "locked" in str(e).lower()
-        reason = (f"The database was locked and the scan could not save its progress: {e}" if locked else str(e))[:300]
+        # Full exception at WARNING, without the SQL parameters (they can hold scan data).
+        log.warning("scan %s failed: %s", sid, _no_params(e), exc_info=(type(e), _strip_params(e), e.__traceback__))
+        reason = ("The database was locked and the scan could not save its progress. It will be retried; "
+                  "start the scan again if it stays failed." if locked else _no_sql(e))[:300]
         for attempt in range(8 if locked else 1):
             try:
                 set_scan(sid, eng, state="failed", error=reason, finished_at=now_iso())
