@@ -31,7 +31,7 @@ from backend.settings import DEFS  # noqa: E402
 PLAIN = {"X-Domino-User-Id": "plain-1", "X-Domino-User": "plain.user"}
 OWNER_NAME = "owner.user"
 SECRET = "s3cr3t-VALUE-48aa"
-_MANAGED = {d["env"] for d in DEFS.values()} | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "DOMINO_RUN_HOST_PATH"}
+_MANAGED = {d["env"] for d in DEFS.values()} | {"ACT_DEMO_MODE", "ACT_SECRET_KEY", "DOMINO_RUN_HOST_PATH", "ACT_SETTINGS_OPEN"}
 
 
 def _app(apps, extra):
@@ -45,12 +45,17 @@ def app_w(apps):
 
 @pytest.fixture(scope="module")
 def app_n(apps):
-    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "0"})
+    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "0", "ACT_SETTINGS_OPEN": "0"})  # SET-1: locked behaviour
 
 
 @pytest.fixture(scope="module")
 def app_d(apps):
-    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "ACT_DEMO_MODE": "1"})
+    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "ACT_DEMO_MODE": "1", "ACT_SETTINGS_OPEN": "0"})  # SET-1: locked
+
+
+@pytest.fixture(scope="module")
+def app_wl(apps):
+    return _app(apps, {"ACT_WORKSPACE_OWNER_MODE": "1", "LLM_GATEWAY_URL": "http://gateway.invalid/", "ACT_SETTINGS_OPEN": "0"})
 
 
 @pytest.fixture
@@ -86,9 +91,9 @@ def test_sr1_owner_nav_link_with_gear(page, shot, app_w):
     shot("then")
 
 
-def test_sr1_non_admin_link_and_explanation(page, context, shot, app_w):
+def test_sr1_non_admin_link_and_explanation(page, context, shot, app_wl):
     context.set_extra_http_headers(PLAIN)
-    _go(page, app_w, "#/")
+    _go(page, app_wl, "#/")
     link = _nav(page).get_by_role("link", name="Settings")
     expect(link).to_be_visible()
     expect(link.get_by_test_id("nav-settings-icon")).to_be_visible()
