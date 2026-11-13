@@ -23,6 +23,7 @@ def app(db_env, tmp_path, monkeypatch):
     for k in ("ACT_ADMINS", "ACT_DEMO_MODE", "ACT_WORKSPACE_OWNER_MODE", "DOMINO_RUN_HOST_PATH"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
+    monkeypatch.setenv("ACT_SETTINGS_OPEN", "0")  # SET-1: these tests describe the locked behaviour
     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
     monkeypatch.setenv("ACT_SECRET_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))

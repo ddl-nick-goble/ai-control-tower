@@ -33,6 +33,7 @@ def env(db_env, tmp_path, monkeypatch):
     for k in ENV_NAMES:
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("DOMINO_PROJECT_OWNER", "owner")
+    monkeypatch.setenv("ACT_SETTINGS_OPEN", "0")  # SET-1: these tests describe the locked behaviour
     monkeypatch.setenv("ACT_LLM_PROVIDER", "mock")
     monkeypatch.setenv("ACT_EVIDENCE_DIR", str(tmp_path / "evidence"))
     monkeypatch.setenv("MLFLOW_TRACKING_URI", f"file://{tmp_path}/mlruns")
