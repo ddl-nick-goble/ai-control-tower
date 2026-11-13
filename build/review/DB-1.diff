@@ -1,0 +1,1096 @@
+diff --git a/backend/db.py b/backend/db.py
+index 10e937a..7306db8 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -1,8 +1,11 @@
+ """SQLite storage for ACT (single DB, pooled connections; WAL on local disk, DELETE journal on network filesystems)."""
++import glob
+ import logging
+ import os
+ import sqlite3
+ import threading
++import time
++from datetime import datetime, timezone
+ from pathlib import Path
+ 
+ from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
+@@ -101,21 +104,174 @@ class DatabaseOpenError(Exception):
+     pass
+ 
+ 
+-def check_open(path) -> None:
+-    """Open the DB the way the app will; raise one clear DatabaseOpenError if that fails."""
+-    mode = journal_mode_for(path)
++def _lock_wait() -> float:
++    try:
++        return float(os.environ.get("ACT_DB_LOCK_WAIT", "") or 150)
++    except ValueError:
++        return 150.0
++
++
++def _header_is_wal(path) -> bool:
++    try:
++        with open(path, "rb") as f:
++            h = f.read(100)
++    except OSError:
++        return False
++    return len(h) >= 20 and h[18] == 2 and h[19] == 2
++
++
++def _wal_size(path):
++    """Size of the -wal file, or None when it is absent or cannot be stat'ed (it may vanish at any moment)."""
++    try:
++        return os.stat(f"{path}-wal").st_size
++    except OSError:
++        return None
++
++
++def _holders_of(target: str) -> bool:
++    """True if any process visible in /proc has `target` open (a live peer on this host)."""
++    try:
++        want = os.stat(target)
++    except OSError:
++        return False
++    for fd_dir in glob.glob("/proc/[0-9]*/fd"):
++        try:
++            fds = os.listdir(fd_dir)
++        except OSError:
++            continue
++        for fd in fds:
++            try:
++                st = os.stat(os.path.join(fd_dir, fd))
++            except OSError:
++                continue
++            if st.st_ino == want.st_ino and st.st_dev == want.st_dev:
++                return True
++    return False
++
++
++def _shm_in_use(shm: str) -> bool:
++    """Is a live connection (this host, or another host holding the SQLite shm lock) using the -shm? Unknown
++    counts as in use, so nothing is renamed on doubt."""
++    if _holders_of(shm):
++        return True
+     try:
+-        conn = sqlite3.connect(str(path), timeout=30)
++        import fcntl
++        fd = os.open(shm, os.O_RDWR)
++    except OSError:
++        return False
++    try:
++        try:  # SQLite's "dead man switch" byte: held shared by every live WAL connection
++            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 128)
++        except OSError:
++            return True
++        except Exception:  # noqa: BLE001
++            return True
++        return False
++    finally:
++        os.close(fd)  # closing drops our probe lock (nothing in this process had the file open: checked above)
++
++
++def _unique_stale(path: str, suffix: str, ts: str) -> str:
++    base = f"{path}{suffix}.stale-{ts}"
++    cand, n = base, 0
++    while os.path.lexists(cand):
++        n += 1
++        cand = f"{base}-{n}"
++    return cand
++
++
++def _stale_aside(path) -> bool:
++    """Rename a 0-byte -wal (and its -shm) aside, for a lock failure on a network FS with a WAL-header DB.
++    Never when the DB is on a local FS or has a DELETE header, the -wal holds data, or a live connection has the
++    -shm open. True only if at least one rename succeeded."""
++    path = str(path)
++    if not is_network_fs(path) or not _header_is_wal(path):
++        return False
++    if _wal_size(path) != 0:  # absent, unreadable or non-empty: never touched
++        return False
++    if _shm_in_use(f"{path}-shm"):
++        log.warning("not moving -wal/-shm of %s aside: a live connection is using them", path)
++        return False
++    if _wal_size(path) != 0:  # re-check immediately before the rename
++        return False
++    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
++    renamed = False
++    for suffix in ("-wal", "-shm"):
++        src = f"{path}{suffix}"
++        if not os.path.lexists(src):
++            continue
++        dst = _unique_stale(path, suffix, ts)
+         try:
+-            conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
++            os.rename(src, dst)
++            renamed = True
++            log.warning("moved stale %s aside to %s (0-byte -wal left by a crash)", src, dst)
++        except OSError as e:
++            log.warning("could not move stale %s aside: %s", src, e)
++    return renamed
++
++
++_MAX_RENAME_PASSES = 3
++
++
++def _open_once(path, mode) -> bool:
++    """One open attempt under an exclusive lock. -> True if a WAL->DELETE conversion happened."""
++    conn = sqlite3.connect(str(path), timeout=30)
++    convert = False
++    try:
++        conn.isolation_level = None
++        conn.execute("BEGIN EXCLUSIVE")
++        try:
++            # the header is re-read inside the lock: convert only if it is still WAL
++            convert = mode == "DELETE" and is_network_fs(path) and _header_is_wal(path)
+             conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+         finally:
+-            conn.close()
+-    except sqlite3.Error as e:
+-        raise DatabaseOpenError(
+-            f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e}. "
+-            "On a network filesystem the usual cause is stale -wal/-shm files left by a crash; "
+-            "move them aside, or restore a known-good copy with scripts/restore_db.py, and restart.") from e
++            conn.execute("ROLLBACK")
++        conn.execute(f"PRAGMA journal_mode={mode}").fetchall()
++    finally:
++        conn.close()
++    if convert:
++        log.info("database %s was in WAL mode on a network filesystem; converted to DELETE journal mode", path)
++    return convert
++
++
++def check_open(path) -> None:
++    """Open the DB the way the app will; retry through lock contention (NFSv4 lease) for at most ACT_DB_LOCK_WAIT
++    seconds (plus one attempt), then raise one clear DatabaseOpenError (the only exception it raises)."""
++    mode = journal_mode_for(path)
++    wait = _lock_wait()
++    start = time.monotonic()
++    delay, attempt, passes = 1.0, 0, 0
++    while True:
++        attempt += 1
++        try:
++            _open_once(path, mode)
++            return
++        except sqlite3.Error as e:
++            locked = "locked" in str(e).lower()
++            size = _wal_size(path)
++            nonempty_wal = size is not None and size > 0
++            if locked and not nonempty_wal and passes < _MAX_RENAME_PASSES and _stale_aside(path):
++                passes += 1
++                log.warning("database %s was locked (attempt %d): %s; stale -wal/-shm moved aside, retrying",
++                            path, attempt, e)
++                continue
++            elapsed = time.monotonic() - start
++            if not locked or elapsed >= wait:
++                hint = ("Stale -wal/-shm files left by a crash are the usual cause on a network filesystem. "
++                        + ("A non-empty -wal is present and holds data, so it was not touched: restore a "
++                           "known-good copy with scripts/restore_db.py, and restart."
++                           if nonempty_wal else
++                           "Move them aside, or restore a known-good copy with scripts/restore_db.py, and restart."))
++                raise DatabaseOpenError(
++                    f"Cannot open database {path} (filesystem: {fs_type(path)}, journal mode: {mode}): {e} "
++                    f"(after {elapsed:.0f}s, {attempt} attempt(s)). {hint}") from e
++            pause = min(delay, wait - elapsed)  # never sleep past the budget
++            log.warning("database %s is locked (attempt %d, %.0fs of %.0fs): %s; retrying in %.0fs",
++                        path, attempt, elapsed, wait, e, pause)
++            time.sleep(pause)
++            delay = min(delay * 2, 60.0)
++        except OSError as e:
++            raise DatabaseOpenError(f"Cannot open database {path}: {e}") from e
+ 
+ 
+ def _make_engine(path: str):
+diff --git a/backend/demo.py b/backend/demo.py
+index eb7242b..47d5d3a 100644
+--- a/backend/demo.py
++++ b/backend/demo.py
+@@ -67,7 +67,14 @@ def enabled() -> bool:
+ 
+ def default_db_path() -> str:
+     """A separate demo DB, never the shared act.db."""
++    override = (os.environ.get("ACT_DEMO_DB_PATH") or "").strip()
++    if override:
++        return override
+     if DATASET_DIR.is_dir():
++        from . import db
++        if db.is_network_fs(DATASET_DIR):  # pod-local: the App, workspace and Jobs never share the demo DB
++            import tempfile
++            return str(Path(tempfile.gettempdir()) / "act-demo" / "demo.db")
+         return str(DATASET_DIR / "demo.db")
+     return str(ROOT / ".act-demo" / "act.db")
+ 
+diff --git a/backend/discovery.py b/backend/discovery.py
+index 563201b..3122c93 100644
+--- a/backend/discovery.py
++++ b/backend/discovery.py
+@@ -7,6 +7,7 @@ browser does not stop anything and a reload picks the scan up again.
+ import copy
+ import logging
+ import os
++import re
+ import secrets
+ import threading
+ import time
+@@ -30,9 +31,20 @@ def _job_command(connection_id, scan_id=None):
+     return f"python jobs/discover.py --connection {connection_id} --sync"
+ 
+ 
++class ScanRefused(Exception):
++    """A scan that cannot run now; the message is written for the user."""
++
++
++DEMO_JOB_REFUSAL = "Turn demo mode off to scan a live connection."
++
++
+ def launch_job(connection_id, scan_id, **kw):
+     """Start the discovery Job through the Domino Jobs API (no auth header; the proxy adds it).
+-    -> {"job_id", "job_url"}."""
++    -> {"job_id", "job_url"}. Refused while demo mode is on: a Job cannot see the App's pod-local demo DB, so
++    the scan would be invisible (sample scans run in-thread and never come here)."""
++    from . import demo
++    if demo.enabled():
++        raise ScanRefused(DEMO_JOB_REFUSAL)
+     import requests
+     base = os.environ["DOMINO_API_PROXY"].rstrip("/")
+     body = {"projectId": os.environ["DOMINO_PROJECT_ID"], "runCommand": _job_command(connection_id, scan_id),
+@@ -96,6 +108,10 @@ def start_scan(cid, user):
+     with db.engine.connect() as cx:
+         row = cx.execute(select(db.connections).where(db.connections.c.id == cid)).first()
+     sample = bool(row.sample)
++    if not sample and not inline():
++        from . import demo
++        if demo.enabled():
++            raise ScanRefused(DEMO_JOB_REFUSAL)
+     sid = create_scan(cid, user, "scan", sample)
+     if inline():
+         run_scan(sid)
+@@ -131,14 +147,44 @@ def _leaves(tree):
+             yield n["id"]
+ 
+ 
++def _no_params(e) -> str:
++    """str(e) without SQLAlchemy's '[SQL: ...]' / '[parameters: ...]' trailer."""
++    return re.split(r"\n?\[(?:SQL|parameters):", str(e), maxsplit=1)[0].strip()
++
++
++def _strip_params(e):
++    if hasattr(e, "params"):
++        try:
++            e.params = None
++        except Exception:  # noqa: BLE001
++            pass
++    return e
++
++
++def _no_sql(e) -> str:
++    return _no_params(e)
++
++
+ def run_scan(sid, eng=None):
+     """Discover each selected scope (one failing scope does not stop the others), classify, stage."""
+     eng = eng or db.engine
+     try:
+         _run_scan(sid, eng)
+     except Exception as e:  # noqa: BLE001
+-        log.exception("scan %s failed", sid)
+-        set_scan(sid, eng, state="failed", error=str(e)[:300], finished_at=now_iso())
++        locked = "locked" in str(e).lower()
++        # Full exception at WARNING, without the SQL parameters (they can hold scan data).
++        log.warning("scan %s failed: %s", sid, _no_params(e), exc_info=(type(e), _strip_params(e), e.__traceback__))
++        reason = ("The database was locked and the scan could not save its progress. It will be retried; "
++                  "start the scan again if it stays failed." if locked else _no_sql(e))[:300]
++        for attempt in range(8 if locked else 1):
++            try:
++                set_scan(sid, eng, state="failed", error=reason, finished_at=now_iso())
++                break
++            except Exception as e2:  # noqa: BLE001
++                if "locked" not in str(e2).lower() or attempt == 7:
++                    log.error("scan %s: could not record the failure: %s", sid, e2)
++                    break
++                time.sleep(min(2 ** attempt, 30))
+ 
+ 
+ def _run_scan(sid, eng):
+diff --git a/backend/main.py b/backend/main.py
+index cf0371a..aeee323 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -5,6 +5,7 @@ import logging
+ import os
+ import pkgutil
+ import re
++import threading
+ import time
+ from contextlib import asynccontextmanager
+ from pathlib import Path
+@@ -23,20 +24,48 @@ ROOT = Path(__file__).resolve().parent.parent
+ DIST = ROOT / "frontend" / "dist"
+ 
+ 
++class DbState:
++    """Opening the DB can wait minutes for an NFS lock lease; that runs in a background thread so the App
++    answers /api/health at once (Domino's App start must not block)."""
++
++    def __init__(self):
++        self.status = "starting"  # starting | ready | error
++        self.error = None
++        self.done = threading.Event()
++
++
++def _open_db(app_, state):
++    try:
++        db.init_db()
++        app_.state.demo_guard = None
++        try:
++            if demo.env_enabled():
++                demo.warn_live_switches()
++                demo.ensure_seeded()
++            else:
++                settings.apply_demo_setting()  # the switch saved from the Settings page
++        except demo.DemoGuardError as e:
++            app_.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
++        db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
++        state.status = "ready"
++    except Exception as e:  # noqa: BLE001
++        log.error("database could not be opened; the App stays up and reports it in /api/health: %s", e,
++                  exc_info=True)
++        state.error = str(e)
++        state.status = "error"
++    finally:
++        state.done.set()
++
++
+ @asynccontextmanager
+ async def lifespan(_app):
+     llm.warn_if_mock()
+-    db.init_db()
+     _app.state.demo_guard = None
+-    try:
+-        if demo.env_enabled():
+-            demo.warn_live_switches()
+-            await run_in_threadpool(demo.ensure_seeded)
+-        else:
+-            await run_in_threadpool(settings.apply_demo_setting)  # the switch saved from the Settings page
+-    except demo.DemoGuardError as e:
+-        _app.state.demo_guard = str(e)  # already logged; surfaced in /api/health and the banner
+-    db.prewarm(int(os.environ.get("ACT_DB_PREWARM_COUNT", "10")))
++    state = _app.state.db_state = DbState()
++    threading.Thread(target=_open_db, args=(_app, state), daemon=True, name="act-db-open").start()
++    # A healthy DB opens in milliseconds: give it a short grace so the first requests see it ready.
++    grace = float(os.environ.get("ACT_DB_STARTUP_GRACE", "5") or 5)
++    await run_in_threadpool(state.done.wait, grace)
+     try:
+         yield
+     finally:
+@@ -60,6 +89,12 @@ class DemoSwitchGate:
+     async def __call__(self, scope, receive, send):
+         if scope["type"] != "http" or scope["path"].endswith("/api/health"):
+             return await self.app(scope, receive, send)
++        st = getattr(app.state, "db_state", None)
++        if st is not None and st.status != "ready" and (scope["path"].startswith(("/api/", "/v1/"))):
++            msg = ("Database is starting" if st.status == "starting"
++                   else "Database could not be opened. See /api/health and the App logs.")
++            resp = JSONResponse({"detail": msg}, status_code=503, headers={"Retry-After": "5"})
++            return await resp(scope, receive, send)
+         deadline = time.monotonic() + 30
+         while not demo.enter():  # atomic: refuses while a switch runs, else counts this request
+             if time.monotonic() > deadline:
+@@ -101,9 +136,13 @@ async def write_guard(request, call_next):
+ 
+ @app.get("/api/health")
+ def health():
+-    return {"status": "ok", "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
++    st = getattr(app.state, "db_state", None)
++    db_status = st.status if st else "ready"
++    body = {"status": "ok" if db_status == "ready" else db_status, "db": db_status,
++            "db_error": st.error if st and st.status == "error" else None, "demo_mode": demo.enabled(), "stand_ins": demo.stand_ins(),
+             "llm_provider": demo.effective_llm_provider(),
+             "demo_guard": getattr(app.state, "demo_guard", None) if demo.enabled() else None}
++    return JSONResponse(body, status_code=503 if db_status == "error" else 200)
+ 
+ 
+ for _m in pkgutil.iter_modules(routes.__path__):
+diff --git a/backend/routes/discovery.py b/backend/routes/discovery.py
+index 0308126..ffa8cbd 100644
+--- a/backend/routes/discovery.py
++++ b/backend/routes/discovery.py
+@@ -34,6 +34,8 @@ def start_scan(cid: str, user: User = Depends(require_user)):
+         raise HTTPException(409, "ACT hasn't seen the trust yet. Finish the setup step before scanning.")
+     try:
+         return discovery.start_scan(cid, user)
++    except discovery.ScanRefused as e:
++        raise HTTPException(409, str(e))
+     except Exception as e:  # noqa: BLE001
+         raise HTTPException(502, f"ACT could not start the scan: {e}")
+ 
+diff --git a/docs/DEMO.md b/docs/DEMO.md
+index 2b3d0b2..27adfa5 100644
+--- a/docs/DEMO.md
++++ b/docs/DEMO.md
+@@ -7,8 +7,16 @@ classifier endpoint key. Every stand-in is labelled in the UI (a banner on every
+ 
+ - Defaults, filled only where a variable is unset: `ACT_LLM_PROVIDER=mock`,
+   `ACT_DOMINO_LOCAL_AGENTS=config/local_agents.json`, `RECON_AGENT_ID=local-recon-agent`,
+-  `ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost`. `ACT_DB` defaults to a separate demo database
+-  (`/mnt/data/ai-control-tower/act/demo.db` when that folder exists, else `.act-demo/act.db` in the repo), never the shared `act.db`.
++  `ACT_EXTERNAL_ALLOW_HOSTS=127.0.0.1,localhost`. `ACT_DB` defaults to a separate demo database, never the shared `act.db`:
++  `<dataset dir>/demo.db` when the dataset folder is on a local disk, else a pod-local file
++  `<tmpdir>/act-demo/demo.db` (reseeded on first use) when the dataset folder is on a network filesystem such as NFS.
++  Set `ACT_DEMO_DB_PATH` to choose the file yourself.
++- The demo database is private to the App's pod. A Domino Job cannot see it, so while demo mode is on only the sample
++  connection can be scanned (it runs inside the App). Scanning a live connection is refused with "Turn demo mode off to
++  scan a live connection."
++- While the App opens its database (it can wait up to `ACT_DB_LOCK_WAIT`, default 150 s, for a stale NFS lock), it
++  already answers `GET /api/health` with `{"status": "starting"}`; other `/api` routes return 503 "Database is starting"
++  until it is ready, and a final failure shows as `"status": "error"` in `/api/health`.
+ - On startup an empty database is seeded in-process: the 12 fixture agents including recon-agent, the weekend-drift run with one
+   open `scope_drift` finding, and a validation record from the mock judge. Restarting does not duplicate anything.
+ - Stand-ins: simulated Governance (bundle ids start with `demo-`, both policies on recon-agent); a deterministic local
+diff --git a/docs/INTEGRATION.md b/docs/INTEGRATION.md
+index 5797455..acc3f43 100644
+--- a/docs/INTEGRATION.md
++++ b/docs/INTEGRATION.md
+@@ -8,6 +8,8 @@ labels itself honestly: template text in the console, the mock judge in the vali
+ | Switch | Current state | What is mocked | Go live |
+ |---|---|---|---|
+ | `ACT_DEMO_MODE` | Unset (off). `1` or `bash app.sh --demo` turns on demo mode | Everything that needs a live prerequisite: mock LLM, locally hosted recon agent, simulated Governance (`demo-` bundle ids), demo classifier (`act.classifier.source=demo`), simulated service account `svc-act-recon-demo`, simulated second approver `demo-approver-simulated`; separate demo DB; auto-seed. All labelled in the UI banner and `GET /api/health`. See [DEMO.md](DEMO.md). | Unset `ACT_DEMO_MODE` and use the rows below, one stand-in at a time. |
++| `ACT_DEMO_DB_PATH` | Unset: the demo DB is `<dataset dir>/demo.db`, or `<tmpdir>/act-demo/demo.db` (pod-local, reseeded on first use) when the dataset dir is on a network filesystem | Where demo mode keeps its database. The App, workspace and Jobs never share it | Set it to a path to choose the file; unset it to use the default. |
++| `ACT_DB_LOCK_WAIT` | `150` (seconds) | How long startup retries on `database is locked` (backoff, each sleep up to 60 s) before failing; longer than the NFSv4 lease | Set a number of seconds. The total wait never exceeds this value plus one 30 s attempt. A 0-byte `-wal` and its `-shm` are renamed to a unique `.stale-<UTC ts>` only when the DB is on a network filesystem, its header says WAL, the exclusive lock just failed, and no live connection has the `-shm` open; a non-empty `-wal` is never touched (use `scripts/restore_db.py`). The App opens the DB in a background thread (`/api/health` says `starting`, then `ok` or `error`); Jobs wait synchronously. |
+ | `ACT_LLM_PROVIDER` | `mock` for the demo (unset = `gateway`) | Recon agent tool loop and validation judge (responses carry model `mock-llm`). Drift explanations make no LLM call in mock mode: a deterministic template is used. `GET /api/health` reports `llm_provider`; a warning is logged at startup. | Unset it, or set `gateway`, and set `LLM_GATEWAY_URL` (next row). |
+ | `LLM_GATEWAY_URL` | Not set | Needed only with the `gateway` provider | 1. Open the gateway App once in a browser and accept consent: https://apps.se-demo.domino.tech/apps/llmgateway/ . 2. Set `LLM_GATEWAY_URL` to that URL. 3. Confirm `GET <url>/v1/models` (with the in-run bearer) lists the `sonnet` and `haiku` aliases, or change the aliases in `agents/recon_agent/llm.py` callers. 4. Unset `ACT_LLM_PROVIDER`. Outside Domino also set `LLM_GATEWAY_TOKEN`. |
+ | `ACT_DOMINO_LOCAL_AGENTS` | Points at `config/local_agents.json`: lists `recon-agent` (native id `local-recon-agent`, hosting "workspace (not deployed)") | The agent is not a deployed Domino Agent; it runs in a workspace or Job. Spans and the classifier call are real. | Deploy `agents/recon_agent` as a Domino Agent. Set `RECON_AGENT_ID` to the Domino app id of that Agent, unset `ACT_DOMINO_LOCAL_AGENTS` (or delete the entry), rerun intake. The deployed Agent then appears from the Apps API. Its ACT id changes, so rerun validation (below) for the new id. Cleanup: archive or delete the old `act:domino` row for `local-recon-agent` once the real Agent is deployed, so the placeholder does not linger beside it. |
+diff --git a/tests/e2e/_server.py b/tests/e2e/_server.py
+index 955e6dd..fd42c07 100644
+--- a/tests/e2e/_server.py
++++ b/tests/e2e/_server.py
+@@ -75,8 +75,10 @@ def _run_seed(db_path, env=None):
+ 
+ 
+ class App:
+-    def __init__(self, proc, logf, log_path, url, port, ids, db_path):
++    def __init__(self, proc, logf, log_path, url, port, ids, db_path, env=None):
+         self.proc, self.logf, self.log_path = proc, logf, log_path
++        self.env = dict(env or {})
++        self.demo_db_path = pathlib.Path(self.env["ACT_DEMO_DB_PATH"]) if self.env.get("ACT_DEMO_DB_PATH") else None
+         self.url, self.port, self.ids, self.db_path = url, port, ids, db_path
+ 
+     def stop(self):
+@@ -103,12 +105,17 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
+            if not k.startswith(("ACT_", "BREAK_CLASSIFIER_")) and k not in set(strip_env)}
+     db_path = tmp / "act.db"
+     env.update({"PYTHONDONTWRITEBYTECODE": "1", "HOST": "0.0.0.0", "ACT_DB": str(db_path),
++                "ACT_DEMO_DB_PATH": str(tmp / "demo.db"),
+                 "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev")})
+     if external:
+         env.update({"ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost", "ACT_TRUSTED_JWKS_PATH": str(JWKS)})
+     if demo:
+         env["ACT_DEMO_MODE"] = "1"
+     env.update(extra_env or {})
++    # DB-1: never the live /mnt/data DBs, whatever a test passes in extra_env
++    env["ACT_DB"] = env["ACT_DB"] if not str(env["ACT_DB"]).startswith("/mnt/data/") else str(db_path)
++    env["ACT_DEMO_DB_PATH"] = (env["ACT_DEMO_DB_PATH"] if not str(env["ACT_DEMO_DB_PATH"]).startswith("/mnt/data/")
++                               else str(tmp / "demo.db"))
+     ids = seed_db(db_path, env) if seed else {}
+ 
+     log_path = tmp / "app.log"
+@@ -129,7 +136,7 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
+                     url = m.group(1)
+                 else:
+                     time.sleep(0.3)
+-        app = App(proc, logf, log_path, url, p, ids, db_path)
++        app = App(proc, logf, log_path, url, p, ids, db_path, env)
+         last = log_path.read_text()[-3000:]
+         if not (url and url.endswith("/")):
+             app.stop()
+diff --git a/tests/e2e/test_db1_isolation.py b/tests/e2e/test_db1_isolation.py
+new file mode 100644
+index 0000000..4405733
+--- /dev/null
++++ b/tests/e2e/test_db1_isolation.py
+@@ -0,0 +1,36 @@
++"""DB-1 / DB1-2: every app the e2e harness starts has its own tmp ACT_DB and ACT_DEMO_DB_PATH, never /mnt/data/."""
++import json
++import urllib.request
++
++from _server import wait_until
++
++OWNER = {"X-Domino-User-Id": "owner-1", "X-Domino-User": "owner.user"}
++ENV = {"DOMINO_PROJECT_OWNER": "owner.user", "ACT_WORKSPACE_OWNER_MODE": "0"}
++
++
++def test_harness_apps_use_tmp_dbs(apps):
++    started = [apps(seed=True), apps(external=False, extra_env=ENV), apps(demo=True)]
++    for app in started:
++        for name in ("ACT_DB", "ACT_DEMO_DB_PATH"):
++            val = app.env.get(name)
++            assert val, f"{name} not set for the app on port {app.port}"
++            assert not val.startswith("/mnt/data/"), f"{name}={val} is under /mnt/data/"
++    assert len({a.env["ACT_DEMO_DB_PATH"] for a in started}) == len(started), "demo DB paths must be per app"
++
++
++def test_demo_on_creates_db_at_tmp_demo_path(apps):
++    app = apps(external=False, extra_env=ENV)
++    demo_path = app.demo_db_path
++    assert demo_path and not str(demo_path).startswith("/mnt/data/")
++    req = urllib.request.Request(app.url + "api/settings/demo_mode", method="PUT", headers={**OWNER, "Content-Type": "application/json"},
++                                 data=json.dumps({"value": True}).encode())
++    try:
++        urllib.request.urlopen(req, timeout=60).read()
++        wait_until(demo_path.exists, 15, 0.25, f"demo DB created at {demo_path}")
++    finally:
++        off = urllib.request.Request(app.url + "api/settings/demo_mode", method="PUT",
++                                     headers={**OWNER, "Content-Type": "application/json"}, data=b'{"value": false}')
++        try:
++            urllib.request.urlopen(off, timeout=60).read()
++        except Exception:
++            pass
+diff --git a/tests/test_db1_nfs_sqlite.py b/tests/test_db1_nfs_sqlite.py
+new file mode 100644
+index 0000000..01ba781
+--- /dev/null
++++ b/tests/test_db1_nfs_sqlite.py
+@@ -0,0 +1,544 @@
++"""DB-1: SQLite on a network filesystem. Written from the ACs only (DB1-1, 1-3, 1-4, 1-5, 1-6).
++
++Nothing here touches /mnt/data: every DB is under tmp_path; a network FS is simulated by patching
++backend.db._read_mounts (the mount table reader), and a lock by making sqlite3.connect raise
++OperationalError("database is locked"). time.sleep / time.monotonic / time.time are replaced by a fake clock so the
++150 s wait runs instantly. Assumed names: db.check_open(path), db.init_db(eng), db.DatabaseOpenError,
++demo.default_db_path(), demo.DATASET_DIR, demo.apply_defaults(), discovery.run_scan(sid, eng), discovery.set_scan.
++"""
++import importlib
++import logging
++import sqlite3
++import sys
++import tempfile
++import time
++
++import pytest
++from sqlalchemy import insert, select
++
++NFS = [("/", "nfs4")]
++LOCAL = [("/", "ext4")]
++
++
++def _purge():
++    for m in [m for m in sys.modules if m == "backend" or m.startswith("backend.")]:
++        del sys.modules[m]
++
++
++@pytest.fixture
++def db(tmp_path, monkeypatch):
++    monkeypatch.setenv("ACT_DB", str(tmp_path / "act.db"))
++    monkeypatch.setenv("ACT_DB_PREWARM_COUNT", "0")
++    monkeypatch.setenv("ACT_WORKSPACE_OWNER_MODE", "0")
++    for k in ("ACT_DB_LOCK_WAIT", "ACT_DB_JOURNAL_MODE", "ACT_DEMO_DB_PATH", "ACT_DEMO_MODE",
++              "DOMINO_IS_GIT_BASED", "DOMINO_PROJECT_NAME", "DOMINO_API_PROXY"):
++        monkeypatch.delenv(k, raising=False)
++    _purge()
++    mod = importlib.import_module("backend.db")
++    yield mod
++    _purge()
++
++
++class Clock:
++    def __init__(self):
++        self.now = 1000.0
++        self.sleeps = []
++
++    def sleep(self, s):
++        self.sleeps.append(s)
++        self.now += max(s, 0)
++
++    def __call__(self):
++        return self.now
++
++
++@pytest.fixture
++def clock(monkeypatch):
++    c = Clock()
++    monkeypatch.setattr(time, "sleep", c.sleep)
++    monkeypatch.setattr(time, "monotonic", c)
++    monkeypatch.setattr(time, "time", c)
++    return c
++
++
++def _locked_connect(monkeypatch, fail_times):
++    """sqlite3.connect raises 'database is locked' fail_times times (None = always), then works."""
++    real = sqlite3.connect
++    state = {"calls": 0}
++
++    def connect(*a, **k):
++        state["calls"] += 1
++        if fail_times is None or state["calls"] <= fail_times:
++            raise sqlite3.OperationalError("database is locked")
++        return real(*a, **k)
++    monkeypatch.setattr(sqlite3, "connect", connect)
++    return state
++
++
++def _make_db(path, mode):
++    c = sqlite3.connect(str(path))
++    c.execute(f"PRAGMA journal_mode={mode}")
++    c.execute("CREATE TABLE t (x INTEGER)")
++    c.execute("INSERT INTO t VALUES (7)")
++    c.commit()
++    c.close()
++
++
++def _header(path):
++    with open(path, "rb") as f:
++        h = f.read(100)
++    return h[18], h[19]
++
++
++# ---------------------------------------------------------------- DB1-1
++
++@pytest.fixture
++def demo_mod(tmp_path, monkeypatch, db):
++    monkeypatch.setenv("ACT_DEMO_MODE", "1")
++    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
++    (tmp_path / "tmp").mkdir()
++    demo = importlib.import_module("backend.demo")
++    ds = tmp_path / "dataset"
++    ds.mkdir()
++    monkeypatch.setattr(demo, "DATASET_DIR", ds)
++    return demo, ds
++
++
++def test_ac_db1_1_demo_db_on_pod_local_disk_when_dataset_is_network_fs(demo_mod, monkeypatch):
++    demo, ds = demo_mod
++    importlib.import_module("backend.db")
++    monkeypatch.setattr(sys.modules["backend.db"], "_read_mounts", lambda: NFS)
++    expected = str(__import__("pathlib").Path(tempfile.gettempdir()) / "act-demo" / "demo.db")
++    assert demo.default_db_path() == expected
++
++
++def test_ac_db1_1_demo_db_stays_in_dataset_dir_on_local_fs(demo_mod, monkeypatch):
++    demo, ds = demo_mod
++    monkeypatch.setattr(sys.modules["backend.db"], "_read_mounts", lambda: LOCAL)
++    assert demo.default_db_path() == str(ds / "demo.db")
++
++
++def test_ac_db1_1_env_override_wins(demo_mod, monkeypatch, tmp_path):
++    demo, ds = demo_mod
++    monkeypatch.setattr(sys.modules["backend.db"], "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DEMO_DB_PATH", str(tmp_path / "x" / "mine.db"))
++    assert demo.default_db_path() == str(tmp_path / "x" / "mine.db")
++
++
++def test_ac_db1_1_demo_reseeds_on_first_use_of_pod_local_db(demo_mod, monkeypatch):
++    demo, ds = demo_mod
++    monkeypatch.setattr(sys.modules["backend.db"], "_read_mounts", lambda: NFS)
++    monkeypatch.delenv("ACT_DB", raising=False)
++    demo.apply_defaults()
++    import os
++    from pathlib import Path
++    assert os.environ["ACT_DB"] == str(Path(tempfile.gettempdir()) / "act-demo" / "demo.db")
++    assert not Path(os.environ["ACT_DB"]).exists()
++    assert demo._db_new is True  # first use on this pod: the demo DB is new, so it is seeded
++
++
++# ---------------------------------------------------------------- DB1-3
++
++def test_ac_db1_3_lock_that_clears_mid_wait_succeeds(db, clock, monkeypatch, caplog, tmp_path):
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "20")
++    state = _locked_connect(monkeypatch, 3)
++    caplog.set_level(logging.INFO)
++    db.check_open(tmp_path / "x.db")  # must not raise
++    assert state["calls"] >= 4
++    assert len(clock.sleeps) >= 3 and all(s > 0 for s in clock.sleeps)
++    attempts = [r for r in caplog.records if "locked" in r.getMessage().lower()]
++    assert len(attempts) >= 3  # each attempt logged with the reason
++
++
++def test_ac_db1_3_backoff_grows(db, clock, monkeypatch, tmp_path):
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "60")
++    _locked_connect(monkeypatch, None)
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(tmp_path / "x.db")
++    assert clock.sleeps[-1] > clock.sleeps[0]
++
++
++def test_ac_db1_3_gives_up_after_env_wait_then_raises(db, clock, monkeypatch, tmp_path):
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "5")
++    _locked_connect(monkeypatch, None)
++    start = clock.now
++    with pytest.raises(db.DatabaseOpenError) as ei:
++        db.check_open(tmp_path / "x.db")
++    waited = clock.now - start
++    assert 5 <= waited <= 5 + 35, waited
++    assert "locked" in str(ei.value).lower()
++
++
++def test_ac_db1_3_default_wait_is_150s(db, clock, monkeypatch, tmp_path):
++    _locked_connect(monkeypatch, None)
++    start = clock.now
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(tmp_path / "x.db")
++    assert 150 <= clock.now - start <= 150 + 60
++
++
++def test_ac_db1_3_init_db_retries_through_a_lock(db, clock, monkeypatch, tmp_path):
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "20")
++    _locked_connect(monkeypatch, 2)
++    db.init_db()
++    assert clock.sleeps
++    with db.engine.connect() as cx:
++        assert cx.execute(select(db.agents.c.id)).all() == []
++
++
++# ---------------------------------------------------------------- DB1-4
++
++def test_ac_db1_4_zero_byte_wal_is_renamed_with_warning(db, clock, monkeypatch, caplog, tmp_path):
++    p = tmp_path / "act.db"
++    wal, shm = tmp_path / "act.db-wal", tmp_path / "act.db-shm"
++    # WAL header on a (mocked) network FS, 0-byte -wal, exclusive lock fails
++    _make_db(p, "WAL")
++    wal.write_bytes(b"")
++    shm.write_bytes(b"\0" * 32768)
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "20")
++    _locked_connect(monkeypatch, 1)
++    caplog.set_level(logging.INFO)
++    db.check_open(p)
++    assert not wal.exists() and not shm.exists()
++    assert len(list(tmp_path.glob("act.db-wal.stale-*"))) == 1
++    assert len(list(tmp_path.glob("act.db-shm.stale-*"))) == 1
++    assert any(r.levelno == logging.WARNING and "stale" in r.getMessage().lower() for r in caplog.records)
++
++
++def test_ac_db1_4_non_empty_wal_is_never_touched(db, clock, monkeypatch, tmp_path):
++    p = tmp_path / "act.db"
++    _make_db(p, "DELETE")
++    wal, shm = tmp_path / "act.db-wal", tmp_path / "act.db-shm"
++    wal.write_bytes(b"w" * 4152)
++    shm.write_bytes(b"\0" * 32768)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "5")
++    _locked_connect(monkeypatch, None)
++    with pytest.raises(db.DatabaseOpenError) as ei:
++        db.check_open(p)
++    msg = str(ei.value)
++    assert "scripts/restore_db.py" in msg and "-wal" in msg
++    assert wal.read_bytes() == b"w" * 4152 and shm.exists()
++    assert not list(tmp_path.glob("*.stale-*"))
++
++
++# ---------------------------------------------------------------- DB1-5
++
++def test_ac_db1_5_wal_header_on_network_fs_converted_to_delete(db, monkeypatch, caplog, tmp_path):
++    p = tmp_path / "act.db"
++    _make_db(p, "WAL")
++    assert _header(p) == (2, 2)
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    caplog.set_level(logging.INFO)
++    db.check_open(p)
++    assert _header(p) == (1, 1)
++    assert not (tmp_path / "act.db-wal").exists() and not (tmp_path / "act.db-shm").exists()
++    c = sqlite3.connect(str(p))
++    assert c.execute("SELECT x FROM t").fetchall() == [(7,)]
++    c.close()
++    assert any("wal" in r.getMessage().lower() and "delete" in r.getMessage().lower() for r in caplog.records)
++
++
++def test_ac_db1_5_conversion_happens_once(db, monkeypatch, caplog, tmp_path):
++    p = tmp_path / "act.db"
++    _make_db(p, "WAL")
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    db.check_open(p)
++    caplog.clear()
++    caplog.set_level(logging.INFO)
++    db.check_open(p)
++    assert _header(p) == (1, 1)
++    assert not any("wal" in r.getMessage().lower() and "delete" in r.getMessage().lower() for r in caplog.records)
++
++
++def test_ac_db1_5_local_fs_wal_is_left_alone(db, monkeypatch, tmp_path):
++    p = tmp_path / "act.db"
++    _make_db(p, "WAL")
++    monkeypatch.setattr(db, "_read_mounts", lambda: LOCAL)
++    db.check_open(p)
++    assert _header(p) == (2, 2)
++
++
++# ---------------------------------------------------------------- DB1-6
++
++def test_ac_db1_6_scan_write_hitting_lock_marks_scan_failed(db, clock, monkeypatch):
++    db.init_db()
++    disc = importlib.import_module("backend.discovery")
++    with db.engine.begin() as cx:
++        cx.execute(insert(db.connections).values(id="c1", provider="aws", state="connected", sample=True,
++                                                 config={}, scopes=[]))
++    sid = disc.create_scan("c1", None, "scan", True)
++    real = disc.set_scan
++    calls = {"n": 0}
++
++    def flaky(sid_, eng=None, **vals):
++        calls["n"] += 1
++        if calls["n"] <= 2:  # the first progress write and the first attempt to record the failure
++            raise sqlite3.OperationalError("database is locked")
++        return real(sid_, eng, **vals)
++    monkeypatch.setattr(disc, "set_scan", flaky)
++    disc.run_scan(sid, db.engine)  # must not raise
++    with db.engine.connect() as cx:
++        row = cx.execute(select(db.scans).where(db.scans.c.id == sid)).first()
++    assert row.state == "failed"
++    assert row.error and "locked" in row.error.lower()
++
++
++# ================================================================ review-gap tests (tightened spec)
++
++import datetime as _dt
++import os
++from pathlib import Path
++
++from sqlalchemy.exc import OperationalError as SAOperationalError
++
++BUSY = 30  # the per-attempt connect timeout the app uses
++
++
++def _locked_connect_timed(monkeypatch, clock, max_calls=300):
++    """Always 'locked'; each attempt costs its connect timeout on the fake clock (as sqlite's busy wait would).
++    Aborts with RuntimeError after max_calls so a retry loop that never ends fails instead of hanging."""
++    state = {"calls": 0}
++
++    def connect(*a, **k):
++        state["calls"] += 1
++        if state["calls"] > max_calls:
++            raise RuntimeError("check_open kept retrying forever")
++        clock.now += k.get("timeout", a[1] if len(a) > 1 else 5.0)
++        raise sqlite3.OperationalError("database is locked")
++    monkeypatch.setattr(sqlite3, "connect", connect)
++    return state
++
++
++def _stale_setup(tmp_path, wal_bytes=b"", shm=b"\0" * 32768, mode="WAL"):
++    p = tmp_path / "act.db"
++    if p.exists():
++        c = sqlite3.connect(str(p))
++        c.execute(f"PRAGMA journal_mode={mode}").fetchall()
++        c.close()
++    else:
++        _make_db(p, mode)
++    for suf in ("-wal", "-shm"):
++        (tmp_path / f"act.db{suf}").unlink(missing_ok=True)
++    (tmp_path / "act.db-wal").write_bytes(wal_bytes)
++    (tmp_path / "act.db-shm").write_bytes(shm)
++    return p
++
++
++# ---------------------------------------------------------------- DB1-3 bound
++
++@pytest.mark.parametrize("n", [5, 20, 45, 100, 150])
++def test_ac_db1_3_bound_total_time_within_wait_plus_one_attempt(db, clock, monkeypatch, tmp_path, n):
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", str(n))
++    _locked_connect_timed(monkeypatch, clock)
++    start = clock.now
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(tmp_path / "x.db")
++    assert clock.now - start <= n + BUSY, (clock.now - start, clock.sleeps)
++
++
++@pytest.mark.parametrize("n", [5, 20, 150])
++def test_ac_db1_3_bound_sleeps_total_not_beyond_wait(db, clock, monkeypatch, tmp_path, n):
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", str(n))
++    _locked_connect(monkeypatch, None)  # attempts cost no time: only the sleeps count
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(tmp_path / "x.db")
++    assert sum(clock.sleeps) <= n, clock.sleeps
++
++
++def test_ac_db1_3_rename_failure_raises_after_bounded_attempts(db, clock, monkeypatch, tmp_path):
++    p = _stale_setup(tmp_path)
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "5")
++    state = _locked_connect_timed(monkeypatch, clock)
++
++    def boom(*a, **k):
++        raise OSError("read-only file system")
++    monkeypatch.setattr(Path, "rename", boom)
++    monkeypatch.setattr(os, "rename", boom)
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(p)
++    assert state["calls"] <= 20, state["calls"]
++
++
++# ---------------------------------------------------------------- DB1-4 guard
++
++def _assert_untouched(tmp_path, shm=b"\0" * 32768):
++    assert (tmp_path / "act.db-wal").exists() and (tmp_path / "act.db-shm").exists()
++    assert (tmp_path / "act.db-shm").read_bytes() == shm
++    assert not list(tmp_path.glob("*.stale-*"))
++
++
++def test_ac_db1_4_guard_delete_header_on_network_fs_not_renamed(db, clock, monkeypatch, tmp_path):
++    p = _stale_setup(tmp_path, mode="DELETE")
++    assert _header(p) == (1, 1)
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "5")
++    _locked_connect_timed(monkeypatch, clock)
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(p)
++    _assert_untouched(tmp_path)
++
++
++def test_ac_db1_4_guard_wal_header_on_local_fs_not_renamed(db, clock, monkeypatch, tmp_path):
++    p = _stale_setup(tmp_path, mode="WAL")
++    assert _header(p) == (2, 2)
++    monkeypatch.setattr(db, "_read_mounts", lambda: LOCAL)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "5")
++    _locked_connect_timed(monkeypatch, clock)
++    with pytest.raises(db.DatabaseOpenError):
++        db.check_open(p)
++    _assert_untouched(tmp_path)
++
++
++def test_ac_db1_4_guard_live_second_connection_files_not_renamed(db, monkeypatch, tmp_path):
++    p = tmp_path / "act.db"
++    live = sqlite3.connect(str(p), isolation_level=None)
++    assert live.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
++    live.execute("CREATE TABLE t (x INTEGER)")
++    live.execute("INSERT INTO t VALUES (1)")
++    live.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
++    live.execute("BEGIN IMMEDIATE")
++    wal, shm = tmp_path / "act.db-wal", tmp_path / "act.db-shm"
++    assert wal.exists() and wal.stat().st_size == 0 and shm.exists()
++    ino = (wal.stat().st_ino, shm.stat().st_ino)
++
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "1")
++    real = sqlite3.connect
++    calls = {"n": 0}
++
++    def connect(*a, **k):
++        calls["n"] += 1
++        if calls["n"] > 50:
++            raise RuntimeError("check_open kept retrying forever")
++        return real(a[0], **{**k, "timeout": 0.05})
++    monkeypatch.setattr(sqlite3, "connect", connect)
++    try:
++        try:
++            db.check_open(p)
++        except db.DatabaseOpenError:
++            pass
++        assert wal.exists() and shm.exists()
++        assert (wal.stat().st_ino, shm.stat().st_ino) == ino
++        assert not list(tmp_path.glob("*.stale-*"))
++        live.execute("INSERT INTO t VALUES (2)")
++        live.execute("COMMIT")
++    finally:
++        live.close()
++    c = real(str(p))
++    assert sorted(r[0] for r in c.execute("SELECT x FROM t")) == [1, 2]
++    c.close()
++
++
++def test_ac_db1_4_stale_rename_never_overwrites_earlier_stale_file(db, clock, monkeypatch, tmp_path):
++    fixed = _dt.datetime(2030, 1, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
++
++    class Frozen(_dt.datetime):
++        @classmethod
++        def now(cls, tz=None):
++            return fixed
++    monkeypatch.setattr(db, "datetime", Frozen, raising=False)
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "20")
++    for marker in (b"A" * 64, b"B" * 64):
++        p = _stale_setup(tmp_path, shm=marker)
++        _locked_connect(monkeypatch, 1)
++        db.check_open(p)
++    shms = sorted(tmp_path.glob("act.db-shm.stale-*"))
++    wals = sorted(tmp_path.glob("act.db-wal.stale-*"))
++    assert len(shms) == 2 and len(wals) == 2, (shms, wals)
++    assert sorted(f.read_bytes() for f in shms) == [b"A" * 64, b"B" * 64]
++
++
++# ---------------------------------------------------------------- DB1-5 once
++
++def _conversion_logs(caplog):
++    return [r for r in caplog.records if "convert" in r.getMessage().lower()]
++
++
++def test_ac_db1_5_conversion_log_once_despite_retries(db, clock, monkeypatch, caplog, tmp_path):
++    p = tmp_path / "act.db"
++    _make_db(p, "WAL")
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "60")
++    _locked_connect(monkeypatch, 3)
++    caplog.set_level(logging.INFO)
++    db.check_open(p)
++    assert _header(p) == (1, 1)
++    assert len(_conversion_logs(caplog)) == 1, [r.getMessage() for r in _conversion_logs(caplog)]
++
++
++def test_ac_db1_5_race_header_already_delete_does_no_conversion(db, clock, monkeypatch, caplog, tmp_path):
++    p = tmp_path / "act.db"
++    _make_db(p, "WAL")
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "60")
++    real = sqlite3.connect
++    state = {"n": 0}
++
++    def connect(*a, **k):
++        state["n"] += 1
++        if state["n"] == 1:  # someone else converts while we are locked out
++            c = real(str(p))
++            c.execute("PRAGMA journal_mode=DELETE").fetchall()
++            c.close()
++            raise sqlite3.OperationalError("database is locked")
++        return real(*a, **k)
++    monkeypatch.setattr(sqlite3, "connect", connect)
++    caplog.set_level(logging.INFO)
++    db.check_open(p)
++    assert _header(p) == (1, 1)
++    assert _conversion_logs(caplog) == []
++
++
++# ---------------------------------------------------------------- unhandled error
++
++def test_ac_db1_4_wal_vanishing_between_exists_and_stat_is_not_a_raw_oserror(db, clock, monkeypatch, tmp_path):
++    p = _stale_setup(tmp_path)
++    monkeypatch.setattr(db, "_read_mounts", lambda: NFS)
++    monkeypatch.setenv("ACT_DB_LOCK_WAIT", "5")
++    _locked_connect_timed(monkeypatch, clock)
++    real_exists, real_stat = Path.exists, Path.stat
++
++    def exists(self, *a, **k):
++        return True if str(self).endswith("-wal") else real_exists(self, *a, **k)
++
++    def stat(self, *a, **k):
++        if str(self).endswith("-wal"):
++            raise FileNotFoundError(str(self))
++        return real_stat(self, *a, **k)
++    monkeypatch.setattr(Path, "exists", exists)
++    monkeypatch.setattr(Path, "stat", stat)
++    try:
++        db.check_open(p)
++    except db.DatabaseOpenError:
++        pass  # allowed; a raw OSError is not
++
++
++# ---------------------------------------------------------------- DB1-6 message
++
++def test_ac_db1_6_failure_reason_says_locked_and_has_no_sql(db, clock, monkeypatch):
++    db.init_db()
++    disc = importlib.import_module("backend.discovery")
++    with db.engine.begin() as cx:
++        cx.execute(insert(db.connections).values(id="c1", provider="aws", state="connected", sample=True,
++                                                 config={}, scopes=[]))
++    sid = disc.create_scan("c1", None, "scan", True)
++    real = disc.set_scan
++    calls = {"n": 0}
++
++    def flaky(sid_, eng=None, **vals):
++        calls["n"] += 1
++        if calls["n"] <= 2:
++            raise SAOperationalError("UPDATE scans SET progress=? WHERE scans.id = ?", {"id": sid_},
++                                     sqlite3.OperationalError("database is locked"))
++        return real(sid_, eng, **vals)
++    monkeypatch.setattr(disc, "set_scan", flaky)
++    disc.run_scan(sid, db.engine)
++    with db.engine.connect() as cx:
++        row = cx.execute(select(db.scans).where(db.scans.c.id == sid)).first()
++    assert row.state == "failed"
++    assert row.error and "locked" in row.error.lower()
++    for bad in ("INSERT", "UPDATE", "SELECT", "[parameters:", "[SQL"):
++        assert bad.lower() not in row.error.lower(), row.error
