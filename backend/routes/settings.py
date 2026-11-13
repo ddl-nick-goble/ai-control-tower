@@ -13,23 +13,18 @@ router = APIRouter()
 _count_lock = threading.Lock()
 
 
-def settings_open() -> bool:
-    """SET-1: Settings are open to anyone who can reach the app unless ACT_SETTINGS_OPEN=0."""
-    return (os.environ.get("ACT_SETTINGS_OPEN") or "").strip() != "0"
-
-
 def settings_user(request: Request) -> User:
     """Caller for Settings routes: the real identity when known, else anonymous when open; 401 when closed."""
     user = get_user(request)
     if user is not None:
         return user
-    if settings_open():
-        return User(user_id="anonymous", username="anonymous")
+    if settings.settings_open():
+        return User(user_id="anonymous:open", username="anonymous", via="anonymous")
     return require_user(request)
 
 
 def require_admin(user: User = Depends(settings_user)) -> User:
-    if settings_open():
+    if settings.settings_open():
         return user
     if not settings.is_admin(user):
         raise HTTPException(403, "Settings are limited to the project owner and listed admins"
@@ -40,7 +35,7 @@ def require_admin(user: User = Depends(settings_user)) -> User:
 
 @router.get("/api/settings/access")
 def access(user: User = Depends(settings_user)):
-    return {"admin": settings_open() or settings.is_admin(user), "admins_configured": settings.admins_configured(),
+    return {"open": settings.settings_open(), "admin": settings.settings_open() or settings.is_admin(user), "admins_configured": settings.admins_configured(),
             "user": user.username, "via": user.via,
             "owner": (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()}
 

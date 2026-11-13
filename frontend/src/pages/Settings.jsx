@@ -427,7 +427,7 @@ export default function Settings() {
                 {PLATFORMS.map((p) => <PlatformCard key={p.id} p={p} by={by} update={update} />)}
               </div>
             </Card>
-            <Card id="st-access" title="Access" subtitle="Only the project owner and these admins can open this page.">
+            <Card id="st-access" title="Access" subtitle={me && me.open ? 'Anyone who can open this app can change settings. Set ACT_SETTINGS_OPEN=0 to limit changes to the project owner and these admins.' : 'Only the project owner and these admins can open this page.'}>
               {owner && (
                 <div className="st-owner-row">
                   <span className="st-chip" data-testid="admins-fixed-owner">{Icon.lock}<strong>{owner}</strong><span>Project owner · always admin</span></span>

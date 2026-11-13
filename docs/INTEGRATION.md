@@ -21,7 +21,7 @@ labels itself honestly: template text in the console, the mock judge in the vali
 | `ACT_EXTERNAL_ALLOW_HOSTS` | Not set: external agent-card fetches are refused | Hosts allowed for external card fetch | Comma-separated hostnames to permit. Private, link-local and port 8899 stay refused. |
 | `ACT_TRUSTED_JWKS_PATH` | Not set: signed cards cannot be verified | Trusted signer keys | Path to a JWK or `{"keys": [...]}` file. Cards signed by those keys show as verified. |
 | `ACT_POLICY_AGENTIC_ID`, `ACT_POLICY_MODEL_ID` | Not set | Governance policy ids | Set to the Domino Governance policy ids for agentic and model bundles. |
-| `ACT_SETTINGS_OPEN` | Unset (open): anyone who can reach the App can change Settings; saves record the caller or `anonymous` | The Settings page and `/api/settings` routes | Set `ACT_SETTINGS_OPEN=0` to restore owner and `ACT_ADMINS` only access (anonymous 401, non-admin 403). |
+| `ACT_SETTINGS_OPEN` | Unset (open): anyone who can reach the App can change Settings; saves record the caller or `anonymous` | The Settings page and `/api/settings` routes | Set `ACT_SETTINGS_OPEN=0` to restore owner and `ACT_ADMINS` only access (anonymous 401, non-admin 403). Warning: while open, anyone who reaches the App can change `admins`, `llm_gateway_url`, `break_classifier_endpoint_url` and `external_allow_hosts`. Admins saved while open stay admins after you set `ACT_SETTINGS_OPEN=0`, so review the `admins` setting before locking. |
 
 ## Settings page (T-39)
 
