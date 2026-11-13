@@ -575,3 +575,12 @@ SET-2 build ACs (after SET-1 merges; builder, then domino-deploy for the App env
 - SI-3 Debug log of header names and the bearer failure reason only (never values).
 - SI-4 Live: on the published App, /api/settings/access reports Nick's username, and audit rows name him.
 - SI-5 With identity working, Settings' default (open vs owner/admins) is Nick's call; Try it (SF-2) uses owners/admins.
+
+### DB-1 SQLite over NFS: demo DB per pod, one shared writer (found 2026-11-13 during SET-1 QA)
+Five e2e tests fail on main (demo switch on -> 500 "database is locked" on /mnt/data/ai-control-tower/act/demo.db). Cause (domino-debug): the published App pod and the workspace share act.db and demo.db on nfs4 (local_lock=none); both files are persisted in WAL mode (header bytes 2/2) with -wal/-shm beside them, and db.py's PRAGMA journal_mode=DELETE needs an exclusive lock it can't get while the App holds the file. act.db.broken-20261112030109 suggests this has already corrupted act.db once. Risk to the live App: moderate (locked writes; corruption with two writers).
+ACs:
+- DB1-1 The demo DB lives on pod-local disk (default under /tmp or the code dir) when the dataset is a network FS; ACT_DEMO_DB_PATH overrides. Demo data reseeds on first use, so the App and the workspace never share it.
+- DB1-2 The e2e harness sets ACT_DEMO_DB_PATH to a tmp path per app, and the five demo-switch tests pass.
+- DB1-3 The real act.db has exactly one writer: the published App. The workspace dev server and tests default to a local copy (ACT_DB) unless ACT_DB_SHARED=1 is set deliberately; a startup log line says which file is used.
+- DB1-4 One-time (Nick approves; App stopped or idle): back up act.db, convert act.db and demo.db to DELETE mode, and remove the stale -wal/-shm. No data loss: row counts match before and after.
+Touches: backend/db.py, backend/demo.py, tests/e2e conftest (ui-tester), scripts/restore_db.py. Builder: builder; DB1-4 via domino-debug (sonnet) with Nick's OK. Runs after SET-1 merges (no file overlap, but both need the e2e harness).
