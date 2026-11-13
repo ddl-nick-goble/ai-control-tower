@@ -137,7 +137,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }} />
         )}
         {!showInput && !plainLocked && <div className="st-masked" aria-hidden="true">••••••••</div>}
-        {showInput && dirty && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
+        {showInput && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
         {replacing && !busy && <Button onClick={() => { setReplacing(false); setDraft(''); setSt({ kind: 'idle', msg: '' }) }}>Cancel</Button>}
         {!entry.locked && hasValue && !replacing && <Button onClick={() => { setReplacing(true); setSt({ kind: 'idle', msg: '' }) }} disabled={busy}>Replace</Button>}
         {!entry.locked && entry.source === 'app' && !replacing && !(showInput && dirty) && (
