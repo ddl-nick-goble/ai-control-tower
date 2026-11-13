@@ -75,8 +75,10 @@ def _run_seed(db_path, env=None):
 
 
 class App:
-    def __init__(self, proc, logf, log_path, url, port, ids, db_path):
+    def __init__(self, proc, logf, log_path, url, port, ids, db_path, env=None):
         self.proc, self.logf, self.log_path = proc, logf, log_path
+        self.env = dict(env or {})
+        self.demo_db_path = pathlib.Path(self.env["ACT_DEMO_DB_PATH"]) if self.env.get("ACT_DEMO_DB_PATH") else None
         self.url, self.port, self.ids, self.db_path = url, port, ids, db_path
 
     def stop(self):
@@ -103,12 +105,17 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
            if not k.startswith(("ACT_", "BREAK_CLASSIFIER_")) and k not in set(strip_env)}
     db_path = tmp / "act.db"
     env.update({"PYTHONDONTWRITEBYTECODE": "1", "HOST": "0.0.0.0", "ACT_DB": str(db_path),
+                "ACT_DEMO_DB_PATH": str(tmp / "demo.db"),
                 "ACT_DB_PREWARM_COUNT": "0", "ACT_EVIDENCE_DIR": str(tmp / "ev")})
     if external:
         env.update({"ACT_EXTERNAL_ALLOW_HOSTS": "127.0.0.1,localhost", "ACT_TRUSTED_JWKS_PATH": str(JWKS)})
     if demo:
         env["ACT_DEMO_MODE"] = "1"
     env.update(extra_env or {})
+    # DB-1: never the live /mnt/data DBs, whatever a test passes in extra_env
+    env["ACT_DB"] = env["ACT_DB"] if not str(env["ACT_DB"]).startswith("/mnt/data/") else str(db_path)
+    env["ACT_DEMO_DB_PATH"] = (env["ACT_DEMO_DB_PATH"] if not str(env["ACT_DEMO_DB_PATH"]).startswith("/mnt/data/")
+                               else str(tmp / "demo.db"))
     ids = seed_db(db_path, env) if seed else {}
 
     log_path = tmp / "app.log"
@@ -129,7 +136,7 @@ def start_app(tmp, *, seed=False, demo=False, external=True, port=None, extra_en
                     url = m.group(1)
                 else:
                     time.sleep(0.3)
-        app = App(proc, logf, log_path, url, p, ids, db_path)
+        app = App(proc, logf, log_path, url, p, ids, db_path, env)
         last = log_path.read_text()[-3000:]
         if not (url and url.endswith("/")):
             app.stop()
