@@ -155,3 +155,15 @@ def test_ac_st4_other_values_are_open(env, val):
         assert c.get("/api/settings/access").json()["admin"] is True
         assert c.get("/api/settings").status_code == 200
     _purge()
+
+
+# ---- write guard stays closed for non-Settings routes ----
+@pytest.mark.parametrize("method,url", [("post", "/api/demo/reset"), ("post", "/api/connections/x/scans"),
+                                        ("post", "/api/staged/x/dismiss"), ("put", "/api/settingsx/a"),
+                                        ("delete", "/api/other/a")])
+def test_set1_non_settings_writes_still_401_anonymous_when_open(client, method, url):
+    assert getattr(client, method)(url).status_code == 401
+
+
+def test_set1_non_settings_writes_still_401_anonymous_when_closed(locked):
+    assert locked.post("/api/demo/reset").status_code == 401
