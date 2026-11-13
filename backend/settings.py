@@ -259,6 +259,11 @@ def _admin_names() -> set:
     return {a.strip() for a in raw.split(",")} - {""}
 
 
+def settings_open() -> bool:
+    """SET-1: Settings are open to anyone who can reach the app unless ACT_SETTINGS_OPEN=0 (single source)."""
+    return (os.environ.get("ACT_SETTINGS_OPEN") or "").strip() != "0"
+
+
 def admins_configured() -> bool:
     return bool((os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()) or bool(_admin_names())
 

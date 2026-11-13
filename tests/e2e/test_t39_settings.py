@@ -50,7 +50,7 @@ def _managed_env():
                     "DATABRICKS_CLIENT_SECRET"}
 
 
-_MANAGED_ENV = _managed_env()
+_MANAGED_ENV = _managed_env() | {"ACT_SETTINGS_OPEN"}
 
 
 def _app(apps, extra):
@@ -72,6 +72,12 @@ def app_b(apps):
 @pytest.fixture(scope="module")
 def app_c(apps):
     return _app(apps, {"ACT_DEMO_MODE": "1"})
+
+
+@pytest.fixture(scope="module")
+def app_locked(apps):
+    # SET-1: Settings are open by default; ACT_SETTINGS_OPEN=0 restores the owner/admin lock these ST-6 tests describe
+    return _app(apps, {"LLM_GATEWAY_URL": "http://gateway.invalid/", "ACT_SETTINGS_OPEN": "0"})
 
 
 @pytest.fixture(scope="module")
@@ -230,30 +236,30 @@ def test_st5_demo_mode_variable_locks_switch(page, context, shot, app_c):
 
 
 # ---------------------------------------------------------------- ST-6
-def test_st6_anonymous_gets_401_and_sign_in_message(page, context, shot, base_url):
+def test_st6_anonymous_gets_401_and_sign_in_message(page, context, shot, app_locked):
     context.set_extra_http_headers({})
-    assert page.request.get("./api/settings").status == 401
-    page.goto("./#/settings")
+    assert page.request.get(app_locked + "api/settings").status == 401
+    page.goto(app_locked + "#/settings")
     expect(page.get_by_text(re.compile(r"sign in|sign-in|log in", re.I)).first).to_be_visible()
     expect(page.get_by_role("heading", name="Credentials")).to_have_count(0)
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
     shot("then")
 
 
-def test_st6_non_admin_link_present_no_access(page, context, shot, base_url):
+def test_st6_non_admin_link_present_no_access(page, context, shot, app_locked):
     # T-48 SR-1: the Settings link is always in the primary nav; a non-admin gets the plain no-access state.
     context.set_extra_http_headers(PLAIN)
-    page.goto("./#/")
+    page.goto(app_locked + "#/")
     nav = page.get_by_role("navigation", name="Primary")
     expect(nav.get_by_role("link", name="Fleet")).to_be_visible()
     expect(nav.get_by_role("link", name="Settings")).to_be_visible()
-    page.goto("./#/settings")
+    page.goto(app_locked + "#/settings")
     na = page.get_by_test_id("settings-no-access")
     expect(na).to_be_visible()
     expect(na).to_contain_text(re.compile("no access|read-only", re.I))
     expect(page.get_by_role("heading", name="Credentials")).to_have_count(0)
     expect(page.get_by_role("button", name="Save")).to_have_count(0)
-    assert page.request.get("./api/settings", headers=PLAIN).status in (401, 403)
+    assert page.request.get(app_locked + "api/settings", headers=PLAIN).status in (401, 403)
     shot("then")
 
 

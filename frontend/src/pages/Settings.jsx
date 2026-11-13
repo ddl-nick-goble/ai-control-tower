@@ -137,7 +137,7 @@ function SettingField({ entry, layout = 'row', span, onChange, children }) {
                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save() } }} />
         )}
         {!showInput && !plainLocked && <div className="st-masked" aria-hidden="true">••••••••</div>}
-        {showInput && dirty && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
+        {showInput && <Button variant="primary" onClick={save} disabled={!canSave} busy={busy}>Save</Button>}
         {replacing && !busy && <Button onClick={() => { setReplacing(false); setDraft(''); setSt({ kind: 'idle', msg: '' }) }}>Cancel</Button>}
         {!entry.locked && hasValue && !replacing && <Button onClick={() => { setReplacing(true); setSt({ kind: 'idle', msg: '' }) }} disabled={busy}>Replace</Button>}
         {!entry.locked && entry.source === 'app' && !replacing && !(showInput && dirty) && (
@@ -427,7 +427,7 @@ export default function Settings() {
                 {PLATFORMS.map((p) => <PlatformCard key={p.id} p={p} by={by} update={update} />)}
               </div>
             </Card>
-            <Card id="st-access" title="Access" subtitle="Only the project owner and these admins can open this page.">
+            <Card id="st-access" title="Access" subtitle={me && me.open ? 'Anyone who can open this app can change settings. Set ACT_SETTINGS_OPEN=0 to limit changes to the project owner and these admins.' : 'Only the project owner and these admins can open this page.'}>
               {owner && (
                 <div className="st-owner-row">
                   <span className="st-chip" data-testid="admins-fixed-owner">{Icon.lock}<strong>{owner}</strong><span>Project owner · always admin</span></span>
@@ -440,7 +440,7 @@ export default function Settings() {
       </>
     )
   }
-  const who = me && me.user ? (me.via === 'workspace' ? `Signed in as ${me.user} (workspace)` : `Signed in as ${me.user}`) : null
+  const who = me && me.via === 'anonymous' ? 'Settings are open to anyone who can reach this app.' : me && me.user ? (me.via === 'workspace' ? `Signed in as ${me.user} (workspace)` : `Signed in as ${me.user}`) : null
   return (
     <div className="ds-page ds-container" data-testid="settings-page">
       <PageHeader title="Settings" description="Connections, credentials and access for this Control Tower. Changes apply within seconds, with no restart." />

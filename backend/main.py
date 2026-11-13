@@ -4,6 +4,7 @@ import importlib
 import logging
 import os
 import pkgutil
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -90,6 +91,9 @@ async def write_guard(request, call_next):
         if too_big:
             return JSONResponse({"detail": "Request body too large (limit 8 KB)"}, status_code=413)
         return await call_next(request)  # read-only scoring; the only anonymous POST
+    if (request.method in ("PUT", "DELETE") and re.fullmatch(r"/api/settings/[^/]+", request.url.path)
+            and settings.settings_open()):
+        return await call_next(request)  # SET-1: Settings writes are open; the route records "anonymous"
     if request.method in WRITE_METHODS and await run_in_threadpool(get_user, request) is None:
         return JSONResponse({"detail": "Authentication required"}, status_code=401)
     return await call_next(request)

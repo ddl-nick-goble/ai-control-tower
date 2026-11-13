@@ -1,19 +1,31 @@
-"""Settings API (T-39). Admins only: the project owner plus the "admins" setting."""
+"""Settings API (T-39). Open to anyone who reaches the app (SET-1); with ACT_SETTINGS_OPEN=0, admins only."""
 import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from .. import db, settings
-from ..domino_identity import User, require_user
+from ..domino_identity import User, get_user, require_user
 
 router = APIRouter()
 _count_lock = threading.Lock()
 
 
-def require_admin(user: User = Depends(require_user)) -> User:
+def settings_user(request: Request) -> User:
+    """Caller for Settings routes: the real identity when known, else anonymous when open; 401 when closed."""
+    user = get_user(request)
+    if user is not None:
+        return user
+    if settings.settings_open():
+        return User(user_id="anonymous:open", username="anonymous", via="anonymous")
+    return require_user(request)
+
+
+def require_admin(user: User = Depends(settings_user)) -> User:
+    if settings.settings_open():
+        return user
     if not settings.is_admin(user):
         raise HTTPException(403, "Settings are limited to the project owner and listed admins"
                             if settings.admins_configured() else
@@ -22,8 +34,8 @@ def require_admin(user: User = Depends(require_user)) -> User:
 
 
 @router.get("/api/settings/access")
-def access(user: User = Depends(require_user)):
-    return {"admin": settings.is_admin(user), "admins_configured": settings.admins_configured(),
+def access(user: User = Depends(settings_user)):
+    return {"open": settings.settings_open(), "admin": settings.settings_open() or settings.is_admin(user), "admins_configured": settings.admins_configured(),
             "user": user.username, "via": user.via,
             "owner": (os.environ.get("DOMINO_PROJECT_OWNER") or "").strip()}
 
